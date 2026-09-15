@@ -324,6 +324,7 @@ region
 account_id
 user_id
 mfa_arn
+mfa_enabled
 encrypted_access_key
 encrypted_secret_key
 is_default
@@ -335,6 +336,8 @@ updated_at
 
 - 프로필 이름은 중복될 수 없다.
 - Region, Account ID, User ID, Access Key, Secret Key는 등록 전에 검증한다.
+- `mfa_enabled`가 꺼진 프로필도 관례적 ARN은 메타데이터로 보존하지만 세션 발급 요청에는
+  MFA ARN과 코드를 전달하지 않는다.
 - 키 원문은 모델 직렬화나 로그 출력 대상이 아니다.
 
 ### 6.2 SessionCredentials
@@ -404,6 +407,7 @@ CREATE TABLE aws_profiles (
     account_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     mfa_arn TEXT NOT NULL,
+    mfa_enabled INTEGER NOT NULL DEFAULT 1 CHECK (mfa_enabled IN (0, 1)),
     encrypted_access_key BLOB NOT NULL,
     encrypted_secret_key BLOB NOT NULL,
     is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
@@ -585,7 +589,9 @@ SQLite 연결 시 `PRAGMA foreign_keys = ON`을 반드시 적용한다.
 
 애플리케이션 계층에서 다음 오류 유형으로 통일한다.
 
-MFA 입력이 필요하다는 사실은 오류가 아니라 `MFA_REQUIRED` 작업 상태이며, 잘못된 MFA 입력만 `MfaValidationError`로 처리한다.
+MFA 사용 프로필에서 입력이 필요하다는 사실은 오류가 아니라 `MFA_REQUIRED` 작업 상태이며,
+잘못된 MFA 입력만 `MfaValidationError`로 처리한다. MFA 미사용 프로필은 `SESSION_REQUIRED`
+상태에서 입력 없이 토큰을 발급하고 원래 작업을 한 번 재개한다.
 
 ```text
 ConfigurationError

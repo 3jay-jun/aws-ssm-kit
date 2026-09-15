@@ -9,6 +9,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -199,6 +200,9 @@ class ProfileDialog(QDialog):
         self._show_new_credential_placeholders()
         self.access_key.setAccessibleName("Access Key ID")
         self.secret_key.setAccessibleName("Secret Access Key")
+        self.mfa_enabled = QCheckBox("임시 세션 발급 시 MFA 사용")
+        self.mfa_enabled.setObjectName("profile_mfa_enabled")
+        self.mfa_enabled.setChecked(True)
         form = QGridLayout()
         form.setContentsMargins(0, 13, 0, 0)
         form.setHorizontalSpacing(14)
@@ -224,6 +228,7 @@ class ProfileDialog(QDialog):
         add_field("Access Key ID", self.access_key, 2, 0, 2)
         add_field("Secret Access Key", self.secret_key, 3, 0, 2)
         editor.addLayout(form)
+        editor.addWidget(self.mfa_enabled)
         notice = QLabel(
             "Secret Access Key와 발급 토큰은 OS 사용자 범위로 암호화하여 SQLite에 저장합니다."
         )
@@ -300,6 +305,7 @@ class ProfileDialog(QDialog):
             field.clear()
         self._show_new_credential_placeholders()
         self.region.setText("ap-northeast-2")
+        self.mfa_enabled.setChecked(True)
         self.delete_button.setEnabled(True)
         self.clone_button.setEnabled(False)
         self.connect_button.setEnabled(False)
@@ -326,6 +332,7 @@ class ProfileDialog(QDialog):
         self.account.setText(profile.account_id)
         self.user.setText(profile.user_id)
         self.region.setText(profile.region)
+        self.mfa_enabled.setChecked(profile.mfa_enabled)
         self.access_key.clear()
         self.secret_key.clear()
         self._show_saved_credential_placeholders()
@@ -347,6 +354,7 @@ class ProfileDialog(QDialog):
                 # The implementation-level MFA ARN is derived for new profiles and
                 # preserved by ProfileService for edits.
                 mfa_arn=None,
+                mfa_enabled=self.mfa_enabled.isChecked(),
                 profile_id=self._selected_id,
             )
         )
@@ -979,6 +987,7 @@ class MainWindow(QMainWindow):
                 user_id=item.user_id,
                 mfa_arn=item.mfa_arn,
                 is_default=item.id == profile.id,
+                mfa_enabled=item.mfa_enabled,
             )
             for item in self._profile_summaries
         ]
@@ -1105,14 +1114,15 @@ class MainWindow(QMainWindow):
                 )
             )
             row.stop_requested.connect(self._stop_dashboard_tunnel)
-            item.setSizeHint(row.sizeHint())
+            row_height = max(54, row.sizeHint().height() + 8)
+            item.setSizeHint(QSize(row.sizeHint().width(), row_height))
             self.dashboard_tunnels.addItem(item)
             self.dashboard_tunnels.setItemWidget(item, row)
         visible_rows = min(3, len(tunnels))
-        row_height = max(
+        visible_height = sum(
             self.dashboard_tunnels.sizeHintForRow(index) for index in range(visible_rows)
         )
-        self.dashboard_tunnels.setFixedHeight(visible_rows * row_height + 2)
+        self.dashboard_tunnels.setFixedHeight(visible_height + 6)
         self.dashboard_tunnels.show()
 
     def _stop_dashboard_tunnel(self, operation_id: str) -> None:

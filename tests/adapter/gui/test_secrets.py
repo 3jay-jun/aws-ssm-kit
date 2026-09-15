@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMessageBox
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMessageBox, QPushButton
 
 from aws_connect.application.ports import ListedSecret
 from aws_connect.application.secrets_service import (
@@ -18,6 +18,7 @@ from aws_connect.application.secrets_service import (
     SecretResult,
 )
 from aws_connect.domain.errors import ApplicationError, AwsPermissionError
+from aws_connect.domain.saved_secret import SavedSecret
 from aws_connect.presentation.gui.errors import map_error
 from aws_connect.presentation.gui.secrets import SecretsPage
 from aws_connect.presentation.gui.window import MainWindow
@@ -57,6 +58,7 @@ class FakeSecrets:
             ),
         )
         self.list_error: ApplicationError | None = None
+        self.saved: list[SavedSecret] = []
 
     def get(
         self,
@@ -70,6 +72,7 @@ class FakeSecrets:
         assert identifier
         assert profile == 1
         self.last_lookup = (mode, instance_id, confirmed)
+        self.remember(self.result.secret_id, profile)
         return self.result
 
     def list(self, profile: int | None = None) -> list[ListedSecret]:
@@ -82,11 +85,30 @@ class FakeSecrets:
         assert profile is not None
         return [SecretRelayTarget("i-online", "Amazon Linux", "web-dev")]
 
-    def save_top_level_field(
-        self, result: SecretResult, path: str, value: str, profile: int
-    ) -> SecretResult:
-        self.last_save = (result.secret_id, path, value, profile)
-        return result
+    def list_saved(self, profile: int | None = None) -> list[SavedSecret]:
+        assert profile is not None
+        return list(self.saved)
+
+    def remember(self, identifier: str, profile: int | None = None) -> SavedSecret:
+        assert profile is not None
+        existing = next((item for item in self.saved if item.identifier == identifier), None)
+        if existing is not None:
+            return existing
+        created = SavedSecret(len(self.saved) + 1, profile, identifier)
+        self.saved.append(created)
+        return created
+
+    def update_saved(
+        self, saved_id: int, identifier: str, profile: int | None = None
+    ) -> SavedSecret:
+        assert profile is not None
+        updated = SavedSecret(saved_id, profile, identifier)
+        self.saved = [updated if item.id == saved_id else item for item in self.saved]
+        return updated
+
+    def delete_saved(self, saved_id: int, profile: int | None = None) -> None:
+        assert profile is not None
+        self.saved = [item for item in self.saved if item.id != saved_id]
 
 
 def test_direct_lookup_masks_then_explicitly_reveals_and_clears_on_profile_change() -> None:
@@ -94,8 +116,6 @@ def test_direct_lookup_masks_then_explicitly_reveals_and_clears_on_profile_chang
     service = FakeSecrets()
     page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
-    page.secret_id.setText("db/dev")
-
     page.get_secret()
 
     assert page.fields.item(2, 1).text() == "***REDACTED***"
@@ -103,9 +123,9 @@ def test_direct_lookup_masks_then_explicitly_reveals_and_clears_on_profile_chang
         page.fields.item(row, 1).text() for row in range(page.fields.rowCount())
     )
     page.fields.selectRow(2)
-    assert page.findChild(type(page.copy_button), "secret_reveal") is None
-    page.copy_selected()
-    assert QApplication.clipboard().text() == RAW
+    page.reveal_selected()
+    assert page.fields.item(2, 1).text() == RAW
+    assert page.catalog.count() == 1
 
     page.set_profile(2)
     assert page.fields.rowCount() == 0
@@ -126,29 +146,25 @@ def test_secrets_page_matches_mockup_header_toolbar_and_360px_split() -> None:
     assert page.list_button.text() == "↻ 새로고침"
 
 
-def test_copy_is_explicit_and_clipboard_is_conditionally_cleared(monkeypatch) -> None:
-    application = _app()
+def test_sensitive_value_reveal_is_temporary_without_copy_or_aws_save_buttons(monkeypatch) -> None:
+    _app()
     page = SecretsPage(FakeSecrets(), ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
-    page.secret_id.setText("db/dev")
     page.get_secret()
     page.fields.selectRow(2)
     callbacks: list[Callable[[], None]] = []
     monkeypatch.setattr(
-        "aws_connect.presentation.gui.clipboard.QTimer.singleShot",
+        "aws_connect.presentation.gui.secrets.QTimer.singleShot",
         lambda _milliseconds, callback: callbacks.append(callback),
     )
 
-    page.copy_selected()
+    page.reveal_selected()
 
-    assert application.clipboard().text() == RAW
-    application.clipboard().setText("newer-user-value")
+    assert page.fields.item(2, 1).text() == RAW
+    assert page.findChild(QPushButton, "secret_copy") is None
+    assert page.findChild(QPushButton, "secret_save_field") is None
     callbacks[0]()
-    assert application.clipboard().text() == "newer-user-value"
-    page.copy_selected()
-    assert application.clipboard().text() == RAW
-    callbacks[1]()
-    assert application.clipboard().text() == ""
+    assert page.fields.item(2, 1).text() == "***REDACTED***"
 
 
 def test_optional_list_permission_failure_keeps_direct_input_available() -> None:
@@ -171,8 +187,11 @@ def test_optional_list_permission_failure_keeps_direct_input_available() -> None
 
     assert errors == []
     assert "직접 검색" in notices[-1]
-    assert page.get_button.isEnabled()
+    assert "목록 조회 권한이 없습니다" in page.catalog_status.text()
+    assert page.secret_selector.isHidden()
+    assert not page.secret_id.isHidden()
     page.secret_id.setText("db/dev")
+    assert page.get_button.isEnabled()
     page.get_secret()
     assert page.fields.rowCount() == 3
     mapped = map_error(service.list_error)
@@ -212,6 +231,12 @@ def test_start_session_permission_error_explains_terminal_requirement() -> None:
 def test_send_command_denial_auto_runs_fixed_lookup_and_keeps_terminal_open() -> None:
     _app()
     service = FakeSecrets()
+    service.list_error = AwsPermissionError(
+        "aws.permission.denied",
+        "AccessDeniedException",
+        aws_service="secretsmanager",
+        aws_action="ListSecrets",
+    )
     ec2 = Mock()
     page = SecretsPage(
         service,
@@ -247,17 +272,18 @@ def test_send_command_denial_auto_runs_fixed_lookup_and_keeps_terminal_open() ->
     assert page.terminal_fallback_button.text() == "EC2 직접 조회"
 
 
-def test_catalog_activation_uses_arn_for_direct_get() -> None:
+def test_available_catalog_uses_select_box_and_selected_arn_for_direct_get() -> None:
     _app()
     page = SecretsPage(FakeSecrets(), ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
-    page.load_list()
-
-    item = page.catalog.item(0)
-    page._catalog_selected(item)
+    page.get_button.click()
 
     assert page.secret_id.text() == "arn:test"
+    assert not page.secret_selector.isHidden()
+    assert page.secret_id.isHidden()
     assert page.fields.rowCount() == 3
+    assert page.fields.currentRow() == 0
+    assert page.findChild(QPushButton, "secret_relay_refresh") is None
 
 
 def test_via_ec2_requires_online_selection_and_one_time_explicit_consent() -> None:
@@ -284,28 +310,29 @@ def test_via_ec2_requires_online_selection_and_one_time_explicit_consent() -> No
     assert not page.get_button.isEnabled()
 
 
-def test_selected_top_level_key_value_is_saved_only_after_explicit_confirmation(
-    monkeypatch,
-) -> None:
+def test_saved_secret_buttons_register_edit_and_delete_only_sqlite_reference(monkeypatch) -> None:
     _app()
     service = FakeSecrets()
     page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
-    page.secret_id.setText("db/dev")
     page.get_secret()
-    page.fields.selectRow(1)
+    assert page.catalog.item(0).text() == "arn:test"
+    page.catalog.setCurrentRow(0)
     monkeypatch.setattr(
         "aws_connect.presentation.gui.secrets.QInputDialog.getText",
-        lambda *_args, **_kwargs: ("5432", True),
+        lambda *_args, **_kwargs: ("db/prod", True),
     )
     monkeypatch.setattr(
         "aws_connect.presentation.gui.secrets.QMessageBox.warning",
         lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
     )
 
-    page.save_field_button.click()
+    page.edit_saved_button.click()
+    assert service.saved[0].identifier == "db/prod"
 
-    assert service.last_save == ("arn:test", "port", "5432", 1)
+    page.catalog.setCurrentRow(0)
+    page.delete_saved_button.click()
+    assert service.saved == []
 
 
 def test_main_window_wires_secret_endpoint_to_unsaved_rds_editor() -> None:

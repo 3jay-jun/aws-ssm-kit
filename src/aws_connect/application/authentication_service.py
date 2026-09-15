@@ -66,14 +66,21 @@ class AuthenticationService:
         session = self._store.get_session(profile_id)
         if session is None:
             return AuthenticationStatus(
-                self._profiles.show(profile_id), "MFA_REQUIRED", None, False
+                self._profiles.show(profile_id),
+                "MFA_REQUIRED" if profile.mfa_enabled else "SESSION_REQUIRED",
+                None,
+                False,
             )
         reusable = not session.needs_refresh(self._clock.now())
         if not reusable:
             self._store.delete_session(profile_id)
         return AuthenticationStatus(
             self._profiles.show(profile_id),
-            "READY" if reusable else "MFA_REQUIRED",
+            (
+                "READY"
+                if reusable
+                else ("MFA_REQUIRED" if profile.mfa_enabled else "SESSION_REQUIRED")
+            ),
             session.expires_at_utc,
             reusable,
         )
@@ -106,25 +113,25 @@ class AuthenticationService:
         self._store.delete_session(profile_id)
         return profile_id
 
-    def refresh(self, profile_id: int, mfa_code: str) -> AuthenticationStatus:
-        if not _MFA_CODE.fullmatch(mfa_code):
-            raise MfaValidationError(
-                message_code="mfa.code.invalid",
-                technical_cause="MFA code must contain exactly six digits",
-            )
+    def refresh(self, profile_id: int, mfa_code: str | None = None) -> AuthenticationStatus:
         refresh_lock = self._profile_refresh_lock(profile_id)
         with refresh_lock:
+            profile = self._profiles.resolve(profile_id)
+            if profile.mfa_enabled and (mfa_code is None or not _MFA_CODE.fullmatch(mfa_code)):
+                raise MfaValidationError(
+                    message_code="mfa.code.invalid",
+                    technical_cause="MFA code must contain exactly six digits",
+                )
             # Another operation may have refreshed this profile while this caller
             # waited. Re-check inside the per-profile critical section so STS is
             # invoked at most once for concurrent challenges.
             if self._session_guard.credentials(profile_id) is not None:
                 return self.status(profile_id)
-            profile = self._profiles.resolve(profile_id)
             issued = self._gateway.get_session_token(
                 self._profiles.reveal_credentials(profile),
                 profile.region,
-                profile.mfa_arn,
-                mfa_code,
+                profile.mfa_arn if profile.mfa_enabled else None,
+                mfa_code if profile.mfa_enabled else None,
             )
             identity = self._gateway.get_identity(issued.credentials, profile.region)
             self._assert_identity(
@@ -247,6 +254,9 @@ class OperationCoordinator:
         operation_id = new_operation_id()
         if status.reusable:
             return OperationResult(operation_id, OperationState.SUCCEEDED, value=status)
+        if not status.profile.mfa_enabled:
+            refreshed = self._authentication.refresh(status.profile.id)
+            return OperationResult(operation_id, OperationState.SUCCEEDED, value=refreshed)
         expires_at = self._clock.now() + timedelta(minutes=5)
         challenge = MfaChallenge(
             operation_id=operation_id,

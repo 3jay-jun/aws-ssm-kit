@@ -18,6 +18,7 @@ class SaveProfileRequest:
     access_key: str | None = None
     secret_key: str | None = None
     mfa_arn: str | None = None
+    mfa_enabled: bool | None = None
     profile_id: int | None = None
 
 
@@ -30,6 +31,7 @@ class ProfileSummary:
     user_id: str
     mfa_arn: str
     is_default: bool
+    mfa_enabled: bool = True
 
 
 class ProfileService:
@@ -63,6 +65,7 @@ class ProfileService:
             mfa_arn=request.mfa_arn or default_mfa_arn(request.account_id, request.user_id),
             encrypted_access_key=self._protector.protect(credentials.access_key),
             encrypted_secret_key=self._protector.protect(credentials.secret_key),
+            mfa_enabled=request.mfa_enabled is not False,
         )
         return self._summary(self._store.create(profile))
 
@@ -84,6 +87,9 @@ class ProfileService:
             mfa_arn=request.mfa_arn if request.mfa_arn is not None else current.mfa_arn,
             encrypted_access_key=self._protector.protect(credentials.access_key),
             encrypted_secret_key=self._protector.protect(credentials.secret_key),
+            mfa_enabled=(
+                request.mfa_enabled if request.mfa_enabled is not None else current.mfa_enabled
+            ),
             is_default=current.is_default,
             created_at=current.created_at,
             updated_at=current.updated_at,
@@ -105,6 +111,7 @@ class ProfileService:
             mfa_arn=source.mfa_arn,
             encrypted_access_key=source.encrypted_access_key,
             encrypted_secret_key=source.encrypted_secret_key,
+            mfa_enabled=source.mfa_enabled,
         )
         return self._summary(self._store.create(cloned))
 
@@ -165,6 +172,7 @@ class ProfileService:
             user_id=profile.user_id,
             mfa_arn=profile.mfa_arn,
             is_default=profile.is_default,
+            mfa_enabled=profile.mfa_enabled,
         )
 
     @staticmethod

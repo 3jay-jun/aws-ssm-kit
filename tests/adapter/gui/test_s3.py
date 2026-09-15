@@ -140,6 +140,7 @@ def test_s3_page_browses_direct_location_and_updates_progress(tmp_path: Path) ->
     assert page.upload_status.text() == "업로드 중: s3://test-upload-bucket/incoming/report.txt"
     s3.prepare_upload.assert_called_once()
     s3.upload.assert_called_once()
+    assert s3.list_objects.call_count == 2
 
 
 def test_s3_page_matches_mockup_header_toolbar_card_and_drop_order() -> None:
@@ -152,7 +153,7 @@ def test_s3_page_matches_mockup_header_toolbar_card_and_drop_order() -> None:
     assert card is not None
     assert card.layout().indexOf(page.breadcrumb) < card.layout().indexOf(page.objects)
     assert card.layout().indexOf(page.objects) < card.layout().indexOf(page.drop_zone)
-    assert page.upload.text() == "파일 업로드"
+    assert page.upload.text() == "파일 추가"
     assert page.findChild(type(page.upload), "s3_bucket_catalog_load") is None
     assert page.findChild(QFrame, "s3_saved_locations_panel") is not None
 
@@ -245,6 +246,37 @@ def test_selected_file_delete_requires_confirmation_and_refreshes_listing() -> N
 
     s3.delete_object.assert_called_once_with("test-upload-bucket", "reports/file.txt", 7)
     assert s3.list_objects.call_count >= 2
+
+
+def test_selected_file_downloads_then_opens_user_selected_destination(tmp_path: Path) -> None:
+    _app()
+    locations = Mock()
+    locations.list.return_value = []
+    s3 = Mock()
+    s3.list_buckets.return_value = []
+    selected = S3Object("reports/file.txt", 10, None)
+    s3.list_objects.return_value = [selected]
+    destination = tmp_path / "file.txt"
+    s3.download_object.return_value = destination
+    opened: list[Path] = []
+    page = S3Page(
+        locations,
+        s3,
+        ImmediateRunner(),  # type: ignore[arg-type]
+        download_destination=lambda _parent, item: destination if item is selected else None,
+        open_downloaded_file=lambda path: not opened.append(path),
+    )
+    page.set_profile(7)
+    page.bucket.setText("test-upload-bucket")
+    page.list_objects()
+    page.objects.selectRow(0)
+
+    page.open_object_button.click()
+
+    s3.download_object.assert_called_once_with(
+        "test-upload-bucket", "reports/file.txt", destination, 7
+    )
+    assert opened == [destination]
 
 
 def test_profile_change_cancels_owned_upload_and_clears_files(tmp_path: Path) -> None:

@@ -35,9 +35,12 @@
   central masking policy before values reach either presentation adapter.
 - Secrets Manager values remain in memory only in a `repr=False` operation result. Default CLI
   and GUI views mask sensitive names and all plain-string/scalar values; raw values cross the
-  presentation boundary only after an explicit `--reveal`, copy, confirmed AWS field update, or RDS
-  endpoint-copy action. GUI reveal and clipboard content are conditionally cleared after 30
-  seconds, and a new lookup or profile change discards the previous result.
+  presentation boundary only after an explicit CLI reveal/update, timed GUI reveal, or RDS
+  endpoint-copy action. GUI reveal is cleared after 30 seconds, and a new lookup or profile change
+  discards the previous result.
+- SQLite `saved_secrets` stores only profile-scoped Secret names or ARNs. Successful lookup may
+  auto-register that identifier, but SecretString, flattened fields, revealed values and versions
+  never enter this table. The GUI has no Secret value copy or PutSecretValue action.
 - RDS local endpoint copy exposes only `127.0.0.1:<local-port>` and uses the same conditional
   30-second clipboard clearing policy; it never copies the RDS host or credentials implicitly.
 - RDS endpoint copy reads only top-level `host` and `port`, populates an unsaved editor, and never
@@ -51,6 +54,8 @@
   requires explicit overwrite consent. Local file contents are streamed in memory and are never
   persisted to SQLite, logs, diagnostics, or default CLI/GUI output. Single-object deletion requires
   an exact selected key and confirmation; prefix recursion and batch deletion are not implemented.
+  A user-requested download writes to a temporary file beside the chosen destination and atomically
+  replaces it only after GetObject succeeds; failed partial files are removed before reporting error.
 - EC2 start and reboot are explicit, confirmed operations scoped to one selected instance. The app
   never exposes StopInstances or TerminateInstances, and records only masked structured metadata.
 - EC2-mediated Secret lookup is an explicit opt-in path, never an automatic permission fallback.
@@ -58,10 +63,11 @@
   disables S3/CloudWatch command output, and keeps returned plaintext memory-only. The UI warns that
   Systems Manager command output can temporarily contain the Secret value; logs, SQLite, diagnostics,
   repr, command arguments shown by AWS Connect, and clipboard history must not retain it.
-- When `ssm:SendCommand` is denied, the user may explicitly open a durable standard StartSession
-  shell. The app copies the same fixed, validated command for manual paste instead of launching a
-  one-command session that exits immediately. Plaintext stays in the external terminal and is never
-  captured by the app; arbitrary commands and unvalidated Secret identifiers remain prohibited.
+- When `ssm:SendCommand` is denied, the user may explicitly open an
+  `AWS-StartInteractiveCommand` session. The app passes only the same fixed, validated lookup and a
+  platform-specific shell continuation so the terminal remains open after the value is printed.
+  Plaintext stays in the external terminal and is never captured by the app; arbitrary commands and
+  unvalidated Secret identifiers remain prohibited.
 - Detailed activity records accept only bounded structured error fields. Technical text is centrally
   masked before write, re-masked after read, and re-masked before copy; arbitrary tracebacks, command
   arguments and response payloads are excluded from the schema.

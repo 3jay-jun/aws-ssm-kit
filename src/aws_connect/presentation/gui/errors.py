@@ -235,6 +235,18 @@ _MESSAGES: dict[str, tuple[str, str]] = {
         "EC2 경유 조회 시간이 초과되었습니다",
         "SSM 연결 상태를 확인한 뒤 다시 시도하세요.",
     ),
+    "secret.saved.identifier.invalid": (
+        "Secret 이름이 올바르지 않습니다",
+        "저장할 Secret 이름 또는 ARN을 확인하세요.",
+    ),
+    "secret.saved.identifier.duplicate": (
+        "이미 저장된 Secret입니다",
+        "왼쪽 저장 목록에서 기존 항목을 선택하거나 수정하세요.",
+    ),
+    "secret.saved.not_found": (
+        "저장된 Secret을 찾을 수 없습니다",
+        "목록을 새로고침한 뒤 다시 시도하세요.",
+    ),
     "s3.location.not_found": (
         "S3 저장 위치를 찾을 수 없습니다",
         "저장 위치를 새로고침하거나 Bucket과 Prefix를 직접 입력하세요.",
@@ -255,9 +267,21 @@ _MESSAGES: dict[str, tuple[str, str]] = {
         "S3 업로드를 취소했습니다",
         "multipart 정리를 완료했습니다.",
     ),
+    "s3.download.destination.invalid": (
+        "파일 저장 위치를 사용할 수 없습니다",
+        "존재하는 로컬 폴더를 선택하세요.",
+    ),
+    "s3.download.object.required": (
+        "열 파일을 선택하세요",
+        "폴더가 아닌 S3 파일 한 개를 선택하세요.",
+    ),
+    "s3.open.failed": (
+        "다운로드한 파일을 열 수 없습니다",
+        "저장된 파일을 Windows 탐색기에서 직접 여세요.",
+    ),
     "s3.transfer.failed": (
-        "S3 업로드에 실패했습니다",
-        "네트워크와 대상 Bucket의 PutObject 권한을 확인한 뒤 다시 시도하세요.",
+        "S3 파일 전송에 실패했습니다",
+        "네트워크와 대상 Bucket의 GetObject 또는 PutObject 권한을 확인하세요.",
     ),
 }
 
@@ -273,4 +297,5 @@ _FIELD_BY_CODE: dict[str, str] = {
     "credentials.access_key.invalid": "profile_access_key_input",
     "credentials.secret_key.invalid": "profile_secret_key_input",
     "secret.id.remote.invalid": "secret_id",
+    "secret.saved.identifier.invalid": "secret_id",
 }

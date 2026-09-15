@@ -17,11 +17,13 @@ from aws_connect.application.ports import (
     ListedSecret,
     ManagedInstanceGateway,
     RemoteSecretCommandGateway,
+    SavedSecretStore,
     SecretsGateway,
 )
 from aws_connect.application.profile_service import ProfileService
 from aws_connect.domain.aws_profile import PlainCredentials
 from aws_connect.domain.errors import AwsPermissionError, ConfigurationError
+from aws_connect.domain.saved_secret import SavedSecret
 from aws_connect.domain.sensitive_data import REDACTED, is_sensitive_name
 
 
@@ -130,6 +132,7 @@ class SecretsService:
         managed_instances: ManagedInstanceGateway | None = None,
         remote_gateway: RemoteSecretCommandGateway | None = None,
         metadata: Ec2MetadataGateway | None = None,
+        saved: SavedSecretStore | None = None,
     ) -> None:
         self._profiles = profiles
         self._sessions = sessions
@@ -137,6 +140,7 @@ class SecretsService:
         self._managed_instances = managed_instances
         self._remote_gateway = remote_gateway
         self._metadata = metadata
+        self._saved = saved
 
     def get(
         self,
@@ -190,12 +194,63 @@ class SecretsService:
             )
         else:
             raise ConfigurationError("secret.lookup.mode.invalid", "Unknown Secret lookup mode")
-        return _parse(
+        result = _parse(
             retrieved.secret_id,
             retrieved.secret_string,
             retrieved.version_id,
             retrieved.version_stages,
         )
+        if self._saved is not None:
+            self.remember(result.secret_id, selected.require_id())
+        return result
+
+    def list_saved(self, profile: str | int | None = None) -> list[SavedSecret]:
+        selected = self._profiles.resolve(profile)
+        return self._require_saved_store().list_saved_secrets(selected.require_id())
+
+    def remember(self, identifier: str, profile: str | int | None = None) -> SavedSecret:
+        selected = self._profiles.resolve(profile)
+        profile_id = selected.require_id()
+        candidate = SavedSecret(None, profile_id, identifier)
+        store = self._require_saved_store()
+        existing = store.get_saved_secret_by_identifier(profile_id, candidate.identifier)
+        if existing is not None:
+            return existing
+        try:
+            return store.create_saved_secret(candidate)
+        except ConfigurationError as error:
+            if error.message_code != "secret.saved.identifier.duplicate":
+                raise
+            concurrent = store.get_saved_secret_by_identifier(profile_id, candidate.identifier)
+            if concurrent is None:
+                raise
+            return concurrent
+
+    def update_saved(
+        self, saved_secret_id: int, identifier: str, profile: str | int | None = None
+    ) -> SavedSecret:
+        selected = self._profiles.resolve(profile)
+        profile_id = selected.require_id()
+        existing = self._require_saved_store().get_saved_secret(saved_secret_id)
+        if existing is None or existing.profile_id != profile_id:
+            raise ConfigurationError("secret.saved.not_found", "Saved Secret was not found")
+        return self._require_saved_store().update_saved_secret(
+            SavedSecret(saved_secret_id, profile_id, identifier)
+        )
+
+    def delete_saved(self, saved_secret_id: int, profile: str | int | None = None) -> None:
+        selected = self._profiles.resolve(profile)
+        existing = self._require_saved_store().get_saved_secret(saved_secret_id)
+        if existing is None or existing.profile_id != selected.require_id():
+            raise ConfigurationError("secret.saved.not_found", "Saved Secret was not found")
+        self._require_saved_store().delete_saved_secret(saved_secret_id)
+
+    def _require_saved_store(self) -> SavedSecretStore:
+        if self._saved is None:
+            raise ConfigurationError(
+                "secret.saved.unavailable", "Saved Secret storage is not configured"
+            )
+        return self._saved
 
     def list(self, profile: str | int | None = None) -> list[ListedSecret]:
         """Return optional catalog metadata; direct lookup never depends on this permission."""

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -33,6 +34,59 @@ def services() -> ApplicationServices:
         Mock(),
         connection_lifecycle=Mock(),
     )
+
+
+def test_profile_parser_exposes_explicit_mfa_usage_flags() -> None:
+    parser = build_parser()
+    common = [
+        "profile",
+        "create",
+        "--name",
+        "dev",
+        "--region",
+        "ap-northeast-2",
+        "--account-id",
+        "123456789012",
+        "--user-id",
+        "developer",
+    ]
+
+    assert parser.parse_args(common).mfa is None
+    assert parser.parse_args([*common, "--mfa"]).mfa is True
+    assert parser.parse_args([*common, "--no-mfa"]).mfa is False
+
+
+def test_profile_create_passes_disabled_mfa_to_shared_request(capsys, monkeypatch) -> None:
+    app = services()
+    app.profiles.create.return_value = replace(summary(), mfa_enabled=False)
+    monkeypatch.setattr(
+        "aws_connect.cli_main._read_credentials",
+        lambda _stdin: ("ACCESSKEYTEST0001", "not-sensitive-test-value"),
+    )
+
+    exit_code = main(
+        [
+            "profile",
+            "create",
+            "--name",
+            "automation",
+            "--region",
+            "ap-northeast-2",
+            "--account-id",
+            "123456789012",
+            "--user-id",
+            "developer",
+            "--no-mfa",
+            "--output",
+            "json",
+        ],
+        services=app,
+    )
+
+    assert exit_code == 0
+    request = app.profiles.create.call_args.args[0]
+    assert request.mfa_enabled is False
+    assert json.loads(capsys.readouterr().out)["mfa_enabled"] is False
 
 
 @pytest.mark.parametrize(

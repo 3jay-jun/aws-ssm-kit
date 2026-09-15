@@ -41,7 +41,9 @@ try {
         & uv run --no-sync python .\tools\verify_critical_coverage.py .\coverage.xml
     }
     Invoke-Check "secret scan" {
-        $files = @(& rg --files -g '!ref/**' -g '!uv.lock')
+        # Scan the same source-controlled file set in every environment without
+        # depending on a runner-provided ripgrep installation.
+        $files = @(& git ls-files -- ':!ref/**' ':!uv.lock')
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $scan = (& uv run --no-sync detect-secrets scan @files | Out-String)
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

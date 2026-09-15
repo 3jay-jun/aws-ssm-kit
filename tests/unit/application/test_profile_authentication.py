@@ -36,6 +36,7 @@ class FakeIdentityGateway:
             "arn:aws:iam::123456789012:user/developer",
         )
         self.refresh_calls = 0
+        self.refresh_requests: list[tuple[str | None, str | None]] = []
         self.reject_mfa = False
 
     def get_identity(self, credentials: PlainCredentials, region: str) -> AwsIdentity:
@@ -45,10 +46,11 @@ class FakeIdentityGateway:
         self,
         credentials: PlainCredentials,
         region: str,
-        mfa_arn: str,
-        mfa_code: str,
+        mfa_arn: str | None,
+        mfa_code: str | None,
     ) -> IssuedSession:
         self.refresh_calls += 1
+        self.refresh_requests.append((mfa_arn, mfa_code))
         if self.reject_mfa:
             raise MfaValidationError("mfa.code.rejected", "test rejection")
         return IssuedSession(
@@ -223,6 +225,49 @@ def test_refresh_then_reuse_and_refresh_when_near_expiry(tmp_path) -> None:
 
     clock.value += timedelta(hours=11, minutes=31)
     assert not authentication.status(created.id).reusable
+
+
+def test_profile_without_mfa_issues_session_without_challenge_or_mfa_parameters(tmp_path) -> None:
+    _store, _clock, gateway, profiles, authentication, _created = build_services(tmp_path)
+    profile = profiles.create(
+        SaveProfileRequest(
+            "automation",
+            "ap-northeast-2",
+            "123456789012",
+            "developer",
+            "ACCESSKEYTEST0001",
+            "not-sensitive-test-value",
+            mfa_enabled=False,
+        )
+    )
+    coordinator = OperationCoordinator(authentication, gateway.clock)
+
+    assert authentication.status(profile.id).state == "SESSION_REQUIRED"
+    completed = coordinator.start_refresh(profile.id)
+
+    assert completed.state is OperationState.SUCCEEDED
+    assert completed.challenge is None
+    assert completed.value is not None and completed.value.reusable
+    assert gateway.refresh_requests == [(None, None)]
+
+
+def test_profile_update_persists_mfa_usage_and_discards_cached_session(tmp_path) -> None:
+    store, _clock, _gateway, profiles, authentication, created = build_services(tmp_path)
+    authentication.refresh(created.id, "123456")
+
+    updated = profiles.update(
+        SaveProfileRequest(
+            "dev",
+            "ap-northeast-2",
+            "123456789012",
+            "developer",
+            mfa_enabled=False,
+            profile_id=created.id,
+        )
+    )
+
+    assert not updated.mfa_enabled
+    assert store.get_session(created.id) is None
 
 
 def test_validate_long_lived_credentials_and_status_without_session(tmp_path) -> None:

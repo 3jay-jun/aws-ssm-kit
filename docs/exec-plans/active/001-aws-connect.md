@@ -1116,6 +1116,149 @@ SSOT 검색: `State_Selected|use_first_column_selection_bar|dashboard_active_tun
 fallback은 기존 `StartSession` 호출에 고정 command parameter를 추가하고, 명령 완료 뒤 셸을
 유지하므로 사용자가 터미널을 닫을 때까지 기존 세션 핸들이 계속 추적된다.
 
+#### 9.9 목업 정합성과 저장-연결 순서 보완 (2026-09-15)
+
+SSOT 검색: `toggle_connection|SaveTunnelSessionRequest|secret_catalog|relay_refresh|ActiveTunnelRow|`
+`Instance ID`와 목업의 `.split/.form-grid/.actions/.secret-layout`을 비교했다. RDS 저장과 연결은
+기존 `TunnelSessionService`/`RdsTunnelOperationCoordinator`, Secret 목록과 값은 기존
+`SecretsService` 결과를 그대로 사용하고 GUI orchestration과 표현만 수정한다.
+
+- [x] 활성 터널 한 행 아래 버튼이 잘리지 않도록 item/viewport 높이에 여유를 둔다.
+- [x] EC2 Instance ID 열을 고정 축소하고 마지막 작업 열을 완전히 보존한다.
+- [x] RDS 편집기의 필드 간격과 actions를 목업처럼 조밀한 상단 form + 단일 하단 행으로 맞춘다.
+- [x] 편집된 기존 RDS 세션은 저장 성공 후 반환된 ID로 연결을 시작하고 저장 실패 시 시작하지 않는다.
+- [x] Secret 왼쪽 패널에 목록 로딩/권한 없음/빈 목록/건수 상태를 명시한다.
+- [x] Secret 항목 한 번 선택으로 오른쪽 값 패널을 조회하고 첫 저장 가능 필드를 선택한다.
+- [x] 자동 로드되는 중계 EC2의 수동 `Online EC2 불러오기` 버튼을 제거한다.
+- [x] focused/full tests와 두 viewport 렌더 QA를 기록한다.
+
+구현 결정과 검증:
+
+- 정규 폭에서는 목업처럼 `310px + 1fr` split과 form 바로 아래 상태/actions를 사용한다. 900px
+  미만에서는 왼쪽 카드만 230px로 줄이고 actions를 내부 스크롤 밖에 두어 주 작업을 보존한다.
+- EC2는 Instance ID를 145px(좁은 폭 125px), Name을 250px(좁은 폭 180px)로 제한하고
+  Private IP만 stretch해 마지막 92px 작업 열이 밀리지 않게 했다.
+- `toggle_connection`은 dirty editor를 `TunnelSessionService.update/create`로 먼저 저장하며,
+  성공 콜백에서 반환 ID로 시작한다. 저장 오류 콜백에서는 시작 호출이 발생하지 않는다.
+- focused GUI 검증은 `pytest tests/adapter/gui/test_ec2_rds.py tests/adapter/gui/test_shell.py
+  tests/adapter/gui/test_secrets.py -q --no-cov`로 통과했고, 전체 `scripts/check.ps1`의 문서·포맷·
+  lint·architecture·types·367 tests(86.76%)·critical coverage·secret scan·Bandit가 통과했다.
+  네트워크가 필요한 `pip-audit`은 승인된 별도 실행으로 `No known vulnerabilities found`를 확인했다.
+- `.visual-qa-followup-mockup-1024`와 `.visual-qa-followup-mockup-1424`의 전체 화면을 렌더해
+  RDS 간격/단일 버튼 행, EC2 무가로스크롤, Secret master-detail 배치를 확인했다.
+
+런타임 사이드이펙트: 편집 후 연결은 로컬 세션 저장 I/O가 한 번 선행되지만 AWS 연결·포트 생성은
+저장 성공 뒤 한 번만 수행한다. 나머지는 GUI geometry와 조회 상태 표현 변경이라 프로세스·포트·
+메모리 수명주기에 영향이 없다.
+
+#### 9.10 Windows CI 도구·패키징 입력 재현성 보완 (2026-09-15)
+
+SSOT 검색: `rg|secret scan|PyInstaller|aws_connect.spec` 결과 secret scan의 유일한 파일 열거는
+`scripts/check.ps1`, 패키징 명세의 유일한 소비자는 `scripts/build-package.ps1`로 확인했다.
+
+- [x] secret scan 파일 열거를 러너 제공 `rg`에서 저장소 필수 도구인 `git ls-files`로 변경해
+  CI checkout과 동일한 Git 추적 파일만 검사한다.
+- [x] 전역 `*.spec` 무시 규칙에서 `packaging/aws_connect.spec`을 명시적으로 제외한다.
+- [x] secret scan과 TEST-ONLY Portable ZIP 빌드·smoke를 다시 실행해 수정된 CI 경로를 검증한다.
+
+검증 결과:
+
+- `git ls-files -- ':!ref/**' ':!uv.lock'` → 180개 추적 파일, `ref/**`와 `uv.lock` 제외
+- 현재 추적 파일과 새로 추적할 `packaging/aws_connect.spec`을 합친 CI 예상 181개 파일에
+  `detect-secrets scan` → 탐지 0건
+- `scripts/build-package.ps1 -VendorDirectory ./build/test-vendor -AllowTestVendor` → PyInstaller
+  3-EXE TEST-ONLY ZIP 빌드 성공
+- `scripts/test-package.ps1 -ZipPath ./dist/aws-connect-0.1.0-TEST-ONLY-windows-x64.zip
+  -AllowTestVendorPackage` → 전체 package smoke 성공
+- `scripts/check.ps1` → 이번 변경 이전부터 존재한 DB 생성 문서 drift로 documentation gate에서 중단;
+  다음 단계는 해당 스키마 변경 작업에서 `scripts/generate-docs.ps1`로 authority를 동기화한 뒤 재실행
+
+런타임 사이드이펙트: 개발/CI 검사와 패키징 입력 추적만 변경하며 애플리케이션 프로세스, 포트,
+메모리 사용량과 초기화 순서에는 영향이 없다.
+
+#### 9.11 EC2 전체 열 재배분·S3 파일 열기·Secret 저장 목록 (2026-09-15)
+
+SSOT 검색: `setColumnWidth|_target_action_text|list_objects|prepare_upload|delete_object|`
+`SecretsService|SqliteProfileStore|secret_catalog` 결과 EC2/S3 기존 동작은 확장하고, Secret 원문은
+기존 메모리 전용 규칙을 유지한 채 식별자 저장 계약만 추가한다.
+
+- [x] EC2 이름·Instance ID·Private IP·상태 열을 모두 축소하고 120px 작업 열을 고정한다.
+- [x] 중지 인스턴스 작업명을 `인스턴스 실행`으로 바꾸고 112px 버튼으로 좌우 여백을 확보한다.
+- [x] S3 업로드 완료 후 목록을 갱신하고 선택 파일 다운로드·열기와 단건 삭제를 제공한다.
+- [x] ListSecrets 성공 시 상단 선택 상자, 권한 거부 시 이름/ARN 입력 상자를 제공한다.
+- [x] 조회 성공 식별자를 SQLite에 자동 등록하고 왼쪽 하단 삭제·수정·등록을 제공한다.
+- [x] 오른쪽 값 패널에서 키-값 저장·복사 버튼을 제거하고 시간 제한 값 확인만 유지한다.
+- [x] migration/generated schema, focused/full tests, 1024/1424 렌더 QA를 기록한다.
+
+데이터 흐름과 결정:
+
+```text
+GetSecretValue 성공 → SecretResult(메모리 원문) ─→ 오른쪽 값 확인(30초 reveal)
+                  └→ identifier(name/ARN) only ─→ saved_secrets(SQLite) ─→ 왼쪽 CRUD
+
+S3 선택 파일 → GetObject → destination 옆 임시 파일 → 성공 시 atomic replace → 기본 앱 열기
+                                         └→ 실패 시 임시 파일 삭제
+```
+
+대안 검토:
+
+- SecretString 전체 DPAPI 저장: 오프라인 조회는 가능하지만 원문 영구 저장과 키 수명주기가 생겨 미채택.
+- Secret 이름/ARN만 SQLite 저장: 기존 보안 경계를 유지하면서 재선택 UX를 제공하므로 채택.
+- S3 presigned URL 열기: 임시 서명 URL 노출과 브라우저 의존성이 있어 미채택.
+- 사용자 지정 경로 원자 다운로드 후 열기: 저장 위치가 명확하고 부분 파일을 제거할 수 있어 채택.
+
+검증 결과:
+
+- focused 102 tests 통과: EC2 고정 열/무가로스크롤, S3 업로드 재조회·다운로드·열기·삭제,
+  Secret selector/input fallback·SQLite CRUD·임시 reveal, migration 6과 S3 adapter를 검증했다.
+- `scripts/generate-docs.ps1`와 `scripts/verify-docs.ps1`로 migration 6
+  `saved_secrets(profile_id, identifier)` 생성 스키마를 동기화했다.
+- 전체 `scripts/check.ps1`의 문서·Ruff·architecture/import boundaries·mypy·376 tests
+  (coverage 86.56%)·critical coverage·secret scan·Bandit가 통과했다. 샌드박스가 차단한
+  `pip-audit`은 승인된 네트워크 실행으로 분리해 `No known vulnerabilities found`를 확인했다.
+- `.visual-qa-current-1024`와 `.visual-qa-current-1424`의 전체 화면을 렌더해 EC2 작업 열,
+  S3 세 작업, Secret 선택/저장/값 패널을 육안 확인했다.
+
+런타임 사이드이펙트: Secret 조회 성공마다 이름/ARN에 한해 짧은 SQLite 조회/조건부 insert가
+추가된다. S3 `선택 파일 열기`는 사용자 선택 시 GetObject, 로컬 임시 파일, 원자 교체와 기본 앱
+실행을 수행한다. EC2 변경은 geometry와 작업 문구뿐이며 프로세스·포트 수명주기에 영향이 없다.
+
+#### 9.12 프로필별 MFA 사용 여부와 무MFA 세션 발급 (2026-09-15)
+
+SSOT 검색: `mfa_arn|MFA_REQUIRED|get_session_token|SerialNumber|TokenCode` 결과 프로필과
+세션 발급 규칙은 `AwsProfile`/`ProfileService`/`AuthenticationService`에 모여 있었지만,
+MFA 없음 상태를 표현하거나 STS MFA 파라미터를 생략하는 분기는 없었다.
+
+- [x] `mfa_enabled`를 프로필 도메인 값과 CLI/GUI DTO에 추가하고 생성·수정·복제에 보존한다.
+- [x] SQLite migration 7로 사용 여부를 저장하며 기존 레코드는 MFA 활성 상태로 이관한다.
+- [x] GUI 프로필 편집기에 기본 활성 체크박스, CLI에 `--mfa`/`--no-mfa`를 제공한다.
+- [x] MFA 미사용 프로필은 challenge 없이 `GetSessionToken`을 호출하고 MFA 파라미터를 생략한다.
+- [x] 공통 authenticated operation이 세션 발급 후 원래 기능 작업을 정확히 한 번 재실행한다.
+- [x] 제품·GUI·애플리케이션 설계와 생성 DB 스키마를 구현에 맞춘다.
+
+대안 검토:
+
+- 프로필별 명시적 사용 여부 저장: 권한 오류와 MFA 없음이 섞이지 않고 보안 의도가 유지되어 채택.
+- `iam:ListMFADevices` 자동 감지: 추가 IAM 권한과 IAM 계층 결합이 생겨 미채택.
+- MFA 오류 후 무MFA 자동 fallback: 권한 오류를 인증 강도 완화로 오인할 수 있어 미채택.
+
+검증 결과:
+
+- focused: 관련 Domain/Application/STS/SQLite/CLI/GUI `pytest ... --no-cov` → 89 passed
+- `scripts/check.ps1` → 문서 생성 정합성, Ruff, architecture/import, mypy, 386 tests,
+  전체 coverage 86.68%, critical coverage, secret scan, Bandit 통과
+- sandbox 네트워크 제한으로 전체 명령의 마지막 `pip-audit`만 중단되어 승인된 네트워크에서
+  `uv run --no-sync pip-audit` 별도 실행 → `No known vulnerabilities found`
+- `tools/render_gui.py .visual-qa-mfa --width 1024 --height 720`의 프로필 화면에서 MFA 체크박스,
+  안내문과 하단 작업 버튼이 잘리거나 겹치지 않음을 확인했다.
+
+런타임 사이드이펙트: 시작 시 SQLite migration 7이 `mfa_enabled` 열을 추가하며 기존 값은 `1`이다.
+MFA 설정 변경은 기존 임시 세션을 삭제한다. MFA 미사용 프로필은 코드 입력 없이 STS 네트워크 호출을
+한 번 수행하지만 프로세스 시작, 포트, 메모리 수명주기에는 변화가 없다.
+
+추가 작업 필요: 승인된 비운영 MFA 사용/미사용 IAM 사용자로 두 `GetSessionToken` 요청과 이후
+EC2/RDS/S3/Secrets 원래 작업 1회 재개를 smoke한다.
+
 상태와 데이터 흐름:
 
 ```text
@@ -1268,8 +1411,7 @@ NOT in scope:
   상위 orchestrator 충돌 위험이 있어 별도 제품 결정이 필요하다.
 - SSM Agent 자동 설치·복구: reboot 뒤에도 Offline이면 AWS Systems Manager 진단으로 안내한다.
 - 임의 원격 명령 실행기: Secrets 경유 조회는 고정 command template 한 개로 제한한다.
-- S3 다운로드, prefix(폴더) 재귀 삭제와 다중 객체 일괄 삭제: 조회·업로드와 명시적으로 선택한
-  객체 한 건 삭제까지만 이번 범위에 포함한다.
+- S3 prefix(폴더) 재귀 삭제와 다중 객체 일괄 삭제는 제공하지 않는다.
 - Secret 원문 또는 전체 traceback의 영구 로그 저장: 보안 규칙과 충돌하므로 안전한 구조화
   진단 필드만 제공한다.
 
@@ -1283,12 +1425,14 @@ NOT in scope:
 - 후속 보완은 프로필 선택 시 RDS/Secret/S3 catalog 조회 요청을 추가한다. Secret 저장은 새
   AWS 버전을 만들고 S3 삭제는 선택 객체를 제거하므로 둘 다 확인 dialog와 단건 경계로 제한한다.
   EC2 직접 조회 터미널은 사용자가 닫을 때까지 유지되며 새 포트나 상주 백그라운드 프로세스는 없다.
+- 이번 보완은 SQLite migration 6에서 Secret 식별자만 저장한다. S3 열기는 사용자 동작 시
+  GetObject와 로컬 임시 파일 쓰기·원자 교체·기본 앱 실행을 수행하며 실패한 임시 파일은 삭제한다.
 
 추가 작업 필요:
 
 - 승인된 비운영 AWS 프로필에 `rds:DescribeDBInstances`, `secretsmanager:ListSecrets`,
   `secretsmanager:PutSecretValue`, `s3:ListAllMyBuckets`, `s3:ListBucket`, `s3:PutObject`,
-  `s3:DeleteObject`를 최소 권한으로 부여해 catalog/저장/단건 삭제를 smoke한다.
+  `s3:GetObject`, `s3:DeleteObject`를 최소 권한으로 부여해 catalog/전송/단건 삭제를 smoke한다.
 - start/reboot, Run Command Secret도 비운영 리소스에서 smoke하고,
   Windows 10/11 배율 100%·125%에서 사람이 최종 visual QA한 뒤 Portable ZIP을 재빌드한다.
 

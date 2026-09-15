@@ -42,8 +42,8 @@ class ConcurrentGateway:
         self,
         credentials: PlainCredentials,
         region: str,
-        mfa_arn: str,
-        mfa_code: str,
+        mfa_arn: str | None,
+        mfa_code: str | None,
     ) -> IssuedSession:
         with self._lock:
             self.refresh_calls += 1
@@ -52,7 +52,7 @@ class ConcurrentGateway:
         try:
             if self.barrier is not None:
                 self.barrier.wait(timeout=5)
-            suffix = "2" if "developer-2" in mfa_arn else "1"
+            suffix = "2" if mfa_arn and "developer-2" in mfa_arn else "1"
             return IssuedSession(
                 PlainCredentials(
                     f"SESSIONKEYTEST00{suffix}",
@@ -143,6 +143,39 @@ def test_successful_action_returns_without_starting_mfa(tmp_path) -> None:
     assert result.state is OperationState.SUCCEEDED
     assert result.value == "already-authorized"
     assert gateway.refresh_calls == 0
+    assert refreshes._pending == {}
+
+
+def test_profile_without_mfa_refreshes_and_retries_authenticated_action_immediately(
+    tmp_path,
+) -> None:
+    _store, _clock, gateway, profiles, authentication, refreshes, operations, _profile = build(
+        tmp_path
+    )
+    profile = profiles.create(
+        SaveProfileRequest(
+            "automation",
+            "ap-northeast-2",
+            "123456789012",
+            "developer",
+            "ACCESSKEYTEST0001",
+            "not-sensitive-test-value",
+            mfa_enabled=False,
+        )
+    )
+    calls = 0
+
+    def original_request() -> str:
+        nonlocal calls
+        calls += 1
+        return authentication.session_guard.require_credentials(profile.id).access_key
+
+    result = operations.start(profile.id, original_request)
+
+    assert result.state is OperationState.SUCCEEDED
+    assert result.value == "SESSIONKEYTEST001"
+    assert calls == 2
+    assert gateway.refresh_calls == 1
     assert refreshes._pending == {}
 
 

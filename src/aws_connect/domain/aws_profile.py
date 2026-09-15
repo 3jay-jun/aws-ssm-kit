@@ -41,6 +41,7 @@ class AwsProfile:
     mfa_arn: str
     encrypted_access_key: bytes
     encrypted_secret_key: bytes
+    mfa_enabled: bool = True
     is_default: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None

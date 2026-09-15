@@ -13,6 +13,7 @@ from aws_connect.application.ports import PrivateFileAccess
 from aws_connect.domain.aws_profile import AwsProfile, SessionCredentials
 from aws_connect.domain.errors import ConfigurationError
 from aws_connect.domain.s3_location import S3Location
+from aws_connect.domain.saved_secret import SavedSecret
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -110,6 +111,29 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         CREATE INDEX ec2_favorites_by_profile_region
             ON ec2_favorites(profile_id, region);
+        """,
+    ),
+    (
+        6,
+        """
+        CREATE TABLE saved_secrets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            identifier TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (profile_id) REFERENCES aws_profiles(id) ON DELETE CASCADE,
+            UNIQUE (profile_id, identifier)
+        );
+        CREATE INDEX saved_secrets_by_profile ON saved_secrets(profile_id, identifier);
+        """,
+    ),
+    (
+        7,
+        """
+        ALTER TABLE aws_profiles
+        ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 1
+            CHECK (mfa_enabled IN (0, 1));
         """,
     ),
 )
@@ -216,15 +240,16 @@ class SqliteProfileStore:
                 )
                 cursor = connection.execute(
                     """INSERT INTO aws_profiles
-                    (name, region, account_id, user_id, mfa_arn, encrypted_access_key,
-                     encrypted_secret_key, is_default, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (name, region, account_id, user_id, mfa_arn, mfa_enabled,
+                     encrypted_access_key, encrypted_secret_key, is_default, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         profile.name,
                         profile.region,
                         profile.account_id,
                         profile.user_id,
                         profile.mfa_arn,
+                        int(profile.mfa_enabled),
                         profile.encrypted_access_key,
                         profile.encrypted_secret_key,
                         int(make_default or profile.is_default),
@@ -246,7 +271,8 @@ class SqliteProfileStore:
             with self._connect() as connection:
                 cursor = connection.execute(
                     """UPDATE aws_profiles SET name=?, region=?, account_id=?, user_id=?,
-                    mfa_arn=?, encrypted_access_key=?, encrypted_secret_key=?, updated_at=?
+                    mfa_arn=?, mfa_enabled=?, encrypted_access_key=?, encrypted_secret_key=?,
+                    updated_at=?
                     WHERE id=?""",
                     (
                         profile.name,
@@ -254,6 +280,7 @@ class SqliteProfileStore:
                         profile.account_id,
                         profile.user_id,
                         profile.mfa_arn,
+                        int(profile.mfa_enabled),
                         profile.encrypted_access_key,
                         profile.encrypted_secret_key,
                         _now_text(),
@@ -592,6 +619,76 @@ class SqliteProfileStore:
             if cursor.rowcount != 1:
                 raise _store_error("s3.location.not_found")
 
+    def list_saved_secrets(self, profile_id: int) -> builtins.list[SavedSecret]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM saved_secrets WHERE profile_id=? ORDER BY identifier",
+                (profile_id,),
+            ).fetchall()
+        return [_saved_secret(row) for row in rows]
+
+    def get_saved_secret(self, saved_secret_id: int) -> SavedSecret | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM saved_secrets WHERE id=?", (saved_secret_id,)
+            ).fetchone()
+        return _saved_secret(row) if row else None
+
+    def get_saved_secret_by_identifier(
+        self, profile_id: int, identifier: str
+    ) -> SavedSecret | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM saved_secrets WHERE profile_id=? AND identifier=?",
+                (profile_id, identifier),
+            ).fetchone()
+        return _saved_secret(row) if row else None
+
+    def create_saved_secret(self, saved_secret: SavedSecret) -> SavedSecret:
+        now = _now_text()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """INSERT INTO saved_secrets
+                    (profile_id, identifier, created_at, updated_at) VALUES (?, ?, ?, ?)""",
+                    (saved_secret.profile_id, saved_secret.identifier, now, now),
+                )
+                saved_secret_id = int(cursor.lastrowid or 0)
+        except sqlite3.IntegrityError as error:
+            raise _saved_secret_store_error(error) from error
+        created = self.get_saved_secret(saved_secret_id)
+        if created is None:
+            raise _store_error("secret.saved.create.failed")
+        return created
+
+    def update_saved_secret(self, saved_secret: SavedSecret) -> SavedSecret:
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """UPDATE saved_secrets SET identifier=?, updated_at=?
+                    WHERE id=? AND profile_id=?""",
+                    (
+                        saved_secret.identifier,
+                        _now_text(),
+                        saved_secret.require_id(),
+                        saved_secret.profile_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise _store_error("secret.saved.not_found")
+        except sqlite3.IntegrityError as error:
+            raise _saved_secret_store_error(error) from error
+        updated = self.get_saved_secret(saved_secret.require_id())
+        if updated is None:
+            raise _store_error("secret.saved.update.failed")
+        return updated
+
+    def delete_saved_secret(self, saved_secret_id: int) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM saved_secrets WHERE id=?", (saved_secret_id,))
+            if cursor.rowcount != 1:
+                raise _store_error("secret.saved.not_found")
+
 
 def _profile(row: sqlite3.Row) -> AwsProfile:
     return AwsProfile(
@@ -603,6 +700,7 @@ def _profile(row: sqlite3.Row) -> AwsProfile:
         mfa_arn=str(row["mfa_arn"]),
         encrypted_access_key=bytes(row["encrypted_access_key"]),
         encrypted_secret_key=bytes(row["encrypted_secret_key"]),
+        mfa_enabled=bool(row["mfa_enabled"]),
         is_default=bool(row["is_default"]),
         created_at=datetime.fromisoformat(str(row["created_at"])),
         updated_at=datetime.fromisoformat(str(row["updated_at"])),
@@ -639,6 +737,14 @@ def _s3_location(row: sqlite3.Row) -> S3Location:
     )
 
 
+def _saved_secret(row: sqlite3.Row) -> SavedSecret:
+    return SavedSecret(
+        id=int(row["id"]),
+        profile_id=int(row["profile_id"]),
+        identifier=str(row["identifier"]),
+    )
+
+
 def _now_text() -> str:
     return datetime.now().astimezone().isoformat()
 
@@ -667,5 +773,15 @@ def _s3_store_error(error: sqlite3.IntegrityError) -> ConfigurationError:
         "s3.location.name.duplicate"
         if "s3_locations.profile_id, s3_locations.name" in cause
         else "s3.location.persistence.invalid"
+    )
+    return _store_error(code, error)
+
+
+def _saved_secret_store_error(error: sqlite3.IntegrityError) -> ConfigurationError:
+    cause = str(error)
+    code = (
+        "secret.saved.identifier.duplicate"
+        if "saved_secrets.profile_id, saved_secrets.identifier" in cause
+        else "secret.saved.persistence.invalid"
     )
     return _store_error(code, error)

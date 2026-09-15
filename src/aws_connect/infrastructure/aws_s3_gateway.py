@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import tempfile
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -101,6 +102,30 @@ class Boto3S3Gateway:
             client.delete_object(Bucket=bucket, Key=key)
         except (ClientError, BotoCoreError) as error:
             raise translate_aws_error(error, service="s3", action="DeleteObject") from error
+
+    def download_file(
+        self,
+        credentials: PlainCredentials,
+        region: str,
+        bucket: str,
+        key: str,
+        destination: Path,
+    ) -> None:
+        client = self._client_factory(credentials, region)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix=".aws-connect-", suffix=".download", dir=destination.parent, delete=False
+            ) as raw:
+                temporary = Path(raw.name)
+            client.download_file(bucket, key, str(temporary))
+            temporary.replace(destination)
+            temporary = None
+        except Exception as error:
+            raise _translate_transfer(error, "GetObject") from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def put_file(
         self,

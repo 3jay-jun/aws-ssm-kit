@@ -87,9 +87,10 @@ def build_authentication_header(
 ) -> AuthenticationHeaderViewModel:
     current = (now or datetime.now(UTC)).astimezone(UTC)
     ready = status.state == "READY" and status.reusable
+    pending_text = "MFA 인증 필요" if status.profile.mfa_enabled else "세션 발급 필요"
     return AuthenticationHeaderViewModel(
         profile_name=status.profile.name,
-        state_text="인증됨" if ready else "MFA 인증 필요",
+        state_text="인증됨" if ready else pending_text,
         account_id=_format_account(status.profile.account_id),
         user_id=status.profile.user_id,
         expiry_text=_expiry(status.expires_at_utc, current),

@@ -98,3 +98,26 @@ CREATE TABLE ec2_favorites (
         CREATE INDEX ec2_favorites_by_profile_region
             ON ec2_favorites(profile_id, region);
 ```
+
+## Migration 6
+
+```sql
+CREATE TABLE saved_secrets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            identifier TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (profile_id) REFERENCES aws_profiles(id) ON DELETE CASCADE,
+            UNIQUE (profile_id, identifier)
+        );
+        CREATE INDEX saved_secrets_by_profile ON saved_secrets(profile_id, identifier);
+```
+
+## Migration 7
+
+```sql
+ALTER TABLE aws_profiles
+        ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 1
+            CHECK (mfa_enabled IN (0, 1));
+```

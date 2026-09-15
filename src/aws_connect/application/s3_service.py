@@ -185,6 +185,29 @@ class S3Service:
             raise ConfigurationError("s3.delete.object.required", "Select one non-prefix S3 object")
         self._gateway.delete_object(credentials, selected.region, location.bucket, normalized_key)
 
+    def download_object(
+        self,
+        bucket: str,
+        key: str,
+        destination: Path,
+        profile: str | int | None = None,
+    ) -> Path:
+        selected = self._profiles.resolve(profile)
+        credentials = self._sessions.require_credentials(selected.require_id())
+        location = S3Location(None, selected.require_id(), "direct", bucket, "")
+        normalized_key = key.strip()
+        target = destination.expanduser().resolve()
+        if not normalized_key or normalized_key.endswith("/"):
+            raise ConfigurationError("s3.download.object.required", "Select one S3 object")
+        if not target.parent.is_dir():
+            raise ConfigurationError(
+                "s3.download.destination.invalid", "Download directory does not exist"
+            )
+        self._gateway.download_file(
+            credentials, selected.region, location.bucket, normalized_key, target
+        )
+        return target
+
     def upload(
         self,
         plan: UploadPlan,

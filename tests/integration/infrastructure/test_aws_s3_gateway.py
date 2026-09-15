@@ -136,6 +136,28 @@ def test_delete_object_uses_exact_bucket_and_key() -> None:
         )
 
 
+def test_download_file_replaces_destination_and_cleans_temporary_file(tmp_path: Path) -> None:
+    client = Mock()
+
+    def download(_bucket: str, _key: str, filename: str) -> None:
+        Path(filename).write_bytes(b"downloaded")
+
+    client.download_file.side_effect = download
+    gateway = Boto3S3Gateway(lambda _credentials, _region: client)
+    destination = tmp_path / "report.txt"
+
+    gateway.download_file(
+        _credentials(),
+        "ap-northeast-2",
+        "test-upload-bucket",
+        "reports/report.txt",
+        destination,
+    )
+
+    assert destination.read_bytes() == b"downloaded"
+    assert list(tmp_path.glob(".aws-connect-*.download")) == []
+
+
 def test_multipart_failure_and_cancel_always_attempt_abort_without_hiding_original(
     tmp_path: Path,
 ) -> None:

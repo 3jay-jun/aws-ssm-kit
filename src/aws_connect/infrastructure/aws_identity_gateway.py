@@ -38,14 +38,15 @@ class Boto3IdentityGateway:
         self,
         credentials: PlainCredentials,
         region: str,
-        mfa_arn: str,
-        mfa_code: str,
+        mfa_arn: str | None,
+        mfa_code: str | None,
     ) -> IssuedSession:
         client = self._client(credentials, region)
+        request: dict[str, Any] = {"DurationSeconds": 43200}
+        if mfa_arn is not None and mfa_code is not None:
+            request.update(SerialNumber=mfa_arn, TokenCode=mfa_code)
         try:
-            response = client.get_session_token(
-                DurationSeconds=43200, SerialNumber=mfa_arn, TokenCode=mfa_code
-            )
+            response = client.get_session_token(**request)
         except (ClientError, BotoCoreError) as error:
             raise translate_aws_error(error, service="sts", action="GetSessionToken") from error
         raw: dict[str, Any] = response["Credentials"]

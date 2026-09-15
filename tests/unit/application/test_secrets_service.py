@@ -26,6 +26,7 @@ from aws_connect.domain.errors import (
     ConfigurationError,
     CredentialValidationError,
 )
+from aws_connect.domain.saved_secret import SavedSecret
 from aws_connect.domain.sensitive_data import REDACTED
 
 
@@ -68,6 +69,27 @@ def test_persistent_remote_command_runs_fixed_lookup_then_keeps_platform_shell()
 
     with pytest.raises(ConfigurationError, match="secret.relay.platform.unsupported"):
         build_persistent_remote_secret_command("db/dev", "Plan9")
+
+
+def test_successful_lookup_auto_registers_and_saved_crud_is_profile_scoped() -> None:
+    service, gateway = build_service('{"host":"db.internal"}')
+    store = Mock()
+    service._saved = store
+    store.get_saved_secret_by_identifier.return_value = None
+    created = SavedSecret(3, 7, "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:test")
+    store.create_saved_secret.return_value = created
+    store.list_saved_secrets.return_value = [created]
+    store.get_saved_secret.return_value = created
+    store.update_saved_secret.return_value = SavedSecret(3, 7, "db/prod")
+
+    service.get("db/dev", "dev")
+    assert service.list_saved("dev") == [created]
+    assert service.update_saved(3, "db/prod", "dev").identifier == "db/prod"
+    service.delete_saved(3, "dev")
+
+    gateway.get_secret_value.assert_called_once()
+    store.create_saved_secret.assert_called_once()
+    store.delete_saved_secret.assert_called_once_with(3)
 
 
 def test_json_is_flattened_and_sensitive_names_are_masked_recursively() -> None:

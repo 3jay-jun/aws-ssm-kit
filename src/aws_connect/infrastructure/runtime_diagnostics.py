@@ -64,7 +64,11 @@ class LocalRuntimeDiagnosticProbe:
             profile = ProfileDiagnostic(
                 count=len(profiles),
                 default_profile=default.name,
-                session_state="ready" if session_ready else "mfa_required",
+                session_state=(
+                    "ready"
+                    if session_ready
+                    else ("mfa_required" if default.mfa_enabled else "session_required")
+                ),
                 region=default.region,
                 # A live AWS call would unexpectedly consume credentials/network. The local
                 # readiness state is explicit; ``auth validate`` is the reproducible live probe.

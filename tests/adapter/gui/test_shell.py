@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEventLoop, Qt, QThread, QThreadPool, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFrame,
     QLineEdit,
     QMessageBox,
@@ -42,7 +43,9 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def _profile(profile_id: int, name: str, *, default: bool) -> ProfileSummary:
+def _profile(
+    profile_id: int, name: str, *, default: bool, mfa_enabled: bool = True
+) -> ProfileSummary:
     return ProfileSummary(
         id=profile_id,
         name=name,
@@ -51,6 +54,7 @@ def _profile(profile_id: int, name: str, *, default: bool) -> ProfileSummary:
         user_id=f"user-{profile_id}",
         mfa_arn=f"arn:aws:iam::123456789012:mfa/user-{profile_id}",
         is_default=default,
+        mfa_enabled=mfa_enabled,
     )
 
 
@@ -79,18 +83,42 @@ class FakeProfiles:
     def use(self, profile_id: int) -> ProfileSummary:
         selected = next(item for item in self.items if item.id == profile_id)
         self.items = [
-            _profile(item.id, item.name, default=item.id == profile_id) for item in self.items
+            _profile(
+                item.id,
+                item.name,
+                default=item.id == profile_id,
+                mfa_enabled=item.mfa_enabled,
+            )
+            for item in self.items
         ]
-        return _profile(selected.id, selected.name, default=True)
+        return _profile(
+            selected.id,
+            selected.name,
+            default=True,
+            mfa_enabled=selected.mfa_enabled,
+        )
 
     def create(self, request: SaveProfileRequest) -> ProfileSummary:
-        created = _profile(3, request.name, default=False)
+        created = _profile(
+            3,
+            request.name,
+            default=False,
+            mfa_enabled=request.mfa_enabled is not False,
+        )
         self.items.append(created)
         return created
 
     def update(self, request: SaveProfileRequest) -> ProfileSummary:
         assert request.profile_id is not None
-        updated = _profile(request.profile_id, request.name, default=False)
+        current = next(item for item in self.items if item.id == request.profile_id)
+        updated = _profile(
+            request.profile_id,
+            request.name,
+            default=False,
+            mfa_enabled=(
+                request.mfa_enabled if request.mfa_enabled is not None else current.mfa_enabled
+            ),
+        )
         self.items = [updated if item.id == request.profile_id else item for item in self.items]
         return updated
 
@@ -123,9 +151,23 @@ class FakeAuthentication:
 class FakeOperations:
     def __init__(self, profiles: FakeProfiles) -> None:
         self.profiles = profiles
+        self.start_calls: list[int] = []
         self.resume_calls: list[tuple[str, str | None]] = []
 
     def start_refresh(self, profile_id: int) -> OperationResult[AuthenticationStatus]:
+        self.start_calls.append(profile_id)
+        profile = next(item for item in self.profiles.items if item.id == profile_id)
+        if not profile.mfa_enabled:
+            return OperationResult(
+                "operation-1",
+                OperationState.SUCCEEDED,
+                value=AuthenticationStatus(
+                    profile,
+                    "READY",
+                    datetime.now(UTC) + timedelta(hours=12),
+                    True,
+                ),
+            )
         return OperationResult(
             "operation-1",
             OperationState.MFA_REQUIRED,
@@ -232,6 +274,7 @@ def test_profile_crud_fields_mask_credentials_and_errors_do_not_close_app() -> N
     assert window.profile_dialog.secret_key.echoMode() is QLineEdit.EchoMode.Password
     window.profile_dialog.set_profiles(profiles.items, 1)
     assert window.profile_dialog.findChild(QLineEdit, "profile_mfa_arn") is None
+    assert window.profile_dialog.findChild(QCheckBox, "profile_mfa_enabled") is not None
     assert window.profile_dialog.access_key.text() == ""
     assert window.profile_dialog.secret_key.text() == ""
     assert "등록됨" in window.profile_dialog.access_key.placeholderText()
@@ -258,6 +301,7 @@ def test_profile_dialog_omits_implementation_mfa_and_preserves_masked_credential
 
     assert captured[0].profile_id == 1
     assert captured[0].mfa_arn is None
+    assert captured[0].mfa_enabled
     assert captured[0].access_key is None
     assert captured[0].secret_key is None
     assert "편집 모드 · 내부 SEQ #1" in window.profile_dialog.sequence.text()
@@ -283,8 +327,34 @@ def test_profile_dialog_new_credentials_keep_existing_save_signal_contract() -> 
 
     assert captured[0].profile_id is None
     assert captured[0].mfa_arn is None
+    assert captured[0].mfa_enabled
     assert captured[0].access_key == "AKIAEXAMPLE"
     assert captured[0].secret_key == "new-secret"  # pragma: allowlist secret
+
+
+def test_profile_without_mfa_connects_without_requesting_a_code() -> None:
+    window, profiles, operations = _window(auto_start=False)
+    profiles.items[1] = _profile(2, "운영계", default=False, mfa_enabled=False)
+    window.reload_profiles()
+
+    window.connect_profile(2)
+
+    assert operations.start_calls == [2]
+    assert operations.resume_calls == []
+    assert "인증됨" in window.auth_state.text()
+
+
+def test_profile_dialog_persists_disabled_mfa_selection() -> None:
+    window, profiles, _operations = _window(auto_start=False)
+    profiles.items[1] = _profile(2, "운영계", default=False, mfa_enabled=False)
+    window.profile_dialog.set_profiles(profiles.items, 2)
+    captured: list[SaveProfileRequest] = []
+    window.profile_dialog.save_requested.connect(captured.append)
+
+    assert not window.profile_dialog.mfa_enabled.isChecked()
+    window.profile_dialog._request_save()
+
+    assert captured[0].mfa_enabled is False
 
 
 def test_profile_new_draft_selection_details_and_clone_flow() -> None:
@@ -403,6 +473,9 @@ def test_dashboard_renders_active_tunnel_summary_projection() -> None:
     row = window.dashboard_tunnels.itemWidget(window.dashboard_tunnels.item(0))
     assert row is not None
     assert window.dashboard_tunnels.viewport().height() >= row.height()
+    assert all(
+        button.geometry().bottom() < row.height() for button in row.findChildren(QPushButton)
+    )
     assert row.summary.local_address == "127.0.0.1:13306"  # type: ignore[attr-defined]
     copy_button = next(
         button for button in row.findChildren(QPushButton) if button.text() == "주소 복사"

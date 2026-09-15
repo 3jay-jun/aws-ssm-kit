@@ -62,6 +62,8 @@ class AuthenticatedOperationCoordinator:
         # profile access credentials remain protected and unchanged.
         refresh = self._authentication.start_refresh(selector, discard_cached_session=True)
         rebound = initial.rebound(refresh.operation_id)
+        if refresh.state is OperationState.SUCCEEDED:
+            return self._invoke(refresh.operation_id, lambda: action(rebound))
         if refresh.state is not OperationState.MFA_REQUIRED or refresh.challenge is None:
             return OperationResult(refresh.operation_id, refresh.state, error=refresh.error)
         with self._lock:

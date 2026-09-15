@@ -9,8 +9,9 @@ from aws_connect.application.rds_tunnel_service import TunnelSessionService
 from aws_connect.domain.aws_profile import AwsProfile, SessionCredentials
 from aws_connect.domain.errors import ConfigurationError
 from aws_connect.domain.s3_location import S3Location
+from aws_connect.domain.saved_secret import SavedSecret
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
-from aws_connect.infrastructure.sqlite_profile_store import SqliteProfileStore
+from aws_connect.infrastructure.sqlite_profile_store import MIGRATIONS, SqliteProfileStore
 
 
 def profile(name: str) -> AwsProfile:
@@ -136,7 +137,7 @@ def test_versioned_settings_migration_persists_and_deletes_values(tmp_path) -> N
     database = tmp_path / "state.db"
     store = SqliteProfileStore(database)
 
-    assert store.current_schema_version() == store.expected_schema_version == 5
+    assert store.current_schema_version() == store.expected_schema_version == 7
     assert store.get_setting("log.level") is None
     store.put_setting("log.level", "WARNING")
     store.put_setting("log.level", "ERROR")
@@ -145,6 +146,63 @@ def test_versioned_settings_migration_persists_and_deletes_values(tmp_path) -> N
     assert reopened.get_setting("log.level") == "ERROR"
     reopened.delete_setting("log.level")
     assert reopened.get_setting("log.level") is None
+
+
+def test_profile_mfa_usage_is_persisted_and_existing_default_is_enabled(tmp_path) -> None:
+    store = SqliteProfileStore(tmp_path / "state.db")
+    enabled = store.create(profile("enabled"))
+    disabled_profile = profile("disabled")
+    disabled = store.create(
+        AwsProfile(
+            id=disabled_profile.id,
+            name=disabled_profile.name,
+            region=disabled_profile.region,
+            account_id=disabled_profile.account_id,
+            user_id=disabled_profile.user_id,
+            mfa_arn=disabled_profile.mfa_arn,
+            encrypted_access_key=disabled_profile.encrypted_access_key,
+            encrypted_secret_key=disabled_profile.encrypted_secret_key,
+            mfa_enabled=False,
+        )
+    )
+
+    assert enabled.mfa_enabled
+    assert not disabled.mfa_enabled
+
+
+def test_mfa_usage_migration_enables_existing_profiles(tmp_path) -> None:
+    database = tmp_path / "legacy-state.db"
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        connection.executescript(MIGRATIONS[0][1])
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)", (now,)
+        )
+        connection.execute(
+            """INSERT INTO aws_profiles
+            (name, region, account_id, user_id, mfa_arn, encrypted_access_key,
+             encrypted_secret_key, is_default, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "existing",
+                "ap-northeast-2",
+                "123456789012",
+                "developer",
+                "arn:aws:iam::123456789012:mfa/developer",
+                b"encrypted-a",
+                b"encrypted-b",
+                1,
+                now,
+                now,
+            ),
+        )
+
+    migrated = SqliteProfileStore(database).get_by_name("existing")
+
+    assert migrated is not None and migrated.mfa_enabled
 
 
 def test_s3_location_migration_crud_uniqueness_and_profile_cascade(tmp_path) -> None:
@@ -178,6 +236,22 @@ def test_ec2_favorite_migration_is_region_scoped_idempotent_and_cascades(tmp_pat
     assert store.list_ec2_favorites(profile_id, "ap-northeast-2") == set()
     store.delete(profile_id)
     assert store.list_ec2_favorites(profile_id, "us-east-1") == set()
+
+
+def test_saved_secret_migration_crud_uniqueness_and_profile_cascade(tmp_path) -> None:
+    store = SqliteProfileStore(tmp_path / "state.db")
+    owner = store.create(profile("owner"))
+    profile_id = owner.require_id()
+    created = store.create_saved_secret(SavedSecret(None, profile_id, "db/dev"))
+
+    assert store.get_saved_secret_by_identifier(profile_id, "db/dev") == created
+    with pytest.raises(ConfigurationError, match="secret.saved.identifier.duplicate"):
+        store.create_saved_secret(SavedSecret(None, profile_id, "db/dev"))
+
+    updated = SavedSecret(created.id, profile_id, "db/prod")
+    assert store.update_saved_secret(updated).identifier == "db/prod"
+    store.delete(profile_id)
+    assert store.list_saved_secrets(profile_id) == []
 
 
 def test_corrupt_cached_session_is_atomically_deleted_instead_of_leaking_value_error(

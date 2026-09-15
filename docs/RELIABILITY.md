@@ -53,6 +53,8 @@
   manual recovery guidance without changing the current profile or Secret result.
 - Optional S3 Bucket catalog failure changes only the selector to direct input and never disables
   saved locations, object listing, overwrite preflight or upload.
+- S3 download writes to a uniquely named temporary file in the destination directory. It replaces
+  the selected destination only after GetObject completes and removes the temporary file on failure.
 - Correlation IDs connect user-visible errors and masked diagnostic logs.
 - Log destination and level are versioned SQLite settings shared by GUI and CLI. Reconfiguration
   must install the new rotating handler successfully before the setting is committed, so an

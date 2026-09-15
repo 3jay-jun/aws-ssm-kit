@@ -138,6 +138,16 @@ class FakeSavedSessions:
 
     def update(self, request):
         self.saved.append(request)
+        self.item = TunnelSession(
+            request.tunnel_id,
+            request.profile,
+            request.name,
+            request.host,
+            request.remote_port,
+            request.local_port,
+            request.target_mode,
+            request.target_instance_id,
+        )
         return self.item
 
     def clone(self, selector, name, profile=None):
@@ -230,7 +240,7 @@ def test_ec2_page_filters_selects_and_uses_external_application_operation() -> N
 
 
 def test_ec2_table_uses_single_power_status_column_and_svg_favorites() -> None:
-    _app()
+    app = _app()
     ec2 = FakeEc2()
     ec2.targets = [
         Ec2Target(
@@ -275,16 +285,36 @@ def test_ec2_table_uses_single_power_status_column_and_svg_favorites() -> None:
     )
     assert page.table.cellWidget(0, 0).icon().isNull() is False  # type: ignore[union-attr]
     assert page.table.cellWidget(0, 5).text() == "터미널 열기 ↗"  # type: ignore[union-attr]
-    assert page.table.cellWidget(1, 5).text() == "시작"  # type: ignore[union-attr]
+    assert page.table.cellWidget(1, 5).text() == "인스턴스 실행"  # type: ignore[union-attr]
     assert page.table.cellWidget(2, 5).text() == "재부팅"  # type: ignore[union-attr]
     stopped_status = page.table.cellWidget(1, 4).findChild(QLabel)  # type: ignore[union-attr]
     assert stopped_status.text() == "● 중지됨"
     assert stopped_status.property("status") == "danger"
     assert page.table.rowHeight(0) == 54
-    assert page.table.columnWidth(1) == 330
-    assert page.table.columnWidth(5) == 92
-    assert page.table.cellWidget(0, 5).width() == 84  # type: ignore[union-attr]
+    assert [page.table.columnWidth(column) for column in range(6)] == [
+        60,
+        230,
+        132,
+        112,
+        88,
+        120,
+    ]
+    assert page.table.cellWidget(0, 5).width() == 112  # type: ignore[union-attr]
     assert page.table_card.objectName() == "content_card"
+
+    page.resize(760, 720)
+    page.show()
+    app.processEvents()
+
+    assert [page.table.columnWidth(column) for column in range(6)] == [
+        52,
+        165,
+        115,
+        92,
+        80,
+        120,
+    ]
+    assert page.table.horizontalScrollBar().maximum() == 0
 
     page.table.cellWidget(2, 5).click()  # type: ignore[union-attr]
     assert ec2.power_calls == [("reboot", "i-abcdef01234567890", 1, "ap-northeast-2")]
@@ -435,6 +465,59 @@ def test_rds_active_poll_preserves_unsaved_local_port_and_selection() -> None:
     assert page.local_port.value() == 15432
 
 
+def test_rds_connection_saves_current_editor_values_before_starting() -> None:
+    _app()
+    ec2 = FakeEc2()
+    saved = FakeSavedSessions()
+    tunnels = FakeTunnels(saved)
+    page = RdsPage(
+        saved,  # type: ignore[arg-type]
+        tunnels,  # type: ignore[arg-type]
+        ec2,  # type: ignore[arg-type]
+        ImmediateRunner(),  # type: ignore[arg-type]
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+    )
+    page.set_profile(1)
+    page.session_list.setCurrentRow(0)
+    page.host.setText("edited.example.internal")
+    page.local_port.setValue(15432)
+
+    page.connection_button.click()
+
+    assert saved.saved[-1].host == "edited.example.internal"
+    assert saved.saved[-1].local_port == 15432
+    assert tunnels.start_calls == [StartTunnelRequest(3, 1, None)]
+
+
+def test_rds_connection_does_not_start_when_current_values_fail_to_save() -> None:
+    _app()
+    ec2 = FakeEc2()
+    saved = FakeSavedSessions()
+    saved.update = Mock(  # type: ignore[method-assign]
+        side_effect=ConfigurationError("tunnel.save_failed", "저장 실패")
+    )
+    tunnels = FakeTunnels(saved)
+    errors: list[ApplicationError] = []
+    page = RdsPage(
+        saved,  # type: ignore[arg-type]
+        tunnels,  # type: ignore[arg-type]
+        ec2,  # type: ignore[arg-type]
+        ImmediateRunner(),  # type: ignore[arg-type]
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+    )
+    page.error_raised.connect(errors.append)
+    page.set_profile(1)
+    page.session_list.setCurrentRow(0)
+    page.host.setText("edited.example.internal")
+
+    page.connection_button.click()
+
+    assert not tunnels.start_calls
+    assert errors[0].message_code == "tunnel.save_failed"
+
+
 def test_rds_mockup_split_cards_and_actions_are_single_row() -> None:
     app = _app()
     ec2 = FakeEc2()
@@ -456,9 +539,17 @@ def test_rds_mockup_split_cards_and_actions_are_single_row() -> None:
     assert page.session_card.objectName() == "session_list_card"
     assert page.editor_card.objectName() == "editor_card"
     assert page.findChildren(QPushButton).count(page.connection_button) == 1
+    assert page.save_button.geometry().top() == page.connection_button.geometry().top()
+    assert page.clone_button.geometry().top() == page.connection_button.geometry().top()
     assert page.active_list.isHidden()
     assert not hasattr(page, "target_mode")
     assert page.host.width() == page.name.width()
+
+    page.resize(760, 720)
+    app.processEvents()
+
+    assert page.session_card.width() == 230
+    assert page.save_button.geometry().top() == page.connection_button.geometry().top()
 
 
 def test_rds_relay_unavailable_disables_save_with_reason() -> None:

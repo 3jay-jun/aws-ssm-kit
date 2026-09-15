@@ -87,3 +87,25 @@ def test_get_session_token_uses_mfa_parameters(monkeypatch) -> None:
         )
 
     assert issued.expires_at_utc == expiration
+
+
+def test_get_session_token_omits_mfa_parameters_when_disabled(monkeypatch) -> None:
+    gateway, stubber = stubbed_gateway(monkeypatch)
+    expiration = datetime.now(UTC) + timedelta(hours=12)
+    stubber.add_response(
+        "get_session_token",
+        {
+            "Credentials": {
+                "AccessKeyId": "SESSIONKEYTEST001",
+                "SecretAccessKey": "x" * 40,
+                "SessionToken": "session-token-fixture-value",
+                "Expiration": expiration,
+            }
+        },
+        {"DurationSeconds": 43200},
+    )
+
+    with stubber:
+        issued = gateway.get_session_token(credentials(), "ap-northeast-2", None, None)
+
+    assert issued.expires_at_utc == expiration

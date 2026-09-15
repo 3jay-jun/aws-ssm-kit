@@ -131,6 +131,23 @@ def test_delete_object_rejects_prefix_and_delegates_one_exact_key() -> None:
         service.delete_object("test-upload-bucket", "reports/", "dev")
 
 
+def test_download_object_validates_target_and_delegates_exact_key(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    destination = tmp_path / "report.txt"
+
+    assert (
+        service.download_object("test-upload-bucket", "reports/report.txt", destination, "dev")
+        == destination
+    )
+    assert gateway.download_file.call_args.args[2:] == (
+        "test-upload-bucket",
+        "reports/report.txt",
+        destination,
+    )
+    with pytest.raises(ConfigurationError, match="s3.download.object.required"):
+        service.download_object("test-upload-bucket", "reports/", destination, "dev")
+
+
 def test_prepare_upload_reports_uri_and_refuses_unconfirmed_overwrite(tmp_path: Path) -> None:
     _locations, service, _store, gateway = _services()
     source = tmp_path / "report.txt"

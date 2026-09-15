@@ -210,6 +210,7 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
         managed_instances=managed_instances,
         remote_gateway=Boto3RemoteSecretCommandGateway(),
         metadata=metadata,
+        saved=store,
     )
     s3_locations = S3LocationService(profiles, store)
     s3 = S3Service(profiles, sessions, Boto3S3Gateway())

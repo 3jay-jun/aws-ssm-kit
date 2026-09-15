@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from aws_connect.domain.app_settings import AppSettings
 from aws_connect.domain.aws_profile import AwsProfile, PlainCredentials, SessionCredentials
 from aws_connect.domain.s3_location import S3Location
+from aws_connect.domain.saved_secret import SavedSecret
 from aws_connect.domain.tunnel_session import TunnelSession
 
 if TYPE_CHECKING:
@@ -66,8 +67,8 @@ class IdentityGateway(Protocol):
         self,
         credentials: PlainCredentials,
         region: str,
-        mfa_arn: str,
-        mfa_code: str,
+        mfa_arn: str | None,
+        mfa_code: str | None,
     ) -> IssuedSession: ...
 
 
@@ -284,6 +285,17 @@ class S3LocationStore(Protocol):
     def delete_s3_location(self, location_id: int) -> None: ...
 
 
+class SavedSecretStore(Protocol):
+    def list_saved_secrets(self, profile_id: int) -> list[SavedSecret]: ...
+    def get_saved_secret(self, saved_secret_id: int) -> SavedSecret | None: ...
+    def get_saved_secret_by_identifier(
+        self, profile_id: int, identifier: str
+    ) -> SavedSecret | None: ...
+    def create_saved_secret(self, saved_secret: SavedSecret) -> SavedSecret: ...
+    def update_saved_secret(self, saved_secret: SavedSecret) -> SavedSecret: ...
+    def delete_saved_secret(self, saved_secret_id: int) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class S3Object:
     key: str
@@ -303,6 +315,14 @@ class S3Gateway(Protocol):
     ) -> bool: ...
     def delete_object(
         self, credentials: PlainCredentials, region: str, bucket: str, key: str
+    ) -> None: ...
+    def download_file(
+        self,
+        credentials: PlainCredentials,
+        region: str,
+        bucket: str,
+        key: str,
+        destination: Path,
     ) -> None: ...
     def put_file(
         self,

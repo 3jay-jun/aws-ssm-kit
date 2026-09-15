@@ -414,6 +414,7 @@ def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, An
                     account_id=args.account_id,
                     user_id=args.user_id,
                     mfa_arn=args.mfa_arn,
+                    mfa_enabled=args.mfa,
                     access_key=access_key,
                     secret_key=secret_key,
                 )
@@ -435,6 +436,7 @@ def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, An
                         account_id=args.account_id,
                         user_id=args.user_id,
                         mfa_arn=args.mfa_arn,
+                        mfa_enabled=args.mfa,
                         access_key=updated_access_key,
                         secret_key=updated_secret_key,
                     )
@@ -735,6 +737,12 @@ def _profile_fields(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--account-id", required=True)
     parser.add_argument("--user-id", required=True)
     parser.add_argument("--mfa-arn")
+    parser.add_argument(
+        "--mfa",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use MFA for temporary sessions (default for new profiles); use --no-mfa to disable",
+    )
 
 
 def _tunnel_fields(parser: argparse.ArgumentParser) -> None:
