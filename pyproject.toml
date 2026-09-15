@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aws-connect"
+version = "0.1.0"
+description = "Portable Windows client for AWS SSM, RDS tunnels, Secrets Manager, and S3"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "boto3>=1.40,<2",
+  "pyside6>=6.9,<7",
+]
+
+[project.scripts]
+aws-connect-cli = "aws_connect.cli_main:main"
+aws-connect = "aws_connect.gui_main:main"
+aws-connect-session-host = "aws_connect.session_host:main"
+
+[dependency-groups]
+dev = [
+  "bandit>=1.8,<2",
+  "detect-secrets>=1.5,<2",
+  "import-linter>=2.3,<3",
+  "mypy>=1.17,<2",
+  "pip-audit>=2.9,<3",
+  "pyinstaller>=6.15,<7",
+  "pytest>=9.0.3,<10",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aws_connect"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/aws_connect/cli_main.py" = ["T201"]
+"tools/*.py" = ["T201"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["aws_connect"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config --import-mode=importlib --cov=aws_connect --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=80"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+source = ["aws_connect"]
+omit = ["src/aws_connect/gui_main.py"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "if __name__ == .__main__.:"]
+
+[tool.importlinter]
+root_packages = ["aws_connect"]
+
+[[tool.importlinter.contracts]]
+name = "Domain has no outward dependencies"
+type = "forbidden"
+source_modules = ["aws_connect.domain"]
+forbidden_modules = [
+  "aws_connect.application",
+  "aws_connect.infrastructure",
+  "aws_connect.presentation",
+]
+
+[[tool.importlinter.contracts]]
+name = "Application is presentation and infrastructure independent"
+type = "forbidden"
+source_modules = ["aws_connect.application"]
+forbidden_modules = ["aws_connect.infrastructure", "aws_connect.presentation"]

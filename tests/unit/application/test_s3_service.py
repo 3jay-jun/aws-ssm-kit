@@ -1,0 +1,323 @@
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+
+from aws_connect.application.operations import (
+    CancellationToken,
+    OperationCancelled,
+    OperationContext,
+)
+from aws_connect.application.ports import S3Object
+from aws_connect.application.s3_service import (
+    MULTIPART_THRESHOLD,
+    S3LocationService,
+    S3Service,
+    SaveS3LocationRequest,
+)
+from aws_connect.domain.aws_profile import AwsProfile, PlainCredentials
+from aws_connect.domain.errors import ConfigurationError, CredentialValidationError, S3TransferError
+from aws_connect.domain.s3_location import S3Location
+
+
+def _services() -> tuple[S3LocationService, S3Service, Mock, Mock]:
+    profile = AwsProfile(
+        7,
+        "dev",
+        "ap-northeast-2",
+        "123456789012",
+        "developer",
+        "arn:aws:iam::123456789012:mfa/developer",
+        b"a",
+        b"b",
+    )
+    profiles = Mock()
+    profiles.resolve.return_value = profile
+    sessions = Mock()
+    sessions.require_credentials.return_value = PlainCredentials(
+        "ACCESSKEYTEST0001", "not-sensitive-test-value", "fixture-token"
+    )
+    store = Mock()
+    gateway = Mock()
+    gateway.list_buckets.return_value = ["alpha-bucket", "test-upload-bucket"]
+    gateway.list_objects.return_value = [S3Object("reports/", 0, None, True)]
+    gateway.object_exists.return_value = False
+    return (
+        S3LocationService(profiles, store),
+        S3Service(profiles, sessions, gateway),
+        store,
+        gateway,
+    )
+
+
+def test_saved_location_crud_delegates_to_profile_scoped_store() -> None:
+    locations, _s3, store, _gateway = _services()
+    created = S3Location(3, 7, "reports", "test-upload-bucket", "reports/")
+    store.create_s3_location.return_value = created
+    store.get_s3_location_by_name.return_value = created
+
+    assert (
+        locations.create(SaveS3LocationRequest("dev", "reports", "test-upload-bucket", "reports/"))
+        == created
+    )
+    assert locations.show("reports", "dev") == created
+    locations.delete("reports", "dev")
+    store.delete_s3_location.assert_called_once_with(3)
+
+
+def test_saved_location_list_update_and_missing_paths_are_typed() -> None:
+    locations, _s3, store, _gateway = _services()
+    existing = S3Location(3, 7, "reports", "test-upload-bucket", "reports/")
+    store.list_s3_locations.return_value = [existing]
+    store.get_s3_location.return_value = existing
+    store.update_s3_location.return_value = S3Location(
+        3, 7, "uploads", "test-upload-bucket", "incoming/"
+    )
+    assert locations.list("dev") == [existing]
+    assert (
+        locations.update(
+            SaveS3LocationRequest("dev", "uploads", "test-upload-bucket", "incoming/", 3)
+        ).name
+        == "uploads"
+    )
+    with pytest.raises(ConfigurationError, match="s3.location.id.required"):
+        locations.update(SaveS3LocationRequest("dev", "uploads", "test-upload-bucket"))
+    store.get_s3_location.return_value = S3Location(3, 8, "other", "test-upload-bucket")
+    with pytest.raises(ConfigurationError, match="s3.location.not_found"):
+        locations.show(3, "dev")
+
+
+def test_saved_location_update_cannot_transfer_ownership_between_profiles() -> None:
+    locations, _s3, store, _gateway = _services()
+    store.get_s3_location.return_value = S3Location(3, 8, "other", "test-upload-bucket", "private/")
+
+    with pytest.raises(ConfigurationError, match="s3.location.not_found"):
+        locations.update(
+            SaveS3LocationRequest("dev", "stolen", "test-upload-bucket", "incoming/", 3)
+        )
+
+    store.update_s3_location.assert_not_called()
+
+
+def test_direct_list_never_uses_bucket_catalog() -> None:
+    _locations, service, _store, gateway = _services()
+
+    result = service.list_objects("test-upload-bucket", "reports/", "dev")
+
+    assert result[0].is_prefix
+    gateway.list_objects.assert_called_once()
+    assert not hasattr(gateway, "list_buckets") or not gateway.list_buckets.called
+
+
+def test_optional_bucket_catalog_is_independent_from_object_browsing() -> None:
+    _locations, service, _store, gateway = _services()
+
+    assert service.list_buckets("dev") == ["alpha-bucket", "test-upload-bucket"]
+    gateway.list_buckets.assert_called_once()
+    gateway.list_objects.assert_not_called()
+
+
+def test_delete_object_rejects_prefix_and_delegates_one_exact_key() -> None:
+    _locations, service, _store, gateway = _services()
+
+    service.delete_object("test-upload-bucket", "reports/file.txt", "dev")
+
+    gateway.delete_object.assert_called_once()
+    assert gateway.delete_object.call_args.args[2:] == (
+        "test-upload-bucket",
+        "reports/file.txt",
+    )
+    with pytest.raises(ConfigurationError, match="s3.delete.object.required"):
+        service.delete_object("test-upload-bucket", "reports/", "dev")
+
+
+def test_prepare_upload_reports_uri_and_refuses_unconfirmed_overwrite(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    source = tmp_path / "report.txt"
+    source.write_text("payload", encoding="utf-8")
+    gateway.object_exists.return_value = True
+
+    plan = service.prepare_upload([source], "test-upload-bucket", "incoming", "dev")
+
+    assert plan.items[0].uri == "s3://test-upload-bucket/incoming/report.txt"
+    assert plan.items[0].exists
+    with pytest.raises(ConfigurationError, match="s3.upload.overwrite_confirmation_required"):
+        service.upload(plan, overwrite=False, context=OperationContext())
+    gateway.put_file.assert_not_called()
+
+
+def test_prepare_upload_rejects_duplicate_target_keys(tmp_path: Path) -> None:
+    _locations, service, _store, _gateway = _services()
+    first = tmp_path / "first" / "report.txt"
+    second = tmp_path / "second" / "report.txt"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="s3.upload.target.duplicate"):
+        service.prepare_upload([first, second], "test-upload-bucket")
+
+
+def test_prepare_upload_rejects_empty_missing_and_unauthenticated_sources(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    with pytest.raises(ConfigurationError, match="s3.upload.source.required"):
+        service.prepare_upload([], "test-upload-bucket")
+    with pytest.raises(ConfigurationError, match="s3.upload.source.invalid"):
+        service.prepare_upload([tmp_path / "missing.txt"], "test-upload-bucket")
+    service._sessions.require_credentials.side_effect = CredentialValidationError(
+        "auth.mfa_required", "test"
+    )
+    with pytest.raises(CredentialValidationError, match="auth.mfa_required"):
+        service.list_objects("test-upload-bucket")
+    gateway.object_exists.assert_not_called()
+
+
+def test_upload_uses_progress_and_cancellation_contract(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    small = tmp_path / "small.txt"
+    small.write_bytes(b"1234")
+    plan = service.prepare_upload([small], "test-upload-bucket", profile="dev")
+    events = []
+    gateway.put_file.side_effect = lambda *_args: _args[-2](4)
+
+    context = OperationContext(operation_id="upload-one", progress=events.append)
+    result = service.upload(plan, overwrite=False, context=context)
+
+    assert result.bytes_transferred == 4
+    assert events[0].operation_id == context.operation_id == events[-1].operation_id
+    assert events[1].target == "s3://test-upload-bucket/small.txt"
+    assert events[1].message_code == "s3.upload.progress"
+
+    token = CancellationToken()
+    token.cancel()
+    with pytest.raises(OperationCancelled):
+        service.upload(plan, overwrite=False, context=OperationContext(cancellation=token))
+
+
+def test_multiple_files_upload_in_request_order(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    plan = service.prepare_upload([first, second], "test-upload-bucket", "incoming", "dev")
+    gateway.put_file.side_effect = lambda *_args: _args[-2](3)
+
+    result = service.upload(plan, overwrite=False, context=OperationContext())
+
+    assert result.uploaded == (
+        "s3://test-upload-bucket/incoming/first.txt",
+        "s3://test-upload-bucket/incoming/second.txt",
+    )
+    assert gateway.put_file.call_count == 2
+
+
+def test_multi_file_failure_preserves_completed_file_summary(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    plan = service.prepare_upload([first, second], "test-upload-bucket", "incoming", "dev")
+
+    def transfer(*args) -> None:
+        if args[3].endswith("second.txt"):
+            raise S3TransferError("s3.transfer.failed", "network")
+        args[-2](3)
+
+    gateway.put_file.side_effect = transfer
+
+    events = []
+    with pytest.raises(S3TransferError, match="s3.transfer.failed"):
+        service.upload(
+            plan,
+            overwrite=False,
+            context=OperationContext(progress=events.append),
+        )
+
+    assert events[-1].completed == 3
+    assert gateway.put_file.call_count == 2
+
+
+def test_cancellation_requested_during_transfer_maps_to_cancelled(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"data")
+    plan = service.prepare_upload([source], "test-upload-bucket")
+    token = CancellationToken()
+
+    def complete_then_cancel(*_args) -> None:
+        token.cancel()
+
+    gateway.put_file.side_effect = complete_then_cancel
+    with pytest.raises(OperationCancelled):
+        service.upload(plan, overwrite=False, context=OperationContext(cancellation=token))
+
+    token = CancellationToken()
+    gateway.put_file.side_effect = S3TransferError("s3.upload.cancelled", "cancelled")
+    with pytest.raises(OperationCancelled):
+        service.upload(plan, overwrite=False, context=OperationContext(cancellation=token))
+
+
+def test_large_upload_uses_bounded_multipart_and_preserves_typed_failure(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    large = tmp_path / "large.bin"
+    with large.open("wb") as stream:
+        stream.truncate(MULTIPART_THRESHOLD)
+    plan = service.prepare_upload([large], "test-upload-bucket", profile="dev")
+    gateway.multipart_file.side_effect = S3TransferError("s3.transfer.failed", "network")
+
+    with pytest.raises(S3TransferError, match="s3.transfer.failed"):
+        service.upload(plan, overwrite=False, context=OperationContext())
+    args = gateway.multipart_file.call_args.args
+    assert args[6] == 1
+
+
+def test_explicit_retry_of_failed_multipart_starts_fresh_operation_and_progress(
+    tmp_path: Path,
+) -> None:
+    _locations, service, _store, gateway = _services()
+    large = tmp_path / "large.bin"
+    with large.open("wb") as stream:
+        stream.truncate(MULTIPART_THRESHOLD)
+    plan = service.prepare_upload([large], "test-upload-bucket", profile="dev")
+    attempts = 0
+
+    def transfer(*args) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise S3TransferError("s3.transfer.failed", "network", retryable=True)
+        args[-2](MULTIPART_THRESHOLD)
+
+    gateway.multipart_file.side_effect = transfer
+    first_events = []
+    second_events = []
+
+    first_context = OperationContext(operation_id="upload-first", progress=first_events.append)
+    second_context = OperationContext(operation_id="upload-second", progress=second_events.append)
+    with pytest.raises(S3TransferError, match="s3.transfer.failed"):
+        service.upload(plan, overwrite=False, context=first_context)
+    retried = service.upload(plan, overwrite=False, context=second_context)
+
+    assert retried.bytes_transferred == MULTIPART_THRESHOLD
+    assert first_context.operation_id != second_context.operation_id
+    assert first_events[0].completed == 0
+    assert second_events[0].completed == 0
+    assert {event.operation_id for event in first_events} == {first_context.operation_id}
+    assert {event.operation_id for event in second_events} == {second_context.operation_id}
+    assert gateway.multipart_file.call_count == 2
+
+
+def test_upload_rechecks_new_objects_before_using_a_stale_plan(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    source = tmp_path / "report.txt"
+    source.write_text("payload", encoding="utf-8")
+    gateway.object_exists.side_effect = (False, True)
+    plan = service.prepare_upload([source], "test-upload-bucket")
+
+    with pytest.raises(ConfigurationError, match="s3.upload.overwrite_confirmation_required"):
+        service.upload(plan, overwrite=False, context=OperationContext())
+
+    gateway.put_file.assert_not_called()

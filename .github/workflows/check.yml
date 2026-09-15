@@ -1,0 +1,74 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Bootstrap
+        shell: pwsh
+        run: ./scripts/bootstrap.ps1
+      - name: Check
+        shell: pwsh
+        run: ./scripts/check.ps1
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  package-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Bootstrap
+        shell: pwsh
+        run: ./scripts/bootstrap.ps1
+      - name: Create explicitly marked smoke-test vendor
+        shell: pwsh
+        run: ./scripts/create-test-vendor.ps1 -OutputDirectory ./build/test-vendor
+      - name: Build TEST-ONLY Portable ZIP
+        id: package
+        shell: pwsh
+        run: |
+          $output = @(
+            ./scripts/build-package.ps1 -VendorDirectory ./build/test-vendor -AllowTestVendor 2>&1 |
+              Tee-Object -FilePath ./package-build.log
+          )
+          $zip = [string]$output[-1]
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+      - name: Package smoke
+        shell: pwsh
+        run: ./scripts/test-package.ps1 -ZipPath '${{ steps.package.outputs.zip }}' -AllowTestVendorPackage
+      - name: Upload TEST-ONLY package evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-connect-package-smoke-TEST-ONLY
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.zip }}.sha256
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload package build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-connect-package-build-diagnostics
+          path: |
+            package-build.log
+            build/package/pyinstaller-work/**/warn-*.txt
+          if-no-files-found: ignore
+          retention-days: 7
