@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QPushButton
 
 from aws_connect.application.ec2_service import Ec2Target, ExternalSessionHandle
 from aws_connect.application.operations import OperationResult, OperationState
@@ -291,12 +291,17 @@ def test_ec2_table_uses_single_power_status_column_and_svg_favorites() -> None:
     assert stopped_status.text() == "● 중지됨"
     assert stopped_status.property("status") == "danger"
     assert page.table.rowHeight(0) == 54
-    assert [page.table.columnWidth(column) for column in range(6)] == [
+    header = page.table.horizontalHeader()
+    assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Stretch
+    assert all(
+        header.sectionResizeMode(column) == QHeaderView.ResizeMode.Fixed
+        for column in (0, 1, 2, 4, 5)
+    )
+    assert [page.table.columnWidth(column) for column in (0, 1, 2, 4, 5)] == [
         60,
         230,
-        132,
-        112,
-        88,
+        148,
+        100,
         120,
     ]
     assert page.table.cellWidget(0, 5).width() == 112  # type: ignore[union-attr]
@@ -306,12 +311,25 @@ def test_ec2_table_uses_single_power_status_column_and_svg_favorites() -> None:
     page.show()
     app.processEvents()
 
-    assert [page.table.columnWidth(column) for column in range(6)] == [
+    compact_ip_width = page.table.columnWidth(3)
+    assert [page.table.columnWidth(column) for column in (0, 1, 2, 4, 5)] == [
         52,
         165,
-        115,
+        128,
         92,
-        80,
+        120,
+    ]
+    assert page.table.horizontalScrollBar().maximum() == 0
+
+    page.resize(1080, 720)
+    app.processEvents()
+
+    assert page.table.columnWidth(3) > compact_ip_width
+    assert [page.table.columnWidth(column) for column in (0, 1, 2, 4, 5)] == [
+        60,
+        230,
+        148,
+        100,
         120,
     ]
     assert page.table.horizontalScrollBar().maximum() == 0
