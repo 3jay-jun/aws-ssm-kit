@@ -5,7 +5,7 @@ import getpass
 import json
 import sys
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Protocol, cast
 
 from aws_connect.application.operations import (
     OperationContext,
@@ -47,6 +47,19 @@ from aws_connect.presentation.cli.s3 import (
 )
 from aws_connect.presentation.cli.secrets import secret_payload, secrets_payload
 from aws_connect.presentation.cli.system_info import render_doctor
+
+
+class _ReconfigurableTextStream(Protocol):
+    def reconfigure(self, *, encoding: str) -> None: ...
+
+
+def _configure_utf8_stdio() -> None:
+    """Keep CLI output Unicode-safe when Windows redirects streams as cp1252."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            cast(_ReconfigurableTextStream, stream).reconfigure(encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -235,6 +248,7 @@ def main(
 ) -> int:
     """Run the CLI and return a process exit code."""
 
+    _configure_utf8_stdio()
     args = build_parser().parse_args(argv)
     if args.command == "doctor":
         try:

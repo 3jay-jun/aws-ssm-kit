@@ -121,3 +121,15 @@ ALTER TABLE aws_profiles
         ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 1
             CHECK (mfa_enabled IN (0, 1));
 ```
+
+## Migration 8
+
+```sql
+ALTER TABLE saved_secrets
+        ADD COLUMN value TEXT NOT NULL DEFAULT '';
+        ALTER TABLE saved_secrets
+        ADD COLUMN lookup_mode TEXT NOT NULL DEFAULT 'direct'
+            CHECK (lookup_mode IN ('direct', 'via_ec2'));
+        ALTER TABLE saved_secrets
+        ADD COLUMN relay_instance_id TEXT;
+```
