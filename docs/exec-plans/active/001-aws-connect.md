@@ -370,7 +370,8 @@ GUI 작업은 해당 기능의 Application 및 CLI 게이트를 통과하기 전
   `session-manager-plugin.exe`, IDE 설정, agent/test/visual QA 임시 산출물을 `.gitignore`로
   제외했다. `./scripts/check.ps1`은 365 tests, 전체 coverage 86.75%, 문서·format·Ruff·
   architecture/import·mypy·critical coverage·secret scan·Bandit·`pip-audit`까지 통과했다.
-  다음 단계는 `3jay-jun/aws-ssm-kit`의 `main` 첫 push 후 GitHub Actions 결과 확인이다.
+  `3jay-jun/aws-ssm-kit`의 `main` 첫 push를 완료했으며, 다음 단계는 GitHub Actions의
+  `windows-latest` check·package job 결과 확인이다.
 
 작업:
 
@@ -1092,13 +1093,28 @@ SSOT 검색: `State_Selected|use_first_column_selection_bar|dashboard_active_tun
 
 체크리스트:
 
-- [ ] 상단 프로필/Account/IAM/토큰/인증 상태를 동일한 caption/value 세로 축에 맞춘다.
-- [ ] 활성 터널 한 행의 실제 size hint와 목록 높이를 일치시키고 공통 목록 padding을 제거한다.
-- [ ] 공통 table delegate가 선택 배경을 직접 그리고 첫 열에만 강조선을 그리도록 수정한다.
-- [ ] EC2 이름 열 폭과 행 작업 버튼의 내부 여백·폭을 줄이되 버튼 문구는 유지한다.
-- [ ] RDS Host 콤보박스 size hint를 제한하고 연결 상태 패널을 한 행 높이로 축소한다.
-- [ ] Secret 고정 명령을 자동 실행한 뒤 Linux/Windows 셸을 유지하는 계약과 테스트를 추가한다.
-- [ ] focused/full tests와 1024×720/1424×894 렌더 QA 결과를 기록한다.
+- [x] 상단 프로필/Account/IAM/토큰/인증 상태를 동일한 caption/value 세로 축에 맞춘다.
+- [x] 활성 터널 한 행의 실제 size hint와 목록 높이를 일치시키고 공통 목록 padding을 제거한다.
+- [x] 공통 table delegate가 선택 배경을 직접 그리고 첫 열에만 강조선을 그리도록 수정한다.
+- [x] EC2 이름 열 폭과 행 작업 버튼의 내부 여백·폭을 줄이되 버튼 문구는 유지한다.
+- [x] RDS Host 콤보박스 size hint를 제한하고 연결 상태 패널을 한 행 높이로 축소한다.
+- [x] Secret 고정 명령을 자동 실행한 뒤 Linux/Windows 셸을 유지하는 계약과 테스트를 추가한다.
+- [x] focused/full tests와 1024×720/1424×894 렌더 QA 결과를 기록한다.
+
+검증 기록:
+
+- 첨부 EC2/대시보드 화면을 기준으로 Qt 선택 state와 `QListWidget::item` padding을 재현해
+  공통 delegate의 직접 배경 painting과 dashboard 전용 무-padding 규칙으로 수정했다.
+- `uv run --no-sync pytest ... -q --no-cov` focused GUI/Application 묶음 → `81 passed`.
+- `./scripts/check.ps1`의 문서, Ruff, architecture/import boundaries, mypy, `365 passed`
+  (coverage `86.68%`), critical branch coverage, secret scan과 Bandit가 통과했다. sandbox에서
+  네트워크만 차단된 `pip-audit`은 승인된 별도 실행으로 `No known vulnerabilities found`를 확인했다.
+- `.visual-qa-followup-layout-1024`와 `.visual-qa-followup-layout-1424`에 전체 7개 화면을 렌더해
+  상단 grid 정렬, RDS 편집기 내부 폭과 42px 상태 행, EC2 열 구성을 육안 검토했다.
+
+런타임 사이드이펙트: 일반 UI 변경은 프로세스·포트·메모리 수명주기에 영향이 없다. Secret
+fallback은 기존 `StartSession` 호출에 고정 command parameter를 추가하고, 명령 완료 뒤 셸을
+유지하므로 사용자가 터미널을 닫을 때까지 기존 세션 핸들이 계속 추적된다.
 
 상태와 데이터 흐름:
 
