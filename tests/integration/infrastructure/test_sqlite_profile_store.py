@@ -9,7 +9,7 @@ from aws_connect.application.rds_tunnel_service import TunnelSessionService
 from aws_connect.domain.aws_profile import AwsProfile, SessionCredentials
 from aws_connect.domain.errors import ConfigurationError
 from aws_connect.domain.s3_location import S3Location
-from aws_connect.domain.saved_secret import SavedSecret
+from aws_connect.domain.saved_secret import SavedSecret, SecretLookupMode
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 from aws_connect.infrastructure.sqlite_profile_store import MIGRATIONS, SqliteProfileStore
 
@@ -137,7 +137,7 @@ def test_versioned_settings_migration_persists_and_deletes_values(tmp_path) -> N
     database = tmp_path / "state.db"
     store = SqliteProfileStore(database)
 
-    assert store.current_schema_version() == store.expected_schema_version == 7
+    assert store.current_schema_version() == store.expected_schema_version == 8
     assert store.get_setting("log.level") is None
     store.put_setting("log.level", "WARNING")
     store.put_setting("log.level", "ERROR")
@@ -238,20 +238,118 @@ def test_ec2_favorite_migration_is_region_scoped_idempotent_and_cascades(tmp_pat
     assert store.list_ec2_favorites(profile_id, "us-east-1") == set()
 
 
-def test_saved_secret_migration_crud_uniqueness_and_profile_cascade(tmp_path) -> None:
+def test_saved_secret_v7_migration_applies_snapshot_defaults(tmp_path) -> None:
+    database = tmp_path / "legacy-v7.db"
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for version, sql in MIGRATIONS:
+            if version > 7:
+                break
+            connection.executescript(sql)
+            connection.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (version, now),
+            )
+        profile_id = connection.execute(
+            """INSERT INTO aws_profiles
+            (name, region, account_id, user_id, mfa_arn, encrypted_access_key,
+             encrypted_secret_key, is_default, created_at, updated_at, mfa_enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "legacy",
+                "ap-northeast-2",
+                "123456789012",
+                "developer",
+                "arn:aws:iam::123456789012:mfa/developer",
+                b"encrypted-a",
+                b"encrypted-b",
+                1,
+                now,
+                now,
+                1,
+            ),
+        ).lastrowid
+        connection.execute(
+            """INSERT INTO saved_secrets
+            (profile_id, identifier, created_at, updated_at) VALUES (?, ?, ?, ?)""",
+            (profile_id, "db/legacy", now, now),
+        )
+
+    store = SqliteProfileStore(database)
+    migrated = store.get_saved_secret_by_identifier(int(profile_id or 0), "db/legacy")
+
+    assert store.current_schema_version() == store.expected_schema_version == 8
+    assert migrated is not None
+    assert migrated.value == ""
+    assert migrated.lookup_mode is SecretLookupMode.DIRECT
+    assert migrated.relay_instance_id is None
+
+
+def test_saved_secret_snapshot_crud_upsert_profile_scope_and_cascade(tmp_path) -> None:
     store = SqliteProfileStore(tmp_path / "state.db")
     owner = store.create(profile("owner"))
+    other_owner = store.create(profile("other"))
     profile_id = owner.require_id()
-    created = store.create_saved_secret(SavedSecret(None, profile_id, "db/dev"))
+    other_profile_id = other_owner.require_id()
+    created = store.create_saved_secret(
+        SavedSecret(
+            None,
+            profile_id,
+            "db/dev",
+            value="initial-value",
+            lookup_mode=SecretLookupMode.VIA_EC2,
+            relay_instance_id="i-relay",
+        )
+    )
 
     assert store.get_saved_secret_by_identifier(profile_id, "db/dev") == created
     with pytest.raises(ConfigurationError, match="secret.saved.identifier.duplicate"):
         store.create_saved_secret(SavedSecret(None, profile_id, "db/dev"))
 
-    updated = SavedSecret(created.id, profile_id, "db/prod")
-    assert store.update_saved_secret(updated).identifier == "db/prod"
+    updated = SavedSecret(
+        created.id,
+        profile_id,
+        "db/prod",
+        value="locally-edited-value",
+        lookup_mode=SecretLookupMode.DIRECT,
+    )
+    assert store.update_saved_secret(updated) == updated
+    other = store.create_saved_secret(
+        SavedSecret(None, other_profile_id, "db/prod", value="other-profile-value")
+    )
+    with sqlite3.connect(store.path) as connection:
+        before = connection.execute(
+            "SELECT id, created_at FROM saved_secrets WHERE id=?", (created.require_id(),)
+        ).fetchone()
+
+    refreshed = store.upsert_saved_secret(
+        SavedSecret(
+            None,
+            profile_id,
+            "db/prod",
+            value="refreshed-value",
+            lookup_mode=SecretLookupMode.VIA_EC2,
+            relay_instance_id="i-new-relay",
+        )
+    )
+    with sqlite3.connect(store.path) as connection:
+        after = connection.execute(
+            "SELECT id, created_at FROM saved_secrets WHERE id=?", (created.require_id(),)
+        ).fetchone()
+
+    assert before == after
+    assert refreshed.id == created.id
+    assert refreshed.value == "refreshed-value"
+    assert refreshed.lookup_mode is SecretLookupMode.VIA_EC2
+    assert refreshed.relay_instance_id == "i-new-relay"
+    assert store.get_saved_secret_by_identifier(other_profile_id, "db/prod") == other
+
     store.delete(profile_id)
     assert store.list_saved_secrets(profile_id) == []
+    assert store.list_saved_secrets(other_profile_id) == [other]
 
 
 def test_corrupt_cached_session_is_atomically_deleted_instead_of_leaking_value_error(

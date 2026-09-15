@@ -59,6 +59,8 @@ class FakeSecrets:
         )
         self.list_error: ApplicationError | None = None
         self.saved: list[SavedSecret] = []
+        self.get_count = 0
+        self.load_saved_count = 0
 
     def get(
         self,
@@ -71,8 +73,15 @@ class FakeSecrets:
     ) -> SecretResult:
         assert identifier
         assert profile == 1
+        self.get_count += 1
         self.last_lookup = (mode, instance_id, confirmed)
-        self.remember(self.result.secret_id, profile)
+        self.remember(
+            self.result.secret_id,
+            profile,
+            value=self.result.raw_secret_string(),
+            lookup_mode=mode,
+            relay_instance_id=instance_id if mode is SecretLookupMode.VIA_EC2 else None,
+        )
         return self.result
 
     def list(self, profile: int | None = None) -> list[ListedSecret]:
@@ -89,22 +98,64 @@ class FakeSecrets:
         assert profile is not None
         return list(self.saved)
 
-    def remember(self, identifier: str, profile: int | None = None) -> SavedSecret:
+    def remember(
+        self,
+        identifier: str,
+        profile: int | None = None,
+        *,
+        value: str | None = None,
+        lookup_mode: SecretLookupMode | None = None,
+        relay_instance_id: str | None = None,
+    ) -> SavedSecret:
         assert profile is not None
         existing = next((item for item in self.saved if item.identifier == identifier), None)
-        if existing is not None:
+        if existing is not None and value is None and lookup_mode is None:
             return existing
-        created = SavedSecret(len(self.saved) + 1, profile, identifier)
+        created = SavedSecret(
+            existing.id if existing is not None else len(self.saved) + 1,
+            profile,
+            identifier,
+            value="" if value is None else value,
+            lookup_mode=lookup_mode or SecretLookupMode.DIRECT,
+            relay_instance_id=relay_instance_id,
+        )
+        self.saved = [item for item in self.saved if item.id != created.id]
         self.saved.append(created)
         return created
 
     def update_saved(
-        self, saved_id: int, identifier: str, profile: int | None = None
+        self,
+        saved_id: int,
+        identifier: str,
+        profile: int | None = None,
+        *,
+        value: str | None = None,
     ) -> SavedSecret:
         assert profile is not None
-        updated = SavedSecret(saved_id, profile, identifier)
+        existing = next(item for item in self.saved if item.id == saved_id)
+        updated = SavedSecret(
+            saved_id,
+            profile,
+            identifier,
+            value=existing.value if value is None else value,
+            lookup_mode=existing.lookup_mode,
+            relay_instance_id=existing.relay_instance_id,
+        )
         self.saved = [updated if item.id == saved_id else item for item in self.saved]
         return updated
+
+    def load_saved(
+        self, saved_id: int, profile: int | None = None
+    ) -> tuple[SavedSecret, SecretResult]:
+        assert profile is not None
+        self.load_saved_count += 1
+        saved = next(item for item in self.saved if item.id == saved_id)
+        return saved, SecretResult(
+            saved.identifier,
+            SecretKind.TEXT,
+            (SecretField("value", saved.value, True),),
+            _raw_secret_string=saved.value,
+        )
 
     def delete_saved(self, saved_id: int, profile: int | None = None) -> None:
         assert profile is not None
@@ -126,6 +177,7 @@ def test_direct_lookup_masks_then_explicitly_reveals_and_clears_on_profile_chang
     page.reveal_selected()
     assert page.fields.item(2, 1).text() == RAW
     assert page.catalog.count() == 1
+    assert page.catalog.currentRow() == 0
 
     page.set_profile(2)
     assert page.fields.rowCount() == 0
@@ -294,7 +346,7 @@ def test_via_ec2_requires_online_selection_and_one_time_explicit_consent() -> No
     page.secret_id.setText("db/dev")
     page.lookup_mode.setCurrentIndex(1)
 
-    assert not page.relay_warning.isHidden()
+    assert page.findChild(QLabel, "secret_relay_warning") is None
     assert not page.get_button.isEnabled()
     page.load_relays()
     assert page.relay_instance.count() == 1
@@ -310,7 +362,9 @@ def test_via_ec2_requires_online_selection_and_one_time_explicit_consent() -> No
     assert not page.get_button.isEnabled()
 
 
-def test_saved_secret_buttons_register_edit_and_delete_only_sqlite_reference(monkeypatch) -> None:
+def test_saved_secret_buttons_edit_id_and_value_then_delete_only_sqlite_snapshot(
+    monkeypatch,
+) -> None:
     _app()
     service = FakeSecrets()
     page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
@@ -319,8 +373,8 @@ def test_saved_secret_buttons_register_edit_and_delete_only_sqlite_reference(mon
     assert page.catalog.item(0).text() == "arn:test"
     page.catalog.setCurrentRow(0)
     monkeypatch.setattr(
-        "aws_connect.presentation.gui.secrets.QInputDialog.getText",
-        lambda *_args, **_kwargs: ("db/prod", True),
+        "aws_connect.presentation.gui.secrets._prompt_saved_secret",
+        lambda *_args, **_kwargs: ("db/prod", "locally-edited-value"),
     )
     monkeypatch.setattr(
         "aws_connect.presentation.gui.secrets.QMessageBox.warning",
@@ -329,10 +383,94 @@ def test_saved_secret_buttons_register_edit_and_delete_only_sqlite_reference(mon
 
     page.edit_saved_button.click()
     assert service.saved[0].identifier == "db/prod"
+    assert service.saved[0].value == "locally-edited-value"
+    assert service.get_count == 1
+    assert page.catalog.currentRow() == 0
+    assert page._result is not None
+    assert page._result.raw_secret_string() == "locally-edited-value"
 
     page.catalog.setCurrentRow(0)
     page.delete_saved_button.click()
     assert service.saved == []
+
+
+def test_saved_click_restores_direct_snapshot_without_aws_lookup() -> None:
+    _app()
+    service = FakeSecrets()
+    service.saved = [
+        SavedSecret(
+            7,
+            1,
+            "arn:test",
+            value='{"password":"stored-value"}',  # pragma: allowlist secret
+        )
+    ]
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+
+    page._catalog_selected(page.catalog.item(0))
+
+    assert service.get_count == 0
+    assert service.load_saved_count == 1
+    assert page.lookup_mode.currentData() == SecretLookupMode.DIRECT
+    assert not page.secret_selector.isHidden()
+    assert page.secret_selector.currentData().arn == "arn:test"
+    assert page.fields.item(0, 1).text() == "***REDACTED***"
+
+
+def test_saved_click_restores_via_ec2_and_marks_missing_relay_unavailable() -> None:
+    _app()
+    service = FakeSecrets()
+    service.saved = [
+        SavedSecret(
+            8,
+            1,
+            "db/via",
+            value="stored-via-value",  # pragma: allowlist secret
+            lookup_mode=SecretLookupMode.VIA_EC2,
+            relay_instance_id="i-online",
+        ),
+        SavedSecret(
+            9,
+            1,
+            "db/stale",
+            value="stored-stale-value",  # pragma: allowlist secret
+            lookup_mode=SecretLookupMode.VIA_EC2,
+            relay_instance_id="i-missing",
+        ),
+    ]
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+
+    page._catalog_selected(page.catalog.item(0))
+
+    assert service.get_count == 0
+    assert page.lookup_mode.currentData() == SecretLookupMode.VIA_EC2
+    assert page.secret_id.text() == "db/via"
+    assert not page.secret_id.isHidden()
+    assert page.relay_instance.currentData().instance_id == "i-online"
+
+    page.catalog.setCurrentRow(1)
+    page._catalog_selected(page.catalog.item(1))
+
+    assert service.get_count == 0
+    assert page.relay_instance.currentData() is None
+    assert page.relay_instance.currentText() == "사용 불가 · i-missing"
+    assert not page.get_button.isEnabled()
+
+
+def test_removed_secret_count_summary_and_relay_guidance_are_absent() -> None:
+    _app()
+    service = FakeSecrets()
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+    page.get_secret()
+
+    visible_copy = " ".join(label.text() for label in page.findChildren(QLabel))
+    assert "조회 가능한 Secret" not in visible_copy
+    assert "SQLite 저장 항목" not in visible_copy
+    assert "Secret 값" not in visible_copy
+    assert "경유 조회는 SSM Run Command" not in visible_copy
 
 
 def test_main_window_wires_secret_endpoint_to_unsaved_rds_editor() -> None:

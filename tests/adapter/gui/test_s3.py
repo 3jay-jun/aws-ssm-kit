@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMessageBox, QToolButton
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QToolButton
 
 from aws_connect.application.authenticated_operation import AuthenticatedOperationCoordinator
 from aws_connect.application.operations import (
@@ -18,14 +18,22 @@ from aws_connect.application.operations import (
     OperationState,
 )
 from aws_connect.application.ports import S3Object
-from aws_connect.application.s3_service import UploadItem, UploadPlan, UploadSummary
+from aws_connect.application.s3_service import (
+    DownloadItem,
+    DownloadPlan,
+    DownloadSummary,
+    UploadConflictPolicy,
+    UploadItem,
+    UploadPlan,
+    UploadSummary,
+)
 from aws_connect.domain.errors import (
     ApplicationError,
     AwsPermissionError,
     CredentialValidationError,
 )
 from aws_connect.domain.s3_location import S3Location
-from aws_connect.presentation.gui.s3 import S3Page, _confirm_upload
+from aws_connect.presentation.gui.s3 import S3Page
 from aws_connect.presentation.gui.tasks import ApplicationTask
 
 
@@ -112,8 +120,8 @@ def test_s3_page_browses_direct_location_and_updates_progress(tmp_path: Path) ->
     )
     s3.prepare_upload.return_value = plan
 
-    def upload(_plan, *, overwrite, context):
-        assert not overwrite
+    def upload(_plan, *, policy, context):
+        assert policy is UploadConflictPolicy.SKIP_EXISTING
         assert not context.cancellation.is_cancellation_requested
         context.report(
             "uploading",
@@ -125,7 +133,12 @@ def test_s3_page_browses_direct_location_and_updates_progress(tmp_path: Path) ->
         return UploadSummary((plan.items[0].uri,), 7)
 
     s3.upload.side_effect = upload
-    page = S3Page(locations, s3, ImmediateRunner(), lambda _parent, _plan: (True, False))  # type: ignore[arg-type]
+    page = S3Page(
+        locations,
+        s3,
+        ImmediateRunner(),  # type: ignore[arg-type]
+        lambda _parent, _plan: UploadConflictPolicy.SKIP_EXISTING,
+    )
     page.set_profile(7)
     page.location_list.setCurrentRow(0)
     page.list_objects()
@@ -153,7 +166,8 @@ def test_s3_page_matches_mockup_header_toolbar_card_and_drop_order() -> None:
     assert card is not None
     assert card.layout().indexOf(page.breadcrumb) < card.layout().indexOf(page.objects)
     assert card.layout().indexOf(page.objects) < card.layout().indexOf(page.drop_zone)
-    assert page.upload.text() == "파일 추가"
+    assert page.upload.text() == "업로드"
+    assert page.findChild(type(page.upload), "s3_file_choose") is None
     assert page.findChild(type(page.upload), "s3_bucket_catalog_load") is None
     assert page.findChild(QFrame, "s3_saved_locations_panel") is not None
 
@@ -248,35 +262,41 @@ def test_selected_file_delete_requires_confirmation_and_refreshes_listing() -> N
     assert s3.list_objects.call_count >= 2
 
 
-def test_selected_file_downloads_then_opens_user_selected_destination(tmp_path: Path) -> None:
+def test_selected_files_and_folders_download_to_one_selected_root(tmp_path: Path) -> None:
     _app()
     locations = Mock()
     locations.list.return_value = []
     s3 = Mock()
     s3.list_buckets.return_value = []
-    selected = S3Object("reports/file.txt", 10, None)
-    s3.list_objects.return_value = [selected]
-    destination = tmp_path / "file.txt"
-    s3.download_object.return_value = destination
-    opened: list[Path] = []
+    selected_file = S3Object("reports/file.txt", 10, None)
+    selected_folder = S3Object("archive/", 0, None, True)
+    s3.list_objects.return_value = [selected_file, selected_folder]
+    plan = DownloadPlan(
+        7,
+        "ap-northeast-2",
+        (DownloadItem("test-upload-bucket", selected_file.key, tmp_path / selected_file.key, 10),),
+    )
+    s3.prepare_download.return_value = plan
+    s3.download.return_value = DownloadSummary((plan.items[0].destination,), 10)
     page = S3Page(
         locations,
         s3,
         ImmediateRunner(),  # type: ignore[arg-type]
-        download_destination=lambda _parent, item: destination if item is selected else None,
-        open_downloaded_file=lambda path: not opened.append(path),
+        download_destination=lambda _parent: tmp_path,
     )
     page.set_profile(7)
     page.bucket.setText("test-upload-bucket")
     page.list_objects()
-    page.objects.selectRow(0)
+    page.objects.selectAll()
 
+    assert not page.delete_object_button.isEnabled()
     page.open_object_button.click()
 
-    s3.download_object.assert_called_once_with(
-        "test-upload-bucket", "reports/file.txt", destination, 7
+    s3.prepare_download.assert_called_once_with(
+        (selected_file, selected_folder), tmp_path, "test-upload-bucket", 7
     )
-    assert opened == [destination]
+    s3.download.assert_called_once()
+    assert page.open_object_button.text() == "다운로드"
 
 
 def test_profile_change_cancels_owned_upload_and_clears_files(tmp_path: Path) -> None:
@@ -300,8 +320,8 @@ def test_profile_change_cancels_owned_upload_and_clears_files(tmp_path: Path) ->
     assert page.location_list.count() == 0
 
 
-def test_prefix_navigation_and_existing_object_require_separate_overwrite_consent(
-    monkeypatch, tmp_path: Path
+def test_prefix_navigation_and_existing_object_use_selected_conflict_policy(
+    tmp_path: Path,
 ) -> None:
     _app()
     locations = Mock()
@@ -326,14 +346,47 @@ def test_prefix_navigation_and_existing_object_require_separate_overwrite_consen
         "ap-northeast-2",
         (UploadItem(source, "test-upload-bucket", "reports/report.txt", 7, True),),
     )
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes
+    chosen: list[UploadConflictPolicy] = []
+    s3.upload.return_value = UploadSummary((), 0, (plan.items[0].uri,))
+    page._confirm_upload = lambda _parent, _plan: (
+        chosen.append(  # type: ignore[method-assign]
+            UploadConflictPolicy.SKIP_EXISTING
+        )
+        or UploadConflictPolicy.SKIP_EXISTING
     )
-    monkeypatch.setattr(
-        QMessageBox, "warning", lambda *_args, **_kwargs: QMessageBox.StandardButton.No
-    )
+    page._upload_prepared(plan)
+    assert chosen == [UploadConflictPolicy.SKIP_EXISTING]
 
-    assert _confirm_upload(page, plan) == (False, True)
+
+def test_upload_sources_accumulate_remove_clear_and_switch_single_action(tmp_path: Path) -> None:
+    _app()
+    source = tmp_path / "report.txt"
+    source.write_text("payload", encoding="utf-8")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    page = S3Page(Mock(), Mock(), ImmediateRunner())  # type: ignore[arg-type]
+    page._profile_id = 7
+
+    page.add_sources([source, folder, source])
+
+    assert page._selected_files == [source.resolve(), folder.resolve()]
+    assert page.upload_sources.count() == 2
+    assert page.file_summary.text() == "업로드 대상 2개"
+    assert page.upload.text() == "업로드"
+    assert page.upload.property("variant") == "primary"
+    assert page.upload.isEnabled()
+
+    page.upload_sources.setCurrentRow(0)
+    page.remove_selected_sources()
+    assert page._selected_files == [folder.resolve()]
+    page._upload_in_progress = True
+    page._sync_upload_action()
+    assert page.upload.text() == "업로드 취소"
+    assert page.upload.property("variant") == "danger"
+    page._upload_in_progress = False
+    page.clear_sources()
+    assert page.upload_sources.count() == 0
+    assert not page.upload.isEnabled()
 
 
 def test_pre_cancelled_cancellable_task_runs_cleanup_contract() -> None:
@@ -387,11 +440,11 @@ def test_actual_s3_upload_resumes_after_mfa_with_same_plan_and_token(tmp_path: P
 
     operation_ids: list[str] = []
 
-    def upload(upload_plan, *, overwrite, context):
+    def upload(upload_plan, *, policy, context):
         nonlocal upload_calls
         upload_calls += 1
         assert upload_plan is plan
-        assert not overwrite
+        assert policy is UploadConflictPolicy.SKIP_EXISTING
         tokens.append(context.cancellation)
         operation_ids.append(context.operation_id)
         if upload_calls == 1:
@@ -413,7 +466,7 @@ def test_actual_s3_upload_resumes_after_mfa_with_same_plan_and_token(tmp_path: P
         locations,
         s3,
         ImmediateRunner(),  # type: ignore[arg-type]
-        lambda _parent, _plan: (True, False),
+        lambda _parent, _plan: UploadConflictPolicy.SKIP_EXISTING,
         authenticated,
         lambda _parent, _arn: "123456",
     )
@@ -430,7 +483,7 @@ def test_actual_s3_upload_resumes_after_mfa_with_same_plan_and_token(tmp_path: P
     assert operation_ids[1] == "auth-op"
     assert refreshes.resume_calls == [("auth-op", "123456")]
     assert page.progress.value() == 100
-    assert notices == ["S3 업로드를 완료했습니다."]
+    assert notices == ["S3 업로드를 완료했습니다. (1개)"]
 
 
 def test_upload_mfa_cancel_clears_handle_and_shutdown_completes_immediately(
@@ -458,7 +511,7 @@ def test_upload_mfa_cancel_clears_handle_and_shutdown_completes_immediately(
         locations,
         s3,
         ImmediateRunner(),  # type: ignore[arg-type]
-        lambda _parent, _plan: (True, False),
+        lambda _parent, _plan: UploadConflictPolicy.SKIP_EXISTING,
         authenticated,
         lambda _parent, _arn: None,
     )

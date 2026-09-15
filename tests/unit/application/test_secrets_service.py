@@ -71,25 +71,115 @@ def test_persistent_remote_command_runs_fixed_lookup_then_keeps_platform_shell()
         build_persistent_remote_secret_command("db/dev", "Plan9")
 
 
-def test_successful_lookup_auto_registers_and_saved_crud_is_profile_scoped() -> None:
-    service, gateway = build_service('{"host":"db.internal"}')
+def test_direct_lookup_upserts_raw_value_and_direct_context() -> None:
+    raw_value = '{"host":"db.internal"}'
+    service, gateway = build_service(raw_value)
     store = Mock()
     service._saved = store
-    store.get_saved_secret_by_identifier.return_value = None
-    created = SavedSecret(3, 7, "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:test")
-    store.create_saved_secret.return_value = created
-    store.list_saved_secrets.return_value = [created]
-    store.get_saved_secret.return_value = created
-    store.update_saved_secret.return_value = SavedSecret(3, 7, "db/prod")
 
     service.get("db/dev", "dev")
-    assert service.list_saved("dev") == [created]
-    assert service.update_saved(3, "db/prod", "dev").identifier == "db/prod"
-    service.delete_saved(3, "dev")
 
     gateway.get_secret_value.assert_called_once()
-    store.create_saved_secret.assert_called_once()
+    store.upsert_saved_secret.assert_called_once_with(
+        SavedSecret(
+            None,
+            7,
+            "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:test",
+            value=raw_value,
+            lookup_mode=SecretLookupMode.DIRECT,
+        )
+    )
+    store.create_saved_secret.assert_not_called()
+
+
+def test_lookup_snapshot_refresh_uses_upsert_for_existing_identifier() -> None:
+    service, _gateway = build_service("new-local-snapshot")
+    store = Mock()
+    service._saved = store
+    refreshed = SavedSecret(3, 7, "db/dev", value="new-local-snapshot")
+    store.upsert_saved_secret.return_value = refreshed
+
+    result = service.remember(
+        "db/dev",
+        "dev",
+        value="new-local-snapshot",
+        lookup_mode=SecretLookupMode.DIRECT,
+    )
+
+    assert result is refreshed
+    store.upsert_saved_secret.assert_called_once_with(
+        SavedSecret(
+            None,
+            7,
+            "db/dev",
+            value="new-local-snapshot",
+            lookup_mode=SecretLookupMode.DIRECT,
+        )
+    )
+    store.get_saved_secret_by_identifier.assert_not_called()
+    store.create_saved_secret.assert_not_called()
+
+
+def test_saved_crud_is_profile_scoped_and_local_update_never_writes_aws() -> None:
+    service, gateway = build_service("unused")
+    store = Mock()
+    service._saved = store
+    existing = SavedSecret(
+        3,
+        7,
+        "db/dev",
+        value="old-local-value",
+        lookup_mode=SecretLookupMode.VIA_EC2,
+        relay_instance_id="i-relay",
+    )
+    updated = SavedSecret(
+        3,
+        7,
+        "db/prod",
+        value="new-local-value",
+        lookup_mode=SecretLookupMode.VIA_EC2,
+        relay_instance_id="i-relay",
+    )
+    store.list_saved_secrets.return_value = [existing]
+    store.get_saved_secret.return_value = existing
+    store.update_saved_secret.return_value = updated
+
+    assert service.list_saved("dev") == [existing]
+    assert service.update_saved(3, "db/prod", "dev", value="new-local-value") == updated
+    service.delete_saved(3, "dev")
+
+    store.update_saved_secret.assert_called_once_with(updated)
     store.delete_saved_secret.assert_called_once_with(3)
+    gateway.put_secret_value.assert_not_called()
+    gateway.get_secret_value.assert_not_called()
+
+
+def test_load_saved_uses_local_snapshot_only_and_enforces_profile_scope() -> None:
+    service, gateway = build_service("aws-value-must-not-be-read")
+    store = Mock()
+    service._saved = store
+    existing = SavedSecret(
+        3,
+        7,
+        "db/dev",
+        value='{ "password": "local-only" }',  # pragma: allowlist secret
+        lookup_mode=SecretLookupMode.VIA_EC2,
+        relay_instance_id="i-relay",
+    )
+    store.get_saved_secret.return_value = existing
+
+    saved, result = service.load_saved(3, "dev")
+
+    assert saved is existing
+    assert result.secret_id == "db/dev"
+    assert result.field("password").reveal() == "local-only"
+    gateway.get_secret_value.assert_not_called()
+    gateway.put_secret_value.assert_not_called()
+    service._sessions.require_credentials.assert_not_called()
+
+    store.get_saved_secret.return_value = SavedSecret(3, 8, "db/dev")
+    with pytest.raises(ConfigurationError, match="secret.saved.not_found"):
+        service.load_saved(3, "dev")
 
 
 def test_json_is_flattened_and_sensitive_names_are_masked_recursively() -> None:
@@ -207,6 +297,8 @@ def test_absent_field_error_does_not_include_secret_value() -> None:
 
 def test_via_ec2_requires_consent_valid_id_and_selected_online_instance() -> None:
     service, direct = build_service('{"host":"db.internal","port":3306}')
+    store = Mock()
+    service._saved = store
     managed = Mock()
     managed.list_online.return_value = [
         ManagedInstance("i-online", "Online", "10.0.0.1", "Amazon Linux")
@@ -251,6 +343,16 @@ def test_via_ec2_requires_consent_valid_id_and_selected_online_instance() -> Non
         "i-online",
         "Amazon Linux",
         "db/dev",
+    )
+    store.upsert_saved_secret.assert_called_once_with(
+        SavedSecret(
+            None,
+            7,
+            "db/dev",
+            value='{"host":"db.internal","port":3306}',
+            lookup_mode=SecretLookupMode.VIA_EC2,
+            relay_instance_id="i-online",
+        )
     )
 
 

@@ -14,6 +14,7 @@ from aws_connect.application.s3_service import (
     S3LocationService,
     S3Service,
     SaveS3LocationRequest,
+    UploadConflictPolicy,
 )
 from aws_connect.domain.aws_profile import AwsProfile, PlainCredentials
 from aws_connect.domain.errors import ConfigurationError, CredentialValidationError, S3TransferError
@@ -148,7 +149,85 @@ def test_download_object_validates_target_and_delegates_exact_key(tmp_path: Path
         service.download_object("test-upload-bucket", "reports/", destination, "dev")
 
 
-def test_prepare_upload_reports_uri_and_refuses_unconfirmed_overwrite(tmp_path: Path) -> None:
+def test_prepare_download_expands_mixed_files_and_prefixes_and_deduplicates_keys(
+    tmp_path: Path,
+) -> None:
+    _locations, service, _store, gateway = _services()
+    direct = S3Object("reports/a.txt", 3, None)
+    prefix = S3Object("reports/", 0, None, True)
+    gateway.list_objects_recursive.return_value = [
+        S3Object("reports/", 0, None, True),
+        direct,
+        S3Object("reports/nested/b.txt", 4, None),
+    ]
+
+    plan = service.prepare_download([direct, prefix], tmp_path, "test-upload-bucket", "dev")
+
+    assert [(item.key, item.destination) for item in plan.items] == [
+        ("reports/a.txt", tmp_path / "reports" / "a.txt"),
+        ("reports/nested/b.txt", tmp_path / "reports" / "nested" / "b.txt"),
+    ]
+    gateway.list_objects_recursive.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("selected", "code"),
+    [
+        ([], "s3.download.selection.required"),
+        ([S3Object("../escape.txt", 1, None)], "s3.download.key.invalid"),
+        (
+            [S3Object("reports/a.txt", 1, None), S3Object("reports//a.txt", 1, None)],
+            "s3.download.destination.duplicate",
+        ),
+    ],
+)
+def test_prepare_download_rejects_empty_traversal_and_local_destination_duplicates(
+    tmp_path: Path, selected: list[S3Object], code: str
+) -> None:
+    _locations, service, _store, _gateway = _services()
+
+    with pytest.raises(ConfigurationError, match=code):
+        service.prepare_download(selected, tmp_path, "test-upload-bucket", "dev")
+
+
+def test_download_reports_serial_progress_and_preserves_partial_failure(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    first = S3Object("reports/a.txt", 3, None)
+    second = S3Object("reports/b.txt", 4, None)
+    plan = service.prepare_download([first, second], tmp_path, "test-upload-bucket", "dev")
+    calls = 0
+
+    def download(*args) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise S3TransferError("s3.transfer.failed", "network")
+        args[-2](3)
+
+    gateway.download_file.side_effect = download
+    events = []
+
+    with pytest.raises(S3TransferError, match="s3.transfer.failed"):
+        service.download(plan, OperationContext(progress=events.append))
+
+    assert gateway.download_file.call_count == 2
+    assert events[-1].phase == "failed"
+    assert events[-1].completed == 3
+    assert events[-1].target == "s3://test-upload-bucket/reports/b.txt"
+
+
+def test_download_maps_gateway_cancellation_to_operation_cancelled(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    plan = service.prepare_download(
+        [S3Object("reports/a.txt", 3, None)], tmp_path, "test-upload-bucket", "dev"
+    )
+    gateway.download_file.side_effect = S3TransferError("s3.download.cancelled", "cancelled")
+
+    with pytest.raises(OperationCancelled):
+        service.download(plan, OperationContext())
+
+
+def test_prepare_upload_reports_uri_and_skip_policy_omits_existing(tmp_path: Path) -> None:
     _locations, service, _store, gateway = _services()
     source = tmp_path / "report.txt"
     source.write_text("payload", encoding="utf-8")
@@ -158,8 +237,10 @@ def test_prepare_upload_reports_uri_and_refuses_unconfirmed_overwrite(tmp_path: 
 
     assert plan.items[0].uri == "s3://test-upload-bucket/incoming/report.txt"
     assert plan.items[0].exists
-    with pytest.raises(ConfigurationError, match="s3.upload.overwrite_confirmation_required"):
-        service.upload(plan, overwrite=False, context=OperationContext())
+    result = service.upload(
+        plan, policy=UploadConflictPolicy.SKIP_EXISTING, context=OperationContext()
+    )
+    assert result.skipped == (plan.items[0].uri,)
     gateway.put_file.assert_not_called()
 
 
@@ -174,6 +255,41 @@ def test_prepare_upload_rejects_duplicate_target_keys(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="s3.upload.target.duplicate"):
         service.prepare_upload([first, second], "test-upload-bucket")
+
+
+def test_prepare_upload_recurses_folders_preserves_relative_keys_and_deduplicates_sources(
+    tmp_path: Path,
+) -> None:
+    _locations, service, _store, gateway = _services()
+    folder = tmp_path / "folder"
+    nested = folder / "nested"
+    nested.mkdir(parents=True)
+    first = folder / "first.txt"
+    second = nested / "second.txt"
+    first.write_text("one", encoding="utf-8")
+    second.write_text("two", encoding="utf-8")
+
+    plan = service.prepare_upload([folder, first], "test-upload-bucket", "incoming", "dev")
+
+    assert [(item.source, item.key) for item in plan.items] == [
+        (first.resolve(), "incoming/first.txt"),
+        (second.resolve(), "incoming/nested/second.txt"),
+    ]
+    assert gateway.object_exists.call_count == 2
+
+
+def test_prepare_upload_rejects_symbolic_links(tmp_path: Path) -> None:
+    _locations, service, _store, _gateway = _services()
+    source = tmp_path / "source.txt"
+    source.write_text("payload", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to(source)
+    except OSError:
+        pytest.skip("Symbolic links are unavailable on this Windows host")
+
+    with pytest.raises(ConfigurationError, match="s3.upload.source.symlink"):
+        service.prepare_upload([link], "test-upload-bucket")
 
 
 def test_prepare_upload_rejects_empty_missing_and_unauthenticated_sources(tmp_path: Path) -> None:
@@ -228,6 +344,26 @@ def test_multiple_files_upload_in_request_order(tmp_path: Path) -> None:
         "s3://test-upload-bucket/incoming/second.txt",
     )
     assert gateway.put_file.call_count == 2
+
+
+def test_skip_existing_rechecks_each_transfer_and_reports_late_collision(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    gateway.object_exists.side_effect = (False, False, True, False)
+    plan = service.prepare_upload([first, second], "test-upload-bucket", "incoming", "dev")
+    gateway.put_file.side_effect = lambda *_args: _args[-2](3)
+
+    result = service.upload(
+        plan, policy=UploadConflictPolicy.SKIP_EXISTING, context=OperationContext()
+    )
+
+    assert result.uploaded == ("s3://test-upload-bucket/incoming/second.txt",)
+    assert result.skipped == ("s3://test-upload-bucket/incoming/first.txt",)
+    assert result.bytes_transferred == 3
+    assert gateway.put_file.call_count == 1
 
 
 def test_multi_file_failure_preserves_completed_file_summary(tmp_path: Path) -> None:
@@ -327,14 +463,14 @@ def test_explicit_retry_of_failed_multipart_starts_fresh_operation_and_progress(
     assert gateway.multipart_file.call_count == 2
 
 
-def test_upload_rechecks_new_objects_before_using_a_stale_plan(tmp_path: Path) -> None:
+def test_legacy_overwrite_false_maps_to_skip_existing_for_stale_plan(tmp_path: Path) -> None:
     _locations, service, _store, gateway = _services()
     source = tmp_path / "report.txt"
     source.write_text("payload", encoding="utf-8")
     gateway.object_exists.side_effect = (False, True)
     plan = service.prepare_upload([source], "test-upload-bucket")
 
-    with pytest.raises(ConfigurationError, match="s3.upload.overwrite_confirmation_required"):
-        service.upload(plan, overwrite=False, context=OperationContext())
+    result = service.upload(plan, overwrite=False, context=OperationContext())
 
+    assert result.skipped == (plan.items[0].uri,)
     gateway.put_file.assert_not_called()
