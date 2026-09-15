@@ -13,7 +13,7 @@ from aws_connect.application.ports import PrivateFileAccess
 from aws_connect.domain.aws_profile import AwsProfile, SessionCredentials
 from aws_connect.domain.errors import ConfigurationError
 from aws_connect.domain.s3_location import S3Location
-from aws_connect.domain.saved_secret import SavedSecret
+from aws_connect.domain.saved_secret import SavedSecret, SecretLookupMode
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -134,6 +134,18 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         ALTER TABLE aws_profiles
         ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 1
             CHECK (mfa_enabled IN (0, 1));
+        """,
+    ),
+    (
+        8,
+        """
+        ALTER TABLE saved_secrets
+        ADD COLUMN value TEXT NOT NULL DEFAULT '';
+        ALTER TABLE saved_secrets
+        ADD COLUMN lookup_mode TEXT NOT NULL DEFAULT 'direct'
+            CHECK (lookup_mode IN ('direct', 'via_ec2'));
+        ALTER TABLE saved_secrets
+        ADD COLUMN relay_instance_id TEXT;
         """,
     ),
 )
@@ -650,8 +662,17 @@ class SqliteProfileStore:
             with self._connect() as connection:
                 cursor = connection.execute(
                     """INSERT INTO saved_secrets
-                    (profile_id, identifier, created_at, updated_at) VALUES (?, ?, ?, ?)""",
-                    (saved_secret.profile_id, saved_secret.identifier, now, now),
+                    (profile_id, identifier, value, lookup_mode, relay_instance_id,
+                     created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        saved_secret.profile_id,
+                        saved_secret.identifier,
+                        saved_secret.value,
+                        saved_secret.lookup_mode.value,
+                        saved_secret.relay_instance_id,
+                        now,
+                        now,
+                    ),
                 )
                 saved_secret_id = int(cursor.lastrowid or 0)
         except sqlite3.IntegrityError as error:
@@ -661,14 +682,55 @@ class SqliteProfileStore:
             raise _store_error("secret.saved.create.failed")
         return created
 
+    def upsert_saved_secret(self, saved_secret: SavedSecret) -> SavedSecret:
+        """Insert or refresh a lookup snapshot while preserving an existing row ID."""
+
+        now = _now_text()
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """INSERT INTO saved_secrets
+                    (profile_id, identifier, value, lookup_mode, relay_instance_id,
+                     created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(profile_id, identifier) DO UPDATE SET
+                        value=excluded.value,
+                        lookup_mode=excluded.lookup_mode,
+                        relay_instance_id=excluded.relay_instance_id,
+                        updated_at=excluded.updated_at""",
+                    (
+                        saved_secret.profile_id,
+                        saved_secret.identifier,
+                        saved_secret.value,
+                        saved_secret.lookup_mode.value,
+                        saved_secret.relay_instance_id,
+                        now,
+                        now,
+                    ),
+                )
+                row = connection.execute(
+                    """SELECT * FROM saved_secrets
+                    WHERE profile_id=? AND identifier=?""",
+                    (saved_secret.profile_id, saved_secret.identifier),
+                ).fetchone()
+                if row is None:
+                    raise _store_error("secret.saved.upsert.failed")
+                persisted = _saved_secret(row)
+        except sqlite3.IntegrityError as error:
+            raise _saved_secret_store_error(error) from error
+        return persisted
+
     def update_saved_secret(self, saved_secret: SavedSecret) -> SavedSecret:
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    """UPDATE saved_secrets SET identifier=?, updated_at=?
+                    """UPDATE saved_secrets SET identifier=?, value=?, lookup_mode=?,
+                    relay_instance_id=?, updated_at=?
                     WHERE id=? AND profile_id=?""",
                     (
                         saved_secret.identifier,
+                        saved_secret.value,
+                        saved_secret.lookup_mode.value,
+                        saved_secret.relay_instance_id,
                         _now_text(),
                         saved_secret.require_id(),
                         saved_secret.profile_id,
@@ -742,6 +804,11 @@ def _saved_secret(row: sqlite3.Row) -> SavedSecret:
         id=int(row["id"]),
         profile_id=int(row["profile_id"]),
         identifier=str(row["identifier"]),
+        value=str(row["value"]),
+        lookup_mode=SecretLookupMode(str(row["lookup_mode"])),
+        relay_instance_id=(
+            str(row["relay_instance_id"]) if row["relay_instance_id"] is not None else None
+        ),
     )
 
 

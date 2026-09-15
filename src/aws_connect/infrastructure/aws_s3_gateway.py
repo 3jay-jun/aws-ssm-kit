@@ -58,8 +58,28 @@ class Boto3S3Gateway:
     def list_objects(
         self, credentials: PlainCredentials, region: str, bucket: str, prefix: str
     ) -> list[S3Object]:
+        return self._list_objects(credentials, region, bucket, prefix, delimiter="/")
+
+    def list_objects_recursive(
+        self, credentials: PlainCredentials, region: str, bucket: str, prefix: str
+    ) -> list[S3Object]:
+        """List every object below a prefix without treating child prefixes as rows."""
+
+        return self._list_objects(credentials, region, bucket, prefix, delimiter=None)
+
+    def _list_objects(
+        self,
+        credentials: PlainCredentials,
+        region: str,
+        bucket: str,
+        prefix: str,
+        *,
+        delimiter: str | None,
+    ) -> list[S3Object]:
         client = self._client_factory(credentials, region)
-        request: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix, "Delimiter": "/"}
+        request: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
+        if delimiter is not None:
+            request["Delimiter"] = delimiter
         result: list[S3Object] = []
         try:
             while True:
@@ -73,6 +93,7 @@ class Boto3S3Gateway:
                         str(item["Key"]),
                         int(item.get("Size", 0)),
                         _datetime(item.get("LastModified")),
+                        str(item.get("Key", "")).endswith("/"),
                     )
                     for item in response.get("Contents", [])
                     if str(item.get("Key", "")) != prefix
@@ -110,17 +131,41 @@ class Boto3S3Gateway:
         bucket: str,
         key: str,
         destination: Path,
+        progress: Callable[[int], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> None:
         client = self._client_factory(credentials, region)
         temporary: Path | None = None
+        report_progress = progress or (lambda _delta: None)
+        is_cancelled = cancelled or (lambda: False)
+
+        def transferred(delta: int) -> None:
+            if is_cancelled():
+                raise _Cancelled
+            report_progress(delta)
+
         try:
+            if is_cancelled():
+                raise _Cancelled
             with tempfile.NamedTemporaryFile(
                 prefix=".aws-connect-", suffix=".download", dir=destination.parent, delete=False
             ) as raw:
                 temporary = Path(raw.name)
-            client.download_file(bucket, key, str(temporary))
+            if progress is None and cancelled is None:
+                client.download_file(bucket, key, str(temporary))
+            else:
+                client.download_file(bucket, key, str(temporary), Callback=transferred)
+            if is_cancelled():
+                raise _Cancelled
             temporary.replace(destination)
             temporary = None
+        except (_Cancelled, KeyboardInterrupt) as error:
+            raise S3TransferError(
+                "s3.download.cancelled",
+                "Download cancelled before GetObject completed",
+                aws_service="s3",
+                aws_action="GetObject",
+            ) from error
         except Exception as error:
             raise _translate_transfer(error, "GetObject") from error
         finally:

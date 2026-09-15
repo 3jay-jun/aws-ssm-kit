@@ -7,8 +7,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -33,10 +32,14 @@ from aws_connect.application.authenticated_operation import AuthenticatedOperati
 from aws_connect.application.operations import OperationContext, ProgressEvent
 from aws_connect.application.ports import S3Object
 from aws_connect.application.s3_service import (
+    DownloadPlan,
+    DownloadSummary,
     S3LocationService,
     S3Service,
     SaveS3LocationRequest,
+    UploadConflictPolicy,
     UploadPlan,
+    UploadSummary,
 )
 from aws_connect.domain.errors import ApplicationError, AwsPermissionError, ConfigurationError
 from aws_connect.domain.s3_location import S3Location
@@ -45,10 +48,9 @@ from aws_connect.presentation.gui.table_selection import use_first_column_select
 from aws_connect.presentation.gui.tasks import GuiTaskRunner, TaskHandle
 from aws_connect.presentation.gui.view_models import build_s3_progress_view_model
 
-ConfirmUpload = Callable[[QWidget, UploadPlan], tuple[bool, bool]]
+ConfirmUpload = Callable[[QWidget, UploadPlan], UploadConflictPolicy | None]
 ConfirmObjectDelete = Callable[[QWidget, S3Object], bool]
-DownloadDestination = Callable[[QWidget, S3Object], Path | None]
-OpenDownloadedFile = Callable[[Path], bool]
+DownloadDestination = Callable[[QWidget], Path | None]
 
 
 class _DropZone(QLabel):
@@ -76,7 +78,6 @@ class S3Page(QWidget):
         mfa_code_provider: MfaCodeProvider | None = None,
         confirm_delete: ConfirmObjectDelete | None = None,
         download_destination: DownloadDestination | None = None,
-        open_downloaded_file: OpenDownloadedFile | None = None,
     ) -> None:
         super().__init__()
         self._locations = locations
@@ -85,7 +86,6 @@ class S3Page(QWidget):
         self._confirm_upload = confirm_upload or _confirm_upload
         self._confirm_delete = confirm_delete or _confirm_object_delete
         self._download_destination = download_destination or _choose_download_destination
-        self._open_downloaded_file = open_downloaded_file or _open_downloaded_file
         self._authenticated = (
             AuthenticatedGuiRunner(authenticated, runner, self, mfa_code_provider)
             if authenticated is not None and mfa_code_provider is not None
@@ -97,6 +97,8 @@ class S3Page(QWidget):
         self._selected_files: list[Path] = []
         self._upload_task: TaskHandle | None = None
         self._upload_in_progress = False
+        self._download_task: TaskHandle | None = None
+        self._download_in_progress = False
         self._shutdown_callbacks: list[Callable[[], None]] = []
         self.setAcceptDrops(True)
         self._build()
@@ -115,11 +117,6 @@ class S3Page(QWidget):
         heading_copy.addWidget(subtitle)
         page_head.addLayout(heading_copy)
         page_head.addStretch()
-        self.upload = QPushButton("파일 추가")
-        self.upload.setObjectName("s3_upload")
-        self.upload.setProperty("variant", "primary")
-        self.upload.clicked.connect(self.prepare_upload)
-        page_head.addWidget(self.upload, alignment=Qt.AlignmentFlag.AlignTop)
         layout.addLayout(page_head)
         layout.addSpacing(8)
 
@@ -169,7 +166,7 @@ class S3Page(QWidget):
         self.objects.cellDoubleClicked.connect(self._object_activated)
         self.objects.itemSelectionChanged.connect(self._sync_object_actions)
         self.objects.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.objects.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.objects.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.objects.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.objects.verticalHeader().setDefaultSectionSize(46)
         use_first_column_selection_bar(self.objects)
@@ -178,29 +175,36 @@ class S3Page(QWidget):
         self.drop_zone.setObjectName("s3_drop_zone")
         self.drop_zone.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.drop_zone.setMinimumHeight(0)
-        self.drop_zone.clicked.connect(self.choose_files)
+        self.drop_zone.clicked.connect(self.choose_sources)
         right.addWidget(self.drop_zone)
+        self.upload_sources = QListWidget()
+        self.upload_sources.setObjectName("s3_upload_sources")
+        self.upload_sources.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.upload_sources.setMaximumHeight(112)
+        right.addWidget(self.upload_sources)
         file_row = QHBoxLayout()
-        choose = QPushButton("파일 선택")
-        choose.setObjectName("s3_file_choose")
-        choose.clicked.connect(self.choose_files)
         self.file_summary = QLabel("선택한 파일이 없습니다.")
         self.file_summary.setObjectName("s3_file_summary")
-        file_row.addWidget(choose)
         file_row.addWidget(self.file_summary, 1)
-        self.open_object_button = QPushButton("선택 파일 열기")
+        remove_sources = QPushButton("선택 제거")
+        remove_sources.clicked.connect(self.remove_selected_sources)
+        file_row.addWidget(remove_sources)
+        clear_sources = QPushButton("전체 비우기")
+        clear_sources.clicked.connect(self.clear_sources)
+        file_row.addWidget(clear_sources)
+        self.open_object_button = QPushButton("다운로드")
         self.open_object_button.setEnabled(False)
-        self.open_object_button.clicked.connect(self.open_selected_object)
+        self.open_object_button.clicked.connect(self.download_selected_objects)
         file_row.addWidget(self.open_object_button)
         self.delete_object_button = QPushButton("선택 파일 삭제")
         self.delete_object_button.setProperty("variant", "danger")
         self.delete_object_button.setEnabled(False)
         self.delete_object_button.clicked.connect(self.delete_selected_object)
         file_row.addWidget(self.delete_object_button)
-        self.cancel = QPushButton("업로드 취소")
-        self.cancel.setEnabled(False)
-        self.cancel.clicked.connect(self.cancel_upload)
-        file_row.addWidget(self.cancel)
+        self.upload = QPushButton("업로드")
+        self.upload.setObjectName("s3_upload")
+        self.upload.clicked.connect(self.toggle_upload)
+        file_row.addWidget(self.upload)
         right.addLayout(file_row)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -242,12 +246,13 @@ class S3Page(QWidget):
         layout.addWidget(saved_panel)
         saved_panel.hide()
         self._render_breadcrumb()
+        self._sync_upload_action()
 
     def set_profile(self, profile_id: int | None) -> None:
         self.cancel_upload()
+        self.cancel_download()
         self._profile_id = profile_id
-        self._selected_files.clear()
-        self.file_summary.setText("선택한 파일이 없습니다. 파일을 끌어놓을 수도 있습니다.")
+        self.clear_sources()
         self.objects.setRowCount(0)
         self._use_direct_bucket_input()
         self.bucket_catalog.clear()
@@ -456,58 +461,99 @@ class S3Page(QWidget):
         self._sync_object_actions()
 
     def _sync_object_actions(self) -> None:
-        row = self.objects.currentRow()
-        selected = self._listed_objects[row] if 0 <= row < len(self._listed_objects) else None
-        self.open_object_button.setEnabled(selected is not None and not selected.is_prefix)
-        self.delete_object_button.setEnabled(selected is not None and not selected.is_prefix)
+        selected = self._selected_objects()
+        self.open_object_button.setEnabled(bool(selected) and not self._download_in_progress)
+        self.delete_object_button.setEnabled(len(selected) == 1 and not selected[0].is_prefix)
 
-    def open_selected_object(self) -> None:
-        row = self.objects.currentRow()
-        if self._profile_id is None or not (0 <= row < len(self._listed_objects)):
+    def _selected_objects(self) -> list[S3Object]:
+        rows = sorted(index.row() for index in self.objects.selectionModel().selectedRows())
+        return [self._listed_objects[row] for row in rows if 0 <= row < len(self._listed_objects)]
+
+    def download_selected_objects(self) -> None:
+        selected = tuple(self._selected_objects())
+        if self._profile_id is None or not selected:
             return
-        selected = self._listed_objects[row]
-        if selected.is_prefix:
-            return
-        destination = self._download_destination(self, selected)
-        if destination is None:
+        destination_root = self._download_destination(self)
+        if destination_root is None:
             return
         profile_id = self._profile_id
         bucket = self._current_bucket()
         self.open_object_button.setEnabled(False)
 
-        def action() -> Path:
-            return self._s3.download_object(bucket, selected.key, destination, profile_id)
+        def action() -> DownloadPlan:
+            return self._s3.prepare_download(selected, destination_root, bucket, profile_id)
 
         if self._authenticated is None:
-            self._runner.submit(action, self._object_downloaded, self._object_download_failed)
+            self._runner.submit(action, self._download_prepared, self._download_failed)
         else:
             self._authenticated.submit(
                 profile_id,
                 action,
-                self._object_downloaded,
-                self._object_download_failed,
-                self._mfa_cancelled,
+                self._download_prepared,
+                self._download_failed,
+                self._download_mfa_cancelled,
             )
 
-    def _object_downloaded(self, value: Any) -> None:
-        destination = Path(value)
+    def _download_prepared(self, value: Any) -> None:
+        plan: DownloadPlan = value
+        self._download_in_progress = True
         self._sync_object_actions()
-        if not self._open_downloaded_file(destination):
-            self.error_raised.emit(
-                ConfigurationError("s3.open.failed", f"Could not open {destination.name}")
+        if self._authenticated is None:
+            handle = self._runner.submit_cancellable(
+                lambda token, progress: self._s3.download(
+                    plan, OperationContext(cancellation=token, progress=progress)
+                ),
+                self._download_completed,
+                self._download_failed,
+                self._progressed,
             )
-            return
-        self.notice_raised.emit(f"{destination.name} 파일을 열었습니다.")
+        else:
+            handle = self._authenticated.submit_long(
+                plan.profile_id,
+                lambda context: self._s3.download(plan, context),
+                self._download_completed,
+                self._download_failed,
+                self._progressed,
+                self._download_cancelled,
+            )
+        if self._download_in_progress:
+            self._download_task = handle
 
-    def _object_download_failed(self, error: ApplicationError) -> None:
+    def _download_completed(self, value: Any) -> None:
+        summary: DownloadSummary = value
+        self._download_in_progress = False
+        self._download_task = None
+        self._sync_object_actions()
+        self.notice_raised.emit(f"S3 다운로드를 완료했습니다. ({len(summary.downloaded)}개)")
+        self._finish_shutdown()
+
+    def _download_failed(self, error: ApplicationError) -> None:
+        self._download_in_progress = False
+        self._download_task = None
         self._sync_object_actions()
         self.error_raised.emit(error)
+        self._finish_shutdown()
+
+    def _download_cancelled(self) -> None:
+        self._download_in_progress = False
+        self._download_task = None
+        self._sync_object_actions()
+        self.upload_status.setText("S3 다운로드를 취소했습니다.")
+        self.notice_raised.emit("S3 다운로드를 취소했습니다.")
+        self._finish_shutdown()
+
+    def _download_mfa_cancelled(self) -> None:
+        self._download_in_progress = False
+        self._download_task = None
+        self._sync_object_actions()
+        self.upload_status.setText("MFA 인증을 취소했습니다.")
+        self._finish_shutdown()
 
     def delete_selected_object(self) -> None:
-        row = self.objects.currentRow()
-        if self._profile_id is None or not (0 <= row < len(self._listed_objects)):
+        selected_objects = self._selected_objects()
+        if self._profile_id is None or len(selected_objects) != 1:
             return
-        selected = self._listed_objects[row]
+        selected = selected_objects[0]
         if selected.is_prefix or not self._confirm_delete(self, selected):
             return
         profile_id = self._profile_id
@@ -549,13 +595,76 @@ class S3Page(QWidget):
         self._render_breadcrumb()
         self.list_objects()
 
-    def choose_files(self) -> None:
-        paths, _filter = QFileDialog.getOpenFileNames(self, "업로드할 파일 선택")
-        self.set_files([Path(value) for value in paths])
+    def choose_sources(self) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("업로드 대상 추가")
+        dialog.setText("파일 또는 폴더를 추가하세요.")
+        files = dialog.addButton("파일 추가", QMessageBox.ButtonRole.AcceptRole)
+        folder = dialog.addButton("폴더 추가", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is files:
+            paths, _filter = QFileDialog.getOpenFileNames(self, "업로드할 파일 선택")
+            self.add_sources(tuple(Path(value) for value in paths))
+        elif dialog.clickedButton() is folder:
+            path = QFileDialog.getExistingDirectory(self, "업로드할 폴더 선택")
+            if path:
+                self.add_sources((Path(path),))
 
     def set_files(self, values: Sequence[Path]) -> None:
-        self._selected_files = [value for value in values if value.is_file()]
-        self.file_summary.setText(f"{len(self._selected_files)}개 파일 선택")
+        """Compatibility helper for adapters that replace the current file selection."""
+
+        self._selected_files.clear()
+        self.add_sources(values)
+
+    def add_sources(self, values: Sequence[Path]) -> None:
+        known = {value.expanduser().resolve() for value in self._selected_files}
+        for value in values:
+            source = Path(value).expanduser().resolve()
+            if source in known or not (source.is_file() or source.is_dir()):
+                continue
+            known.add(source)
+            self._selected_files.append(source)
+        self._render_sources()
+
+    def remove_selected_sources(self) -> None:
+        rows = sorted(
+            (self.upload_sources.row(item) for item in self.upload_sources.selectedItems()),
+            reverse=True,
+        )
+        for row in rows:
+            if 0 <= row < len(self._selected_files):
+                del self._selected_files[row]
+        self._render_sources()
+
+    def clear_sources(self) -> None:
+        self._selected_files.clear()
+        self._render_sources()
+
+    def _render_sources(self) -> None:
+        self.upload_sources.clear()
+        self.upload_sources.addItems([str(source) for source in self._selected_files])
+        count = len(self._selected_files)
+        self.file_summary.setText(f"업로드 대상 {count}개" if count else "선택한 파일이 없습니다.")
+        self._sync_upload_action()
+
+    def toggle_upload(self) -> None:
+        if self._upload_in_progress:
+            self.cancel_upload()
+        else:
+            self.prepare_upload()
+
+    def _sync_upload_action(self) -> None:
+        if self._upload_in_progress:
+            self.upload.setText("업로드 취소")
+            self.upload.setProperty("variant", "danger")
+            self.upload.setEnabled(True)
+        else:
+            self.upload.setText("업로드")
+            self.upload.setProperty("variant", "primary")
+            self.upload.setEnabled(self._profile_id is not None and bool(self._selected_files))
+        self.upload.style().unpolish(self.upload)
+        self.upload.style().polish(self.upload)
 
     def prepare_upload(self) -> None:
         if self._profile_id is None:
@@ -582,17 +691,17 @@ class S3Page(QWidget):
 
     def _upload_prepared(self, value: Any) -> None:
         plan: UploadPlan = value
-        confirmed, overwrite = self._confirm_upload(self, plan)
-        if not confirmed:
-            self.upload.setEnabled(True)
+        policy = self._confirm_upload(self, plan)
+        if policy is None:
+            self._sync_upload_action()
             return
-        self.cancel.setEnabled(True)
         self._upload_in_progress = True
+        self._sync_upload_action()
         if self._authenticated is None:
             handle = self._runner.submit_cancellable(
                 lambda token, progress: self._s3.upload(
                     plan,
-                    overwrite=overwrite,
+                    policy=policy,
                     context=OperationContext(cancellation=token, progress=progress),
                 ),
                 self._upload_completed,
@@ -602,7 +711,7 @@ class S3Page(QWidget):
         else:
             handle = self._authenticated.submit_long(
                 plan.profile_id,
-                lambda context: self._s3.upload(plan, overwrite=overwrite, context=context),
+                lambda context: self._s3.upload(plan, policy=policy, context=context),
                 self._upload_completed,
                 self._upload_failed,
                 self._progressed,
@@ -618,38 +727,39 @@ class S3Page(QWidget):
         view = build_s3_progress_view_model(event)
         if view.percent is not None:
             self.progress.setValue(view.percent)
-        self.upload_status.setText(view.status_text)
+        if event.message_code.startswith("s3.download") and event.target:
+            self.upload_status.setText(f"다운로드 중: {event.target}")
+        else:
+            self.upload_status.setText(view.status_text)
 
     def _upload_completed(self, value: Any) -> None:
+        summary: UploadSummary = value
         self._upload_in_progress = False
         self._upload_task = None
-        self.upload.setEnabled(True)
-        self.cancel.setEnabled(False)
-        self.notice_raised.emit("S3 업로드를 완료했습니다.")
+        self._sync_upload_action()
+        skipped = f", 무시 {len(summary.skipped)}개" if summary.skipped else ""
+        self.notice_raised.emit(f"S3 업로드를 완료했습니다. ({len(summary.uploaded)}개{skipped})")
         self.list_objects()
         self._finish_shutdown()
 
     def _upload_failed(self, error: ApplicationError) -> None:
         self._upload_in_progress = False
         self._upload_task = None
-        self.upload.setEnabled(True)
-        self.cancel.setEnabled(False)
+        self._sync_upload_action()
         self.error_raised.emit(error)
         self._finish_shutdown()
 
     def _mfa_cancelled(self) -> None:
         self._upload_in_progress = False
         self._upload_task = None
-        self.upload.setEnabled(True)
-        self.cancel.setEnabled(False)
+        self._sync_upload_action()
         self.upload_status.setText("MFA 인증을 취소했습니다.")
         self._finish_shutdown()
 
     def _upload_cancelled(self) -> None:
         self._upload_in_progress = False
         self._upload_task = None
-        self.upload.setEnabled(True)
-        self.cancel.setEnabled(False)
+        self._sync_upload_action()
         self.upload_status.setText("S3 업로드를 취소했습니다.")
         self.notice_raised.emit("S3 업로드를 취소했습니다.")
         self._finish_shutdown()
@@ -658,14 +768,21 @@ class S3Page(QWidget):
         if self._upload_task is not None:
             self._upload_task.cancel()
 
+    def cancel_download(self) -> None:
+        if self._download_task is not None:
+            self._download_task.cancel()
+
     def shutdown(self, completed: Callable[[], None]) -> None:
-        if not self._upload_in_progress:
+        if not self._upload_in_progress and not self._download_in_progress:
             completed()
             return
         self._shutdown_callbacks.append(completed)
         self.cancel_upload()
+        self.cancel_download()
 
     def _finish_shutdown(self) -> None:
+        if self._upload_in_progress or self._download_in_progress:
+            return
         callbacks, self._shutdown_callbacks = self._shutdown_callbacks, []
         for callback in callbacks:
             callback()
@@ -675,38 +792,35 @@ class S3Page(QWidget):
             event.acceptProposedAction()
 
     def dropEvent(self, event: Any) -> None:  # noqa: N802
-        self.set_files(
+        self.add_sources(
             [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         )
         event.acceptProposedAction()
 
 
-def _confirm_upload(parent: QWidget, plan: UploadPlan) -> tuple[bool, bool]:
-    targets = "\n".join(
-        f"{item.source.name} → {item.uri} ({'덮어쓰기' if item.exists else '새 객체'})"
-        for item in plan.items
-    )
-    answer = QMessageBox.question(
-        parent,
-        "S3 업로드 확인",
-        targets,
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
-    )
-    confirmed = answer == QMessageBox.StandardButton.Yes
-    if not confirmed:
-        return False, False
+def _confirm_upload(parent: QWidget, plan: UploadPlan) -> UploadConflictPolicy | None:
     existing = [item.uri for item in plan.items if item.exists]
     if not existing:
-        return True, False
-    overwrite_answer = QMessageBox.warning(
-        parent,
-        "기존 S3 객체 덮어쓰기",
-        "다음 기존 객체를 덮어씁니다:\n" + "\n".join(existing),
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
+        return UploadConflictPolicy.SKIP_EXISTING
+    representative = next(item.source.name for item in plan.items if item.exists)
+    remainder = len(existing) - 1
+    summary = (
+        f"{representative} 외 {remainder}건의 중복 파일이 있습니다."
+        if remainder
+        else f"{representative} 파일이 이미 존재합니다."
     )
-    return overwrite_answer == QMessageBox.StandardButton.Yes, True
+    dialog = QMessageBox(parent)
+    dialog.setWindowTitle("중복 파일")
+    dialog.setText(summary)
+    overwrite = dialog.addButton("덮어쓰기", QMessageBox.ButtonRole.DestructiveRole)
+    skip = dialog.addButton("무시하기", QMessageBox.ButtonRole.AcceptRole)
+    dialog.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+    dialog.exec()
+    if dialog.clickedButton() is overwrite:
+        return UploadConflictPolicy.OVERWRITE
+    if dialog.clickedButton() is skip:
+        return UploadConflictPolicy.SKIP_EXISTING
+    return None
 
 
 def _confirm_object_delete(parent: QWidget, item: S3Object) -> bool:
@@ -720,14 +834,9 @@ def _confirm_object_delete(parent: QWidget, item: S3Object) -> bool:
     return answer == QMessageBox.StandardButton.Yes
 
 
-def _choose_download_destination(parent: QWidget, item: S3Object) -> Path | None:
-    filename = Path(item.key).name
-    selected, _filter = QFileDialog.getSaveFileName(parent, "S3 파일 저장", filename)
+def _choose_download_destination(parent: QWidget) -> Path | None:
+    selected = QFileDialog.getExistingDirectory(parent, "S3 다운로드 폴더 선택")
     return Path(selected) if selected else None
-
-
-def _open_downloaded_file(path: Path) -> bool:
-    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
 def _object_name(item: S3Object, prefix: str) -> str:

@@ -182,16 +182,15 @@ class Ec2Page(QWidget):
         self.table.verticalHeader().setMinimumSectionSize(54)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(0, 60)
-        self.table.setColumnWidth(1, 230)
-        self.table.setColumnWidth(2, 132)
+        self.table.setColumnWidth(2, 148)
         self.table.setColumnWidth(3, 112)
-        self.table.setColumnWidth(4, 88)
+        self.table.setColumnWidth(4, 100)
         self.table.setColumnWidth(5, 120)
         self.table.setShowGrid(False)
         use_first_column_selection_bar(self.table)
@@ -211,14 +210,13 @@ class Ec2Page(QWidget):
         self._poll_timer.timeout.connect(self.refresh_session_states)
 
     def resizeEvent(self, event: Any) -> None:  # noqa: N802
-        """Compress descriptive columns before the fixed row action can be clipped."""
+        """Compress fixed columns before the row action can be clipped."""
 
         compact = self.width() < 900
         self.table.setColumnWidth(0, 52 if compact else 60)
-        self.table.setColumnWidth(1, 165 if compact else 230)
-        self.table.setColumnWidth(2, 115 if compact else 132)
+        self.table.setColumnWidth(2, 128 if compact else 148)
         self.table.setColumnWidth(3, 92 if compact else 112)
-        self.table.setColumnWidth(4, 80 if compact else 88)
+        self.table.setColumnWidth(4, 92 if compact else 100)
         self.table.setColumnWidth(5, 120)
         super().resizeEvent(event)
 

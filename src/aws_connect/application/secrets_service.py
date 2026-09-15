@@ -24,17 +24,13 @@ from aws_connect.application.profile_service import ProfileService
 from aws_connect.domain.aws_profile import PlainCredentials
 from aws_connect.domain.errors import AwsPermissionError, ConfigurationError
 from aws_connect.domain.saved_secret import SavedSecret
+from aws_connect.domain.saved_secret import SecretLookupMode as SecretLookupMode
 from aws_connect.domain.sensitive_data import REDACTED, is_sensitive_name
 
 
 class SecretKind(StrEnum):
     JSON = "json"
     TEXT = "text"
-
-
-class SecretLookupMode(StrEnum):
-    DIRECT = "direct"
-    VIA_EC2 = "via_ec2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,18 +197,48 @@ class SecretsService:
             retrieved.version_stages,
         )
         if self._saved is not None:
-            self.remember(result.secret_id, selected.require_id())
+            self.remember(
+                result.secret_id,
+                selected.require_id(),
+                value=retrieved.secret_string,
+                lookup_mode=mode,
+                relay_instance_id=(
+                    instance_id.strip()
+                    if mode is SecretLookupMode.VIA_EC2 and instance_id is not None
+                    else None
+                ),
+            )
         return result
 
     def list_saved(self, profile: str | int | None = None) -> list[SavedSecret]:
         selected = self._profiles.resolve(profile)
         return self._require_saved_store().list_saved_secrets(selected.require_id())
 
-    def remember(self, identifier: str, profile: str | int | None = None) -> SavedSecret:
+    def remember(
+        self,
+        identifier: str,
+        profile: str | int | None = None,
+        *,
+        value: str | None = None,
+        lookup_mode: SecretLookupMode | None = None,
+        relay_instance_id: str | None = None,
+    ) -> SavedSecret:
         selected = self._profiles.resolve(profile)
         profile_id = selected.require_id()
-        candidate = SavedSecret(None, profile_id, identifier)
         store = self._require_saved_store()
+        has_lookup_snapshot = (
+            value is not None or lookup_mode is not None or relay_instance_id is not None
+        )
+        candidate = SavedSecret(
+            None,
+            profile_id,
+            identifier,
+            value="" if value is None else value,
+            lookup_mode=lookup_mode or SecretLookupMode.DIRECT,
+            relay_instance_id=relay_instance_id,
+        )
+        if has_lookup_snapshot:
+            return store.upsert_saved_secret(candidate)
         existing = store.get_saved_secret_by_identifier(profile_id, candidate.identifier)
         if existing is not None:
             return existing
@@ -227,7 +253,12 @@ class SecretsService:
             return concurrent
 
     def update_saved(
-        self, saved_secret_id: int, identifier: str, profile: str | int | None = None
+        self,
+        saved_secret_id: int,
+        identifier: str,
+        profile: str | int | None = None,
+        *,
+        value: str | None = None,
     ) -> SavedSecret:
         selected = self._profiles.resolve(profile)
         profile_id = selected.require_id()
@@ -235,8 +266,26 @@ class SecretsService:
         if existing is None or existing.profile_id != profile_id:
             raise ConfigurationError("secret.saved.not_found", "Saved Secret was not found")
         return self._require_saved_store().update_saved_secret(
-            SavedSecret(saved_secret_id, profile_id, identifier)
+            SavedSecret(
+                saved_secret_id,
+                profile_id,
+                identifier,
+                value=existing.value if value is None else value,
+                lookup_mode=existing.lookup_mode,
+                relay_instance_id=existing.relay_instance_id,
+            )
         )
+
+    def load_saved(
+        self, saved_secret_id: int, profile: str | int | None = None
+    ) -> tuple[SavedSecret, SecretResult]:
+        """Load one persisted snapshot without making an AWS request."""
+
+        selected = self._profiles.resolve(profile)
+        existing = self._require_saved_store().get_saved_secret(saved_secret_id)
+        if existing is None or existing.profile_id != selected.require_id():
+            raise ConfigurationError("secret.saved.not_found", "Saved Secret was not found")
+        return existing, _parse(existing.identifier, existing.value, None, ())
 
     def delete_saved(self, saved_secret_id: int, profile: str | int | None = None) -> None:
         selected = self._profiles.resolve(profile)

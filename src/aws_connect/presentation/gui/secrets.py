@@ -9,6 +9,9 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -17,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -29,14 +33,13 @@ from aws_connect.application.ec2_service import Ec2Service
 from aws_connect.application.ports import ListedSecret
 from aws_connect.application.secrets_service import (
     SecretField,
-    SecretLookupMode,
     SecretRelayTarget,
     SecretResult,
     SecretsService,
     build_persistent_remote_secret_command,
 )
 from aws_connect.domain.errors import ApplicationError, AwsPermissionError
-from aws_connect.domain.saved_secret import SavedSecret
+from aws_connect.domain.saved_secret import SavedSecret, SecretLookupMode
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner, MfaCodeProvider
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
@@ -76,6 +79,13 @@ class SecretsPage(QWidget):
         self._revealed_paths: set[str] = set()
         self._catalog_entries: list[ListedSecret] = []
         self._saved_entries: list[SavedSecret] = []
+        self._relay_targets: list[SecretRelayTarget] = []
+        self._relays_loaded_once = False
+        self._pending_relay_instance_id: str | None = None
+        self._restored_identifier: str | None = None
+        self._pending_saved_id: int | None = None
+        self._pending_saved_identifier: str | None = None
+        self._hydrate_pending_selection = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -156,16 +166,7 @@ class SecretsPage(QWidget):
         relay_controls.addWidget(self.relay_instance, 1)
         root.addWidget(relay_panel)
         self.relay_panel = relay_panel
-        self.relay_warning = QLabel(
-            "경유 조회는 SSM Run Command 출력에 Secret 원문을 일시적으로 남길 수 있습니다. "
-            "앱 사용자에게 SendCommand/GetCommandInvocation, EC2 역할에 GetSecretValue 권한이 "
-            "필요합니다. SendCommand 권한이 없다면 EC2 접속 화면에서 같은 인스턴스의 터미널을 "
-            "열고 aws secretsmanager get-secret-value 명령을 직접 실행하세요."
-        )
-        self.relay_warning.setWordWrap(True)
-        self.relay_warning.setObjectName("secret_relay_warning")
-        root.addWidget(self.relay_warning)
-        self.relay_consent = QCheckBox("위 위험을 이해했으며 이번 조회에 동의합니다.")
+        self.relay_consent = QCheckBox("이번 EC2 경유 조회에 동의합니다.")
         self.relay_consent.setObjectName("secret_relay_consent")
         self.relay_consent.toggled.connect(self._update_actions)
         root.addWidget(self.relay_consent)
@@ -213,7 +214,7 @@ class SecretsPage(QWidget):
         result_layout = QVBoxLayout(result_card)
         result_layout.setContentsMargins(20, 20, 20, 20)
         result_head = QHBoxLayout()
-        self.summary = QLabel("Secret 값 · 조회한 Secret이 없습니다.")
+        self.summary = QLabel("조회한 Secret이 없습니다.")
         self.summary.setObjectName("secret_summary")
         result_head.addWidget(self.summary)
         result_head.addStretch()
@@ -230,7 +231,7 @@ class SecretsPage(QWidget):
         use_first_column_selection_bar(self.fields)
         result_layout.addWidget(self.fields, 1)
         notice = QLabel(
-            "SQLite에는 Secret 이름/ARN만 저장하며 조회 값은 저장하지 않습니다. "
+            "조회한 값과 조회 컨텍스트는 이 PC의 SQLite에 저장됩니다. "
             "RDS 터널 세션에는 선택한 host와 port만 복사할 수 있습니다."
         )
         notice.setObjectName("secret_notice")
@@ -252,9 +253,16 @@ class SecretsPage(QWidget):
             return
         self._profile_id = profile_id
         self._clear_result()
-        self.summary.setText("Secret 값 · 조회한 Secret이 없습니다.")
+        self.summary.setText("조회한 Secret이 없습니다.")
         self.secret_id.clear()
         self.relay_instance.clear()
+        self._relay_targets = []
+        self._relays_loaded_once = False
+        self._pending_relay_instance_id = None
+        self._restored_identifier = None
+        self._pending_saved_id = None
+        self._pending_saved_identifier = None
+        self._hydrate_pending_selection = False
         self.relay_consent.setChecked(False)
         self.list_button.setEnabled(profile_id is not None)
         self._update_actions()
@@ -265,7 +273,7 @@ class SecretsPage(QWidget):
         self._selection_changed()
         if profile_id is not None:
             self.catalog_status.setText("Secret 목록을 불러오는 중입니다…")
-            self.saved_status.setText("SQLite 저장 항목을 불러오는 중입니다…")
+            self.saved_status.setText("저장된 Secret을 불러오는 중입니다…")
             self.load_saved()
             self.load_list()
             self.load_relays()
@@ -286,7 +294,28 @@ class SecretsPage(QWidget):
             item = QListWidgetItem(saved.identifier)
             item.setData(Qt.ItemDataRole.UserRole, saved)
             self.catalog.addItem(item)
-        self.saved_status.setText(f"SQLite 저장 항목 {len(self._saved_entries)}개")
+        self.saved_status.setText("" if self._saved_entries else "저장된 Secret이 없습니다.")
+        selected_row = next(
+            (
+                row
+                for row, saved in enumerate(self._saved_entries)
+                if (self._pending_saved_id is not None and saved.id == self._pending_saved_id)
+                or (
+                    self._pending_saved_id is None
+                    and self._pending_saved_identifier is not None
+                    and saved.identifier == self._pending_saved_identifier
+                )
+            ),
+            -1,
+        )
+        should_hydrate = self._hydrate_pending_selection
+        self._pending_saved_id = None
+        self._pending_saved_identifier = None
+        self._hydrate_pending_selection = False
+        if selected_row >= 0:
+            self.catalog.setCurrentRow(selected_row)
+            if should_hydrate:
+                self._load_saved_entry(self._saved_entries[selected_row])
         self._selection_changed()
 
     def load_list(self) -> None:
@@ -309,16 +338,17 @@ class SecretsPage(QWidget):
         self.list_button.setEnabled(self._profile_id is not None)
         self._catalog_entries = list(value)
         self.catalog_status.setText(
-            f"조회 가능한 Secret {len(self._catalog_entries)}개"
-            if self._catalog_entries
-            else "조회 권한은 있지만 표시할 Secret이 없습니다."
+            "" if self._catalog_entries else "조회 권한은 있지만 표시할 Secret이 없습니다."
         )
         self.secret_selector.clear()
         for secret in self._catalog_entries:
             self.secret_selector.addItem(secret.name, secret)
-        self.secret_id.hide()
-        self.secret_selector.show()
-        self._selector_changed()
+        if self._restored_identifier is None:
+            self.secret_id.hide()
+            self.secret_selector.show()
+            self._selector_changed()
+        else:
+            self._restore_identifier(self._restored_identifier)
 
     def _selector_changed(self) -> None:
         secret = self.secret_selector.currentData()
@@ -329,8 +359,52 @@ class SecretsPage(QWidget):
     def _catalog_selected(self, item: QListWidgetItem) -> None:
         secret = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(secret, SavedSecret):
-            self.secret_id.setText(secret.identifier)
-            self._request_secret(secret.identifier)
+            self._load_saved_entry(secret)
+
+    def _load_saved_entry(self, saved: SavedSecret) -> None:
+        if self._profile_id is None:
+            return
+        profile_id = self._profile_id
+        self._runner.submit(
+            lambda: self._secrets.load_saved(saved.require_id(), profile_id),
+            self._saved_snapshot_loaded,
+            self.error_raised.emit,
+        )
+
+    def _saved_snapshot_loaded(self, value: Any) -> None:
+        saved, result = value
+        self._result = result
+        self._result_generation += 1
+        self._revealed_paths.clear()
+        self._restored_identifier = saved.identifier
+        self._restore_identifier(saved.identifier)
+        mode_index = self.lookup_mode.findData(saved.lookup_mode)
+        if mode_index >= 0:
+            self.lookup_mode.setCurrentIndex(mode_index)
+        self._pending_relay_instance_id = saved.relay_instance_id
+        if self._relays_loaded_once:
+            self._render_relays()
+        self.summary.setText(f"{result.secret_id} · {result.kind.value}")
+        self._render()
+
+    def _restore_identifier(self, identifier: str) -> None:
+        self.secret_id.setText(identifier)
+        match = next(
+            (
+                index
+                for index, listed in enumerate(self._catalog_entries)
+                if identifier in (listed.name, listed.arn)
+            ),
+            -1,
+        )
+        if match >= 0:
+            self.secret_selector.setCurrentIndex(match)
+            self.secret_id.hide()
+            self.secret_selector.show()
+        else:
+            self.secret_selector.hide()
+            self.secret_id.show()
+        self._update_actions()
 
     def _list_failed(self, error: ApplicationError) -> None:
         # ListSecrets is optional. A failure must not disable direct GetSecretValue.
@@ -361,6 +435,7 @@ class SecretsPage(QWidget):
         if self._profile_id is None:
             return
         profile_id = self._profile_id
+        self._restored_identifier = None
         self.secret_id.setText(identifier)
         mode = self.lookup_mode.currentData()
         relay = self.relay_instance.currentData()
@@ -401,8 +476,9 @@ class SecretsPage(QWidget):
         self._result_generation += 1
         self._revealed_paths.clear()
         self._update_actions()
-        self.summary.setText(f"Secret 값 · {self._result.secret_id} · {self._result.kind.value}")
+        self.summary.setText(f"{self._result.secret_id} · {self._result.kind.value}")
         self._render()
+        self._pending_saved_identifier = self._result.secret_id
         self.load_saved()
 
     def _render(self) -> None:
@@ -555,17 +631,17 @@ class SecretsPage(QWidget):
         if self._profile_id is None or not (0 <= row < len(self._saved_entries)):
             return
         selected = self._saved_entries[row]
-        identifier, accepted = QInputDialog.getText(
-            self,
-            "저장된 Secret 수정",
-            "Secret 이름 또는 ARN",
-            text=selected.identifier,
-        )
-        if not accepted:
+        edited = _prompt_saved_secret(self, selected)
+        if edited is None:
             return
+        identifier, value = edited
         self._runner.submit(
-            lambda: self._secrets.update_saved(selected.require_id(), identifier, self._profile_id),
-            lambda _value: self._saved_changed("저장된 Secret을 수정했습니다."),
+            lambda: self._secrets.update_saved(
+                selected.require_id(), identifier, self._profile_id, value=value
+            ),
+            lambda updated: self._saved_changed(
+                "저장된 Secret을 수정했습니다.", updated.require_id(), hydrate=True
+            ),
             self.error_raised.emit,
         )
 
@@ -589,8 +665,12 @@ class SecretsPage(QWidget):
             self.error_raised.emit,
         )
 
-    def _saved_changed(self, notice: str) -> None:
+    def _saved_changed(
+        self, notice: str, saved_id: int | None = None, *, hydrate: bool = False
+    ) -> None:
         self.notice_raised.emit(notice)
+        self._pending_saved_id = saved_id
+        self._hydrate_pending_selection = hydrate
         self.load_saved()
 
     def _terminal_failed(self, error: ApplicationError) -> None:
@@ -613,13 +693,27 @@ class SecretsPage(QWidget):
             )
 
     def _relays_loaded(self, value: Any) -> None:
+        self._relay_targets = list(value)
+        self._relays_loaded_once = True
+        self._render_relays()
+        self._update_actions()
+
+    def _render_relays(self) -> None:
+        selected_id = self._pending_relay_instance_id
         self.relay_instance.clear()
-        for target in value:
+        selected_index = -1
+        for index, target in enumerate(self._relay_targets):
             self.relay_instance.addItem(
                 f"{target.name or '이름 없음'} · {target.instance_id} · {target.platform_name}",
                 target,
             )
-        self._update_actions()
+            if target.instance_id == selected_id:
+                selected_index = index
+        if selected_id is not None and selected_index < 0:
+            self.relay_instance.addItem(f"사용 불가 · {selected_id}", None)
+            selected_index = self.relay_instance.count() - 1
+        if selected_index >= 0:
+            self.relay_instance.setCurrentIndex(selected_index)
 
     def _relay_failed(self, error: ApplicationError) -> None:
         self._update_actions()
@@ -628,7 +722,6 @@ class SecretsPage(QWidget):
     def _mode_changed(self) -> None:
         via_ec2 = self.lookup_mode.currentData() == SecretLookupMode.VIA_EC2
         self.relay_panel.setVisible(via_ec2)
-        self.relay_warning.setVisible(via_ec2)
         self.relay_consent.setVisible(via_ec2)
         self.relay_consent.setChecked(False)
         self.terminal_fallback_button.hide()
@@ -650,3 +743,26 @@ def _display(value: object) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _prompt_saved_secret(parent: QWidget, saved: SavedSecret) -> tuple[str, str] | None:
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("저장된 Secret 수정")
+    layout = QVBoxLayout(dialog)
+    form = QFormLayout()
+    identifier = QLineEdit(saved.identifier)
+    identifier.setObjectName("saved_secret_identifier")
+    secret_value = QPlainTextEdit(saved.value)
+    secret_value.setObjectName("saved_secret_value")
+    form.addRow("Secret ID", identifier)
+    form.addRow("Value", secret_value)
+    layout.addLayout(form)
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+    )
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+        return None
+    return identifier.text(), secret_value.toPlainText()
