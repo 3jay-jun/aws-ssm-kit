@@ -18,7 +18,7 @@ try {
     }
     & uv sync --all-groups
     if ($LASTEXITCODE -ne 0) { throw "Dependency synchronization failed (exit $LASTEXITCODE)." }
-    Write-Host "AWS Connect development environment is ready."
+    Write-Host "aws-ssm-kit development environment is ready."
 }
 finally {
     Pop-Location

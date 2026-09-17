@@ -18,6 +18,7 @@ from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
+from aws_connect import APPLICATION_NAME
 from aws_connect.application.ports import PluginDiagnostic, PluginInvocation, SessionProcess
 from aws_connect.domain.errors import PluginExecutionError
 from aws_connect.infrastructure.data_protection import protect_current_user_bytes
@@ -324,7 +325,7 @@ def external_terminal_argv(pipe_name: str, protected_authkey: str) -> list[str]:
         "new",
         "new-tab",
         "--title",
-        "AWS Connect EC2",
+        f"{APPLICATION_NAME} EC2",
         "--suppressApplicationTitle",
         *host_argv,
         "--pipe",

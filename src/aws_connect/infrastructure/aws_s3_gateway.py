@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import tempfile
 from collections.abc import Callable
 from datetime import datetime
@@ -133,6 +134,8 @@ class Boto3S3Gateway:
         destination: Path,
         progress: Callable[[int], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        *,
+        overwrite: bool = False,
     ) -> None:
         client = self._client_factory(credentials, region)
         temporary: Path | None = None
@@ -157,12 +160,26 @@ class Boto3S3Gateway:
                 client.download_file(bucket, key, str(temporary), Callback=transferred)
             if is_cancelled():
                 raise _Cancelled
-            temporary.replace(destination)
+            if overwrite:
+                temporary.replace(destination)
+            elif os.name == "nt":
+                # Windows rename fails atomically when the destination already exists.
+                temporary.rename(destination)
+            else:
+                os.link(temporary, destination)
+                temporary.unlink()
             temporary = None
         except (_Cancelled, KeyboardInterrupt) as error:
             raise S3TransferError(
                 "s3.download.cancelled",
                 "Download cancelled before GetObject completed",
+                aws_service="s3",
+                aws_action="GetObject",
+            ) from error
+        except FileExistsError as error:
+            raise S3TransferError(
+                "s3.download.destination.exists",
+                "Destination appeared before download completed; retry to confirm overwrite",
                 aws_service="s3",
                 aws_action="GetObject",
             ) from error

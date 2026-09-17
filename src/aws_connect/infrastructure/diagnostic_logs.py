@@ -6,6 +6,7 @@ import os
 import zipfile
 from pathlib import Path
 
+from aws_connect import APPLICATION_NAME
 from aws_connect.application.ports import PrivateFileAccess
 from aws_connect.domain.errors import ConfigurationError
 from aws_connect.infrastructure.managed_logs import managed_log_files
@@ -45,7 +46,7 @@ class MaskedDiagnosticLogExporter:
                         count += 1
                 archive.writestr(
                     "README.txt",
-                    "AWS Connect diagnostic logs. "
+                    f"{APPLICATION_NAME} diagnostic logs. "
                     "Sensitive patterns were re-masked during export.\n",
                 )
             os.replace(temporary, target)

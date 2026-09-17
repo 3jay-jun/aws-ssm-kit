@@ -6,6 +6,8 @@ import argparse
 from importlib import metadata
 from pathlib import Path
 
+from aws_connect import APPLICATION_NAME
+
 RUNTIME_DISTRIBUTIONS = (
     "boto3",
     "botocore",
@@ -47,7 +49,7 @@ def render_notice() -> str:
     """Render all runtime dependency notices in an intentional fixed order."""
 
     sections = [
-        "AWS Connect third-party dependency inventory",
+        f"{APPLICATION_NAME} third-party dependency inventory",
         "Generated from installed package metadata; retain with the Portable ZIP.",
     ]
     sections.extend(distribution_notice(name) for name in RUNTIME_DISTRIBUTIONS)

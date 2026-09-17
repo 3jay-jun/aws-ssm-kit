@@ -49,7 +49,11 @@ from aws_connect.domain.errors import ApplicationError, AwsPermissionError
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner
 from aws_connect.presentation.gui.clipboard import copy_temporarily
-from aws_connect.presentation.gui.icons import gui_icon
+from aws_connect.presentation.gui.icons import gui_icon, set_button_icon
+from aws_connect.presentation.gui.list_rows import (
+    set_compact_list_row,
+    update_list_row_separators,
+)
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 from aws_connect.presentation.gui.view_models import ActiveTunnelSummaryViewModel
@@ -76,12 +80,14 @@ class ActiveTunnelRow(QWidget):
         layout.addWidget(label, 1)
         copy_button = QPushButton("주소 복사")
         copy_button.setAccessibleName(f"{summary.name} 로컬 주소 복사")
+        set_button_icon(copy_button, "common-clipboard.svg")
         copy_button.clicked.connect(self._copy)
         layout.addWidget(copy_button)
         stop_button = QPushButton("연결 종료")
         stop_button.setProperty("size", "small")
         stop_button.setProperty("variant", "danger")
         stop_button.setAccessibleName(f"{summary.name} 터널 종료")
+        set_button_icon(stop_button, "common-stop.svg")
         stop_button.setEnabled(summary.operation_id is not None)
         stop_button.clicked.connect(self._stop)
         layout.addWidget(stop_button)
@@ -136,8 +142,10 @@ class Ec2Page(QWidget):
         title_block.addWidget(subtitle)
         heading.addLayout(title_block)
         heading.addStretch()
-        self.refresh_button = QPushButton("↻ 목록 새로고침")
+        self.refresh_button = QPushButton()
         self.refresh_button.setObjectName("ec2_refresh")
+        self.refresh_button.setProperty("action_button", True)
+        set_button_icon(self.refresh_button, "common-refresh.svg", tooltip="목록 새로고침")
         self.refresh_button.clicked.connect(self.reload)
         heading.addWidget(self.refresh_button)
         layout.addLayout(heading)
@@ -171,7 +179,7 @@ class Ec2Page(QWidget):
         self.table = QTableWidget(0, 6)
         self.table.setObjectName("ec2_targets")
         self.table.setHorizontalHeaderLabels(
-            ["★", "이름", "Instance ID", "Private IP", "EC2 상태", ""]
+            ["★", "이름", "Instance ID", "Private IP", "EC2 상태", "Action"]
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -181,17 +189,10 @@ class Ec2Page(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(54)
         self.table.verticalHeader().setMinimumSectionSize(54)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setResizeContentsPrecision(-1)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 60)
-        self.table.setColumnWidth(1, 230)
-        self.table.setColumnWidth(2, 148)
-        self.table.setColumnWidth(4, 100)
-        self.table.setColumnWidth(5, 120)
+        self.table.setColumnWidth(4, 112)
         self.table.setShowGrid(False)
         use_first_column_selection_bar(self.table)
         card_layout.addWidget(self.table)
@@ -208,17 +209,6 @@ class Ec2Page(QWidget):
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(2000)
         self._poll_timer.timeout.connect(self.refresh_session_states)
-
-    def resizeEvent(self, event: Any) -> None:  # noqa: N802
-        """Compress fixed columns before the row action can be clipped."""
-
-        compact = self.width() < 900
-        self.table.setColumnWidth(0, 52 if compact else 60)
-        self.table.setColumnWidth(1, 165 if compact else 230)
-        self.table.setColumnWidth(2, 128 if compact else 148)
-        self.table.setColumnWidth(4, 92 if compact else 100)
-        self.table.setColumnWidth(5, 120)
-        super().resizeEvent(event)
 
     def set_profile(self, profile_id: int | None, region: str | None = None) -> None:
         selected_region = region or self._region
@@ -299,19 +289,38 @@ class Ec2Page(QWidget):
             favorite.setAccessibleName(
                 f"{target.name or target.instance_id} 즐겨찾기 {favorite_action}"
             )
+            favorite.setToolTip(f"즐겨찾기 {favorite_action}")
             favorite.clicked.connect(
                 lambda _checked=False, value=target: self.toggle_favorite(value)
             )
             self.table.setCellWidget(row, 0, favorite)
             action = QPushButton(_target_action_text(target))
             action.setObjectName("ec2_row_action")
-            action.setProperty("size", "small")
-            action.setProperty("role", _target_action_role(target))
+            if target.instance_state == "stopped":
+                action.setText("")
+                set_button_icon(action, "common-start.svg", tooltip=_target_action_text(target))
+            elif _target_action_role(target) == "primary":
+                action.setText("")
+                set_button_icon(action, "ec2-terminal.svg", tooltip="터미널 열기")
+            else:
+                action.setText("")
+                set_button_icon(
+                    action,
+                    "common-refresh.svg",
+                    tooltip=_target_action_text(target),
+                    color="#ffffff",
+                )
+            action.setProperty("action_button", True)
+            action.setProperty("variant", _target_action_role(target))
             action.setEnabled(_target_action_enabled(target) and not self._action_busy)
-            action.setFixedWidth(112)
             action.clicked.connect(
                 lambda _checked=False, value=target: self.run_target_action(value)
             )
+            action.ensurePolished()
+            action_item = QTableWidgetItem()
+            # Include the shared table cell padding so the rounded button is not clipped.
+            action_item.setSizeHint(QSize(action.sizeHint().width() + 24, 54))
+            self.table.setItem(row, 5, action_item)
             self.table.setCellWidget(row, 5, action)
             self.table.setRowHeight(row, 54)
         self._sync_actions()
@@ -507,6 +516,7 @@ class RdsPage(QWidget):
         self._saved: dict[int, TunnelSession] = {}
         self._active: dict[str, TunnelConnectionResult] = {}
         self._selected_id: int | None = None
+        self._draft_visible = False
         self._relays_ready = False
         self._connection_busy = False
         self._editor_baseline: tuple[object, ...] | None = None
@@ -530,10 +540,10 @@ class RdsPage(QWidget):
         title_block.addWidget(subtitle)
         heading.addLayout(title_block)
         heading.addStretch()
-        self.new_button = QPushButton("＋ 새 세션")
+        self.new_button = QPushButton("새 세션")
         self.new_button.setObjectName("rds_new")
+        self.new_button.setProperty("variant", "primary")
         self.new_button.clicked.connect(lambda: self.new_session())
-        heading.addWidget(self.new_button)
         root.addLayout(heading)
         root.addSpacing(8)
         content = QHBoxLayout()
@@ -547,11 +557,16 @@ class RdsPage(QWidget):
         self.search = QLineEdit()
         self.search.setObjectName("rds_search")
         self.search.setPlaceholderText("세션명 또는 RDS Host")
+        self.search.setAccessibleName("저장 세션 검색")
+        self.search.addAction(
+            gui_icon("common-search.svg"), QLineEdit.ActionPosition.LeadingPosition
+        )
         self.search.textChanged.connect(self._render_sessions)
         self.session_list = QListWidget()
         self.session_list.setObjectName("rds_sessions")
         self.session_list.currentItemChanged.connect(self._select_session)
-        left.addWidget(_field("저장 세션 검색", self.search))
+        left.addWidget(self.new_button)
+        left.addWidget(self.search)
         left.addWidget(self.session_list, 1)
         content.addWidget(self.session_card)
         self.editor_card = QFrame()
@@ -561,6 +576,7 @@ class RdsPage(QWidget):
         editor.setContentsMargins(20, 20, 20, 20)
         editor.setSpacing(0)
         editor_heading = QHBoxLayout()
+        editor_heading.setSpacing(20)
         self.editor_status_dot = QFrame()
         self.editor_status_dot.setObjectName("status_dot")
         self.editor_title = QLabel("새 세션")
@@ -600,9 +616,11 @@ class RdsPage(QWidget):
         self.host_catalog.setVisible(False)
         self.host_catalog.currentIndexChanged.connect(self._endpoint_selected)
         self.remote_port = QSpinBox()
+        self.remote_port.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.remote_port.setRange(1, 65535)
         self.remote_port.setValue(3306)
         self.local_port = QSpinBox()
+        self.local_port.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.local_port.setRange(1, 65535)
         self.local_port.setValue(13306)
         self.relay = QComboBox()
@@ -630,9 +648,14 @@ class RdsPage(QWidget):
         self.tunnel_state = QLabel("중지됨")
         self.tunnel_state.setObjectName("rds_tunnel_state")
         self.tunnel_state.setWordWrap(False)
-        self.copy_address_button = QPushButton("로컬 주소 복사")
+        self.copy_address_button = QPushButton()
         self.copy_address_button.setObjectName("rds_copy_address")
-        self.copy_address_button.setAccessibleName("실행 중인 RDS 터널 로컬 주소 복사")
+        set_button_icon(
+            self.copy_address_button,
+            "common-clipboard.svg",
+            tooltip="로컬 주소 복사",
+            accessible_name="실행 중인 RDS 터널 로컬 주소 복사",
+        )
         self.copy_address_button.setEnabled(False)
         self.copy_address_button.clicked.connect(self.copy_selected_address)
         self.notice = QFrame()
@@ -652,12 +675,19 @@ class RdsPage(QWidget):
         actions = QGridLayout(self.editor_actions_container)
         actions.setContentsMargins(0, 20, 0, 0)
         actions.setHorizontalSpacing(8)
-        self.delete_button = QPushButton("삭제")
-        self.delete_button.setProperty("role", "danger")
-        self.clone_button = QPushButton("복제")
-        self.save_button = QPushButton("저장")
-        self.connection_button = QPushButton("연결 시작")
+        self.delete_button = QPushButton()
+        self.delete_button.setProperty("variant", "danger")
+        self.clone_button = QPushButton()
+        self.save_button = QPushButton()
+        self.connection_button = QPushButton()
         self.connection_button.setObjectName("rds_connection")
+        for button, icon, label, color in (
+            (self.delete_button, "common-delete.svg", "삭제", "#ffffff"),
+            (self.clone_button, "common-copy.svg", "복제", None),
+            (self.save_button, "common-save.svg", "저장", None),
+            (self.connection_button, "common-start.svg", "연결 시작", "#ffffff"),
+        ):
+            set_button_icon(button, icon, tooltip=label, color=color)
         # Transitional aliases keep callers source-compatible while one actual button is rendered.
         self.start_button = self.connection_button
         self.stop_button = self.connection_button
@@ -668,11 +698,16 @@ class RdsPage(QWidget):
             self.save_button,
             self.connection_button,
         ):
-            button.setProperty("size", "small")
+            button.setProperty("action_button", True)
         self.delete_button.clicked.connect(self.delete_selected)
         self.clone_button.clicked.connect(self.clone_selected)
         self.save_button.clicked.connect(self.save)
         self.connection_button.clicked.connect(self.toggle_connection)
+        list_actions = QHBoxLayout()
+        list_actions.addWidget(self.delete_button)
+        list_actions.addStretch()
+        list_actions.addWidget(self.clone_button)
+        left.addLayout(list_actions)
         self.editor_actions = actions
         self._layout_editor_actions()
         details.addWidget(self.editor_actions_container)
@@ -686,7 +721,7 @@ class RdsPage(QWidget):
         self.active_list.hide()
         self.active_list.currentItemChanged.connect(self._active_selection_changed)
         root.addWidget(self.active_list)
-        self.new_session(confirm_discard=False)
+        self.new_session(confirm_discard=False, add_draft=False)
 
     def set_profile(self, profile_id: int | None) -> None:
         if self._profile_id == profile_id:
@@ -695,7 +730,7 @@ class RdsPage(QWidget):
         self._relays_ready = False
         self.relay.clear()
         self.relay_status.setText("중계 EC2 목록을 불러오는 중입니다…")
-        self.new_session(confirm_discard=False)
+        self.new_session(confirm_discard=False, add_draft=False)
         if profile_id is not None:
             self.reload()
             self.reload_relays()
@@ -770,18 +805,30 @@ class RdsPage(QWidget):
         # unsaved editor values such as a newly chosen Local Port.
         with QSignalBlocker(self.session_list):
             self.session_list.clear()
+            if self._draft_visible:
+                draft = QListWidgetItem()
+                draft.setData(Qt.ItemDataRole.UserRole, None)
+                self.session_list.addItem(draft)
+                set_compact_list_row(self.session_list, draft, "새 세션", ("저장되지 않음",))
+                if self._selected_id is None:
+                    self.session_list.setCurrentItem(draft)
             for session in self._saved.values():
                 if query and query not in f"{session.name} {session.host}".casefold():
                     continue
                 is_active = any(active.tunnel.id == session.id for active in self._active.values())
-                item = QListWidgetItem(
-                    f"{session.name}\nlocalhost:{session.local_port} · "
-                    f"{'연결됨' if is_active else '중지됨'}"
-                )
+                item = QListWidgetItem()
                 item.setData(Qt.ItemDataRole.UserRole, session.require_id())
                 self.session_list.addItem(item)
+                set_compact_list_row(
+                    self.session_list,
+                    item,
+                    session.name,
+                    (f"localhost:{session.local_port} · {'연결됨' if is_active else '중지됨'}",),
+                    connected=is_active,
+                )
                 if session.id == self._selected_id:
                     self.session_list.setCurrentItem(item)
+            update_list_row_separators(self.session_list)
 
     def reload_relays(self) -> None:
         if self._profile_id is not None:
@@ -827,10 +874,11 @@ class RdsPage(QWidget):
             self._editor_baseline = self._editor_values()
         self._sync_editor_actions()
 
-    def new_session(self, *, confirm_discard: bool = True) -> None:
+    def new_session(self, *, confirm_discard: bool = True, add_draft: bool = True) -> None:
         if confirm_discard and self._is_editor_dirty() and not self._discard_confirmation(self):
             return
         self._selected_id = None
+        self._draft_visible = add_draft
         self.name_field.show()
         self.session_list.clearSelection()
         self.editor_title.setText("새 세션")
@@ -839,6 +887,7 @@ class RdsPage(QWidget):
         self.host.clear()
         self.remote_port.setValue(3306)
         self.local_port.setValue(13306)
+        self._render_sessions()
         self._editor_baseline = self._editor_values()
         self._sync_editor_actions()
 
@@ -855,7 +904,11 @@ class RdsPage(QWidget):
     ) -> None:
         if current is None:
             return
-        session_id = int(current.data(Qt.ItemDataRole.UserRole))
+        selected_data = current.data(Qt.ItemDataRole.UserRole)
+        if selected_data is None:
+            self.new_session(confirm_discard=False)
+            return
+        session_id = int(selected_data)
         session = self._saved[session_id]
         self._selected_id = session_id
         self.name_field.hide()
@@ -891,7 +944,7 @@ class RdsPage(QWidget):
 
     def _cloned_done(self, _value: Any) -> None:
         self.notice_raised.emit("RDS 터널 세션을 복제했습니다.")
-        self.new_session(confirm_discard=False)
+        self.new_session(confirm_discard=False, add_draft=False)
         self.reload()
 
     def _save_request(self) -> SaveTunnelSessionRequest | None:
@@ -928,12 +981,24 @@ class RdsPage(QWidget):
 
         self._runner.submit(save_operation, completed, self._failed)
 
-    def _saved_done(self, _value: Any) -> None:
+    def _saved_done(self, session: TunnelSession) -> None:
+        self._selected_id = session.require_id()
+        self._draft_visible = False
+        self.name_field.hide()
+        self.editor_title.setText(session.name)
+        self._sync_editor_actions()
         self.notice_raised.emit("RDS 터널 세션을 저장했습니다.")
         self._editor_baseline = self._editor_values()
         self.reload()
 
     def delete_selected(self) -> None:
+        if self._selected_id is None and self._draft_visible:
+            if self._is_editor_dirty() and not self._discard_confirmation(self):
+                return
+            self.new_session(confirm_discard=False, add_draft=False)
+            if self.session_list.count():
+                self.session_list.setCurrentRow(0)
+            return
         if self._selected_id is None or self._profile_id is None:
             return
         if not self._delete_confirmation(self, self._selected_id):
@@ -947,7 +1012,7 @@ class RdsPage(QWidget):
 
     def _deleted_done(self) -> None:
         self.notice_raised.emit("RDS 터널 세션을 삭제했습니다.")
-        self.new_session(confirm_discard=False)
+        self.new_session(confirm_discard=False, add_draft=False)
         self.reload()
 
     def start(self, tunnel_id: int | None = None) -> None:
@@ -1200,14 +1265,21 @@ class RdsPage(QWidget):
         selected = self._selected_id is not None
         relay_available = self._relay_available()
         operation_id = self._selected_operation_id()
-        self.delete_button.setEnabled(selected and not self._connection_busy)
+        self.delete_button.setEnabled(
+            (selected or self._draft_visible) and not self._connection_busy
+        )
         self.clone_button.setEnabled(selected and not self._connection_busy)
         self.save_button.setEnabled(
             self._profile_id is not None and relay_available and not self._connection_busy
         )
-        self.connection_button.setText("연결 종료" if operation_id is not None else "연결 시작")
+        set_button_icon(
+            self.connection_button,
+            "common-stop.svg" if operation_id is not None else "common-start.svg",
+            tooltip="연결 종료" if operation_id is not None else "연결 시작",
+            color="#ffffff",
+        )
         self.connection_button.setProperty(
-            "role", "danger" if operation_id is not None else "primary"
+            "variant", "danger" if operation_id is not None else "primary"
         )
         self.connection_button.style().unpolish(self.connection_button)
         self.connection_button.style().polish(self.connection_button)
@@ -1224,22 +1296,10 @@ class RdsPage(QWidget):
             )
 
     def _layout_editor_actions(self) -> None:
-        for button in (
-            self.copy_address_button,
-            self.clone_button,
-            self.delete_button,
-            self.save_button,
-            self.connection_button,
-        ):
-            self.editor_actions.removeWidget(button)
-        for column in range(6):
-            self.editor_actions.setColumnStretch(column, 0)
         self.editor_actions.addWidget(self.copy_address_button, 0, 0)
-        self.editor_actions.addWidget(self.clone_button, 0, 1)
-        self.editor_actions.addWidget(self.delete_button, 0, 2)
-        self.editor_actions.setColumnStretch(3, 1)
-        self.editor_actions.addWidget(self.save_button, 0, 4)
-        self.editor_actions.addWidget(self.connection_button, 0, 5)
+        self.editor_actions.setColumnStretch(1, 1)
+        self.editor_actions.addWidget(self.save_button, 0, 2)
+        self.editor_actions.addWidget(self.connection_button, 0, 3)
 
     def _place_editor_actions(self, *, outside_scroll: bool) -> None:
         if self._actions_outside_scroll == outside_scroll:

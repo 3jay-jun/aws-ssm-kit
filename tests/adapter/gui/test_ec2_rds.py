@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QFrame, QHeaderView, QLabel, QPushButton
 
 from aws_connect.application.ec2_service import Ec2Target, ExternalSessionHandle
 from aws_connect.application.operations import OperationResult, OperationState
@@ -279,59 +279,58 @@ def test_ec2_table_uses_single_power_status_column_and_svg_favorites() -> None:
         "중지됨",
     ]
     assert page.table.horizontalHeaderItem(4).text() == "EC2 상태"
+    assert page.table.horizontalHeaderItem(5).text() == "Action"
+    assert page.refresh_button.property("action_button") is True
     assert all(
         page.table.horizontalHeaderItem(column).text() != "SSM 상태"
         for column in range(page.table.columnCount())
     )
     assert page.table.cellWidget(0, 0).icon().isNull() is False  # type: ignore[union-attr]
-    assert page.table.cellWidget(0, 5).text() == "터미널 열기 ↗"  # type: ignore[union-attr]
-    assert page.table.cellWidget(1, 5).text() == "인스턴스 실행"  # type: ignore[union-attr]
-    assert page.table.cellWidget(2, 5).text() == "재부팅"  # type: ignore[union-attr]
+    assert page.table.cellWidget(0, 5).text() == ""  # type: ignore[union-attr]
+    assert not page.table.cellWidget(0, 5).icon().isNull()  # type: ignore[union-attr]
+    assert page.table.cellWidget(0, 5).toolTip() == "터미널 열기"  # type: ignore[union-attr]
+    assert page.table.cellWidget(1, 5).text() == ""  # type: ignore[union-attr]
+    assert page.table.cellWidget(2, 5).toolTip() == "재부팅"  # type: ignore[union-attr]
     stopped_status = page.table.cellWidget(1, 4).findChild(QLabel)  # type: ignore[union-attr]
     assert stopped_status.text() == "● 중지됨"
     assert stopped_status.property("status") == "danger"
     assert page.table.rowHeight(0) == 54
     header = page.table.horizontalHeader()
-    assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
     assert all(
-        header.sectionResizeMode(column) == QHeaderView.ResizeMode.Fixed
-        for column in (0, 1, 2, 4, 5)
+        header.sectionResizeMode(column) == QHeaderView.ResizeMode.ResizeToContents
+        for column in (0, 2, 3, 5)
     )
-    assert [page.table.columnWidth(column) for column in (0, 1, 2, 4, 5)] == [
-        60,
-        230,
-        148,
-        100,
-        120,
-    ]
-    assert page.table.cellWidget(0, 5).width() == 112  # type: ignore[union-attr]
     assert page.table_card.objectName() == "content_card"
 
     page.resize(760, 720)
     page.show()
     app.processEvents()
 
-    compact_ip_width = page.table.columnWidth(3)
-    assert [page.table.columnWidth(column) for column in (0, 1, 2, 4, 5)] == [
-        52,
-        165,
-        128,
-        92,
-        120,
-    ]
+    compact_name_width = page.table.columnWidth(1)
+    content_widths = [page.table.columnWidth(column) for column in (0, 2, 3, 5)]
+    for column in (0, 2, 3, 5):
+        assert page.table.columnWidth(column) >= header.fontMetrics().horizontalAdvance(
+            page.table.horizontalHeaderItem(column).text()
+        )
+    for row in range(page.table.rowCount()):
+        for column in (2, 3):
+            assert page.table.columnWidth(column) >= page.table.fontMetrics().horizontalAdvance(
+                page.table.item(row, column).text()
+            )
+        action = page.table.cellWidget(row, 5)
+        assert isinstance(action, QPushButton)
+        assert action.width() >= action.sizeHint().width()
+        assert action.contentsRect().width() >= action.fontMetrics().horizontalAdvance(
+            action.text()
+        )
     assert page.table.horizontalScrollBar().maximum() == 0
 
     page.resize(1080, 720)
     app.processEvents()
 
-    assert page.table.columnWidth(3) > compact_ip_width
-    assert [page.table.columnWidth(column) for column in (0, 1, 2, 4, 5)] == [
-        60,
-        230,
-        148,
-        100,
-        120,
-    ]
+    assert page.table.columnWidth(1) > compact_name_width
+    assert [page.table.columnWidth(column) for column in (0, 2, 3, 5)] == content_widths
     assert page.table.horizontalScrollBar().maximum() == 0
 
     page.table.cellWidget(2, 5).click()  # type: ignore[union-attr]
@@ -406,7 +405,9 @@ def test_rds_crud_start_stop_and_dashboard_projection_share_application_dtos() -
     page.tunnels_changed.connect(lambda value: summaries.append(value))
     page.set_profile(1)
     page.session_list.setCurrentRow(0)
-    assert page.connection_button.text() == "연결 시작"
+    assert page.connection_button.text() == ""
+    assert page.connection_button.toolTip() == "연결 시작"
+    assert page.connection_button.accessibleName() == "연결 시작"
     assert page.start_button is page.stop_button is page.connection_button
     page.connection_button.click()
 
@@ -417,14 +418,22 @@ def test_rds_crud_start_stop_and_dashboard_projection_share_application_dtos() -
     assert summaries[-1][0].local_port == 13306  # type: ignore[index,union-attr]
     assert "127.0.0.1:13306" in page.tunnel_state.text()
     assert page.copy_address_button.isEnabled()
-    assert page.connection_button.text() == "연결 종료"
+    assert page.connection_button.text() == ""
+    assert page.connection_button.toolTip() == "연결 종료"
+    assert (
+        page.session_list.itemWidget(page.session_list.item(0)).findChild(QFrame, "status_dot")
+        is not None
+    )
+    assert page.connection_button.accessibleName() == "연결 종료"
     page.copy_address_button.click()
     assert app.clipboard().text() == "127.0.0.1:13306"
 
     page.connection_button.click()
     assert tunnels.stop_calls == ["rds-operation"]
     assert page.active_list.count() == 0
-    assert page.connection_button.text() == "연결 시작"
+    assert page.connection_button.text() == ""
+    assert page.connection_button.toolTip() == "연결 시작"
+    assert page.connection_button.accessibleName() == "연결 시작"
 
 
 def test_rds_complete_new_session_saves_fixed_relay_request() -> None:
@@ -558,7 +567,9 @@ def test_rds_mockup_split_cards_and_actions_are_single_row() -> None:
     assert page.editor_card.objectName() == "editor_card"
     assert page.findChildren(QPushButton).count(page.connection_button) == 1
     assert page.save_button.geometry().top() == page.connection_button.geometry().top()
-    assert page.clone_button.geometry().top() == page.connection_button.geometry().top()
+    assert page.delete_button.parentWidget() is page.session_card
+    assert page.clone_button.parentWidget() is page.session_card
+    assert page.delete_button.geometry().left() < page.clone_button.geometry().left()
     assert page.active_list.isHidden()
     assert not hasattr(page, "target_mode")
     assert page.host.width() == page.name.width()
@@ -648,7 +659,7 @@ def test_rds_new_session_confirms_dirty_editor_before_reset() -> None:
     assert page.host.text() == ""
     assert page.remote_port.value() == 3306
     assert page.local_port.value() == 13306
-    assert not page.delete_button.isEnabled()
+    assert page.delete_button.isEnabled()
     assert not page.clone_button.isEnabled()
     assert not page.connection_button.isEnabled()
 
@@ -820,3 +831,55 @@ def test_rds_endpoint_catalog_selects_host_and_port_without_expanding_editor() -
     assert page.host_catalog.width() <= page.editor_card.contentsRect().width()
     assert page.notice.height() == 42
     endpoints.list.assert_called_once_with(1)
+
+
+def test_rds_draft_survives_polling_and_save_switches_to_update() -> None:
+    _app()
+    saved = FakeSavedSessions()
+    page = RdsPage(
+        saved,  # type: ignore[arg-type]
+        FakeTunnels(saved),  # type: ignore[arg-type]
+        FakeEc2(),  # type: ignore[arg-type]
+        ImmediateRunner(),  # type: ignore[arg-type]
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+    )
+    page.set_profile(1)
+    page.new_button.click()
+    assert page.session_list.count() == 2
+    assert saved.saved == []
+    page.name.setText("새 DB")
+    page.host.setText("new.example.internal")
+    page.refresh_active()
+    page.reload()
+    assert page.session_list.count() == 2
+    assert page.name.text() == "새 DB"
+    assert page.host.text() == "new.example.internal"
+    assert not page.connection_button.isEnabled()
+    page.save()
+    assert saved.saved[0].tunnel_id is None
+    assert page.session_list.count() == 1
+    assert page._selected_id == saved.item.id
+    page.save()
+    assert saved.saved[1].tunnel_id == saved.item.id
+
+
+def test_rds_deleting_empty_draft_does_not_delete_saved_session() -> None:
+    _app()
+    saved = FakeSavedSessions()
+    page = RdsPage(
+        saved,  # type: ignore[arg-type]
+        FakeTunnels(saved),  # type: ignore[arg-type]
+        FakeEc2(),  # type: ignore[arg-type]
+        ImmediateRunner(),  # type: ignore[arg-type]
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+    )
+    page.set_profile(1)
+    page.new_button.click()
+    page.new_button.click()
+    assert page.session_list.count() == 2
+    page.delete_button.click()
+    assert saved.deleted == []
+    assert page.session_list.count() == 1
+    assert page._selected_id == saved.item.id

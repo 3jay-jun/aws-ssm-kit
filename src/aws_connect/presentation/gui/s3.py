@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -44,12 +45,15 @@ from aws_connect.application.s3_service import (
 from aws_connect.domain.errors import ApplicationError, AwsPermissionError, ConfigurationError
 from aws_connect.domain.s3_location import S3Location
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner, MfaCodeProvider
+from aws_connect.presentation.gui.icons import set_button_icon
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner, TaskHandle
+from aws_connect.presentation.gui.upload_sources import UploadSourceDialog, UploadSourcesList
 from aws_connect.presentation.gui.view_models import build_s3_progress_view_model
 
 ConfirmUpload = Callable[[QWidget, UploadPlan], UploadConflictPolicy | None]
 ConfirmObjectDelete = Callable[[QWidget, S3Object], bool]
+ConfirmDownload = Callable[[QWidget, DownloadPlan], UploadConflictPolicy | None]
 DownloadDestination = Callable[[QWidget], Path | None]
 
 
@@ -78,6 +82,7 @@ class S3Page(QWidget):
         mfa_code_provider: MfaCodeProvider | None = None,
         confirm_delete: ConfirmObjectDelete | None = None,
         download_destination: DownloadDestination | None = None,
+        confirm_download: ConfirmDownload | None = None,
     ) -> None:
         super().__init__()
         self._locations = locations
@@ -85,6 +90,7 @@ class S3Page(QWidget):
         self._runner = runner
         self._confirm_upload = confirm_upload or _confirm_upload
         self._confirm_delete = confirm_delete or _confirm_object_delete
+        self._confirm_download = confirm_download or _confirm_download
         self._download_destination = download_destination or _choose_download_destination
         self._authenticated = (
             AuthenticatedGuiRunner(authenticated, runner, self, mfa_code_provider)
@@ -109,6 +115,7 @@ class S3Page(QWidget):
         layout.setSpacing(16)
         page_head = QHBoxLayout()
         heading_copy = QVBoxLayout()
+        heading_copy.setSpacing(4)
         title = QLabel("S3 파일")
         title.setObjectName("page_title")
         subtitle = QLabel("Bucket을 탐색하거나 현재 Prefix에 로컬 파일을 업로드합니다.")
@@ -143,8 +150,10 @@ class S3Page(QWidget):
         self.prefix.setObjectName("s3_prefix_input")
         prefix_group.addWidget(self.prefix)
         toolbar_layout.addLayout(prefix_group, 2)
-        browse = QPushButton("이동")
+        browse = QPushButton()
         browse.setObjectName("s3_browse")
+        browse.setProperty("action_button", True)
+        set_button_icon(browse, "common-search.svg", tooltip="이동")
         browse.clicked.connect(self.list_objects)
         toolbar_layout.addWidget(browse, alignment=Qt.AlignmentFlag.AlignBottom)
         layout.addWidget(toolbar)
@@ -167,8 +176,13 @@ class S3Page(QWidget):
         self.objects.itemSelectionChanged.connect(self._sync_object_actions)
         self.objects.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.objects.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        self.objects.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.objects.verticalHeader().setDefaultSectionSize(46)
+        self.objects.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.objects.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.objects.verticalHeader().setVisible(False)
+        self.objects.verticalHeader().setMinimumSectionSize(34)
+        self.objects.verticalHeader().setDefaultSectionSize(34)
         use_first_column_selection_bar(self.objects)
         right.addWidget(self.objects, 1)
         self.drop_zone = _DropZone("파일을 여기에 놓거나 클릭하여 선택")
@@ -177,34 +191,50 @@ class S3Page(QWidget):
         self.drop_zone.setMinimumHeight(0)
         self.drop_zone.clicked.connect(self.choose_sources)
         right.addWidget(self.drop_zone)
-        self.upload_sources = QListWidget()
-        self.upload_sources.setObjectName("s3_upload_sources")
-        self.upload_sources.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self.upload_sources.setMaximumHeight(112)
-        right.addWidget(self.upload_sources)
-        file_row = QHBoxLayout()
-        self.file_summary = QLabel("선택한 파일이 없습니다.")
+        self.sources_header = QWidget()
+        self.sources_header.setObjectName("s3_sources_header")
+        sources_heading = QHBoxLayout(self.sources_header)
+        sources_heading.setContentsMargins(0, 0, 0, 0)
+        self.file_summary = QLabel("업로드 파일")
         self.file_summary.setObjectName("s3_file_summary")
-        file_row.addWidget(self.file_summary, 1)
-        remove_sources = QPushButton("선택 제거")
-        remove_sources.clicked.connect(self.remove_selected_sources)
-        file_row.addWidget(remove_sources)
-        clear_sources = QPushButton("전체 비우기")
+        sources_heading.addWidget(self.file_summary, 1)
+        clear_sources = QPushButton()
+        clear_sources.setObjectName("s3_clear_sources")
+        clear_sources.setProperty("action_button", True)
+        set_button_icon(clear_sources, "common-delete.svg", tooltip="업로드 파일 비우기")
         clear_sources.clicked.connect(self.clear_sources)
-        file_row.addWidget(clear_sources)
-        self.open_object_button = QPushButton("다운로드")
+        right.addWidget(self.sources_header)
+        self.upload_sources = UploadSourcesList(
+            self.dragEnterEvent, self.dropEvent, self.choose_sources, self._runner
+        )
+        right.addWidget(self.upload_sources)
+        self.drop_zone.hide()
+        file_row = QHBoxLayout()
+        self.open_object_button = QPushButton()
+        self.open_object_button.setProperty("action_button", True)
+        set_button_icon(self.open_object_button, "s3-download.svg", tooltip="다운로드")
         self.open_object_button.setEnabled(False)
         self.open_object_button.clicked.connect(self.download_selected_objects)
-        file_row.addWidget(self.open_object_button)
-        self.delete_object_button = QPushButton("선택 파일 삭제")
+        self.delete_object_button = QPushButton()
+        self.delete_object_button.setProperty("action_button", True)
+        set_button_icon(
+            self.delete_object_button,
+            "common-delete.svg",
+            tooltip="선택 파일 삭제",
+            color="#ffffff",
+        )
         self.delete_object_button.setProperty("variant", "danger")
         self.delete_object_button.setEnabled(False)
         self.delete_object_button.clicked.connect(self.delete_selected_object)
         file_row.addWidget(self.delete_object_button)
-        self.upload = QPushButton("업로드")
+        file_row.addWidget(clear_sources)
+        file_row.addStretch()
+        self.upload = QPushButton()
         self.upload.setObjectName("s3_upload")
+        self.upload.setProperty("action_button", True)
         self.upload.clicked.connect(self.toggle_upload)
         file_row.addWidget(self.upload)
+        file_row.addWidget(self.open_object_button)
         right.addLayout(file_row)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -212,7 +242,12 @@ class S3Page(QWidget):
         self.upload_status = QLabel("")
         self.upload_status.setObjectName("s3_upload_status")
         right.addWidget(self.upload_status)
-        layout.addWidget(browser_card, 1)
+        browser_scroll = QScrollArea()
+        browser_scroll.setObjectName("s3_browser_scroll")
+        browser_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        browser_scroll.setWidgetResizable(True)
+        browser_scroll.setWidget(browser_card)
+        layout.addWidget(browser_scroll, 1)
 
         saved_panel = QFrame()
         saved_panel.setObjectName("s3_saved_locations_panel")
@@ -233,6 +268,8 @@ class S3Page(QWidget):
         new_location = QPushButton("새 위치")
         save = QPushButton("저장")
         delete = QPushButton("삭제")
+        set_button_icon(save, "common-save.svg")
+        set_button_icon(delete, "common-delete.svg")
         new_location.clicked.connect(self.new_location)
         save.clicked.connect(self.save_location)
         delete.clicked.connect(self.delete_location)
@@ -457,7 +494,6 @@ class S3Page(QWidget):
                 3,
                 QTableWidgetItem(item.last_modified.isoformat() if item.last_modified else ""),
             )
-            self.objects.setRowHeight(row, 46)
         self._sync_object_actions()
 
     def _sync_object_actions(self) -> None:
@@ -496,12 +532,16 @@ class S3Page(QWidget):
 
     def _download_prepared(self, value: Any) -> None:
         plan: DownloadPlan = value
+        policy = self._confirm_download(self, plan)
+        if policy is None:
+            self._sync_object_actions()
+            return
         self._download_in_progress = True
         self._sync_object_actions()
         if self._authenticated is None:
             handle = self._runner.submit_cancellable(
                 lambda token, progress: self._s3.download(
-                    plan, OperationContext(cancellation=token, progress=progress)
+                    plan, OperationContext(cancellation=token, progress=progress), policy=policy
                 ),
                 self._download_completed,
                 self._download_failed,
@@ -510,7 +550,7 @@ class S3Page(QWidget):
         else:
             handle = self._authenticated.submit_long(
                 plan.profile_id,
-                lambda context: self._s3.download(plan, context),
+                lambda context: self._s3.download(plan, context, policy=policy),
                 self._download_completed,
                 self._download_failed,
                 self._progressed,
@@ -524,7 +564,10 @@ class S3Page(QWidget):
         self._download_in_progress = False
         self._download_task = None
         self._sync_object_actions()
-        self.notice_raised.emit(f"S3 다운로드를 완료했습니다. ({len(summary.downloaded)}개)")
+        self.notice_raised.emit(
+            f"S3 다운로드를 완료했습니다. ({len(summary.downloaded)}개, "
+            f"무시 {len(summary.skipped)}개)"
+        )
         self._finish_shutdown()
 
     def _download_failed(self, error: ApplicationError) -> None:
@@ -596,20 +639,9 @@ class S3Page(QWidget):
         self.list_objects()
 
     def choose_sources(self) -> None:
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("업로드 대상 추가")
-        dialog.setText("파일 또는 폴더를 추가하세요.")
-        files = dialog.addButton("파일 추가", QMessageBox.ButtonRole.AcceptRole)
-        folder = dialog.addButton("폴더 추가", QMessageBox.ButtonRole.AcceptRole)
-        dialog.addButton("취소", QMessageBox.ButtonRole.RejectRole)
-        dialog.exec()
-        if dialog.clickedButton() is files:
-            paths, _filter = QFileDialog.getOpenFileNames(self, "업로드할 파일 선택")
-            self.add_sources(tuple(Path(value) for value in paths))
-        elif dialog.clickedButton() is folder:
-            path = QFileDialog.getExistingDirectory(self, "업로드할 폴더 선택")
-            if path:
-                self.add_sources((Path(path),))
+        dialog = UploadSourceDialog(self)
+        if dialog.exec() == QFileDialog.DialogCode.Accepted:
+            self.add_sources(dialog.paths)
 
     def set_files(self, values: Sequence[Path]) -> None:
         """Compatibility helper for adapters that replace the current file selection."""
@@ -641,11 +673,21 @@ class S3Page(QWidget):
         self._selected_files.clear()
         self._render_sources()
 
+    def remove_source(self, source: Path) -> None:
+        if source in self._selected_files:
+            self._selected_files.remove(source)
+            self._render_sources()
+
     def _render_sources(self) -> None:
         self.upload_sources.clear()
-        self.upload_sources.addItems([str(source) for source in self._selected_files])
+        for source in self._selected_files:
+            mime_type = "폴더" if source.is_dir() else _file_type(source.name)
+            self.upload_sources.add_source(source, mime_type, self.remove_source)
         count = len(self._selected_files)
-        self.file_summary.setText(f"업로드 대상 {count}개" if count else "선택한 파일이 없습니다.")
+        self.file_summary.setText(f"업로드 파일 · {count}개" if count else "업로드 파일")
+        self.drop_zone.hide()
+        self.sources_header.show()
+        self.upload_sources.show()
         self._sync_upload_action()
 
     def toggle_upload(self) -> None:
@@ -656,11 +698,11 @@ class S3Page(QWidget):
 
     def _sync_upload_action(self) -> None:
         if self._upload_in_progress:
-            self.upload.setText("업로드 취소")
+            set_button_icon(self.upload, "common-stop.svg", tooltip="업로드 취소", color="#ffffff")
             self.upload.setProperty("variant", "danger")
             self.upload.setEnabled(True)
         else:
-            self.upload.setText("업로드")
+            set_button_icon(self.upload, "s3-upload.svg", tooltip="업로드", color="#ffffff")
             self.upload.setProperty("variant", "primary")
             self.upload.setEnabled(self._profile_id is not None and bool(self._selected_files))
         self.upload.style().unpolish(self.upload)
@@ -799,10 +841,19 @@ class S3Page(QWidget):
 
 
 def _confirm_upload(parent: QWidget, plan: UploadPlan) -> UploadConflictPolicy | None:
-    existing = [item.uri for item in plan.items if item.exists]
+    return _confirm_conflicts(parent, tuple(item.source.name for item in plan.items if item.exists))
+
+
+def _confirm_download(parent: QWidget, plan: DownloadPlan) -> UploadConflictPolicy | None:
+    return _confirm_conflicts(
+        parent, tuple(item.destination.name for item in plan.items if item.exists)
+    )
+
+
+def _confirm_conflicts(parent: QWidget, existing: tuple[str, ...]) -> UploadConflictPolicy | None:
     if not existing:
         return UploadConflictPolicy.SKIP_EXISTING
-    representative = next(item.source.name for item in plan.items if item.exists)
+    representative = existing[0]
     remainder = len(existing) - 1
     summary = (
         f"{representative} 외 {remainder}건의 중복 파일이 있습니다."
@@ -813,7 +864,7 @@ def _confirm_upload(parent: QWidget, plan: UploadPlan) -> UploadConflictPolicy |
     dialog.setWindowTitle("중복 파일")
     dialog.setText(summary)
     overwrite = dialog.addButton("덮어쓰기", QMessageBox.ButtonRole.DestructiveRole)
-    skip = dialog.addButton("무시하기", QMessageBox.ButtonRole.AcceptRole)
+    skip = dialog.addButton("무시", QMessageBox.ButtonRole.AcceptRole)
     dialog.addButton("취소", QMessageBox.ButtonRole.RejectRole)
     dialog.exec()
     if dialog.clickedButton() is overwrite:
@@ -847,5 +898,10 @@ def _object_name(item: S3Object, prefix: str) -> str:
 def _object_type(item: S3Object) -> str:
     if item.is_prefix:
         return "폴더"
-    mime_type, _encoding = mimetypes.guess_type(item.key)
+    return _file_type(item.key)
+
+
+def _file_type(name: str) -> str:
+    """Use the same MIME classification for remote objects and local upload cards."""
+    mime_type, _encoding = mimetypes.guess_type(name)
     return mime_type or "파일"

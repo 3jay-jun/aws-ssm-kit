@@ -31,6 +31,8 @@
 - EC2 external terminal sessions transfer ownership to the user after the helper reports the
   real Plugin PID; GUI shutdown does not terminate them. GUI-owned RDS tunnels remain subject
   to `stop_all`, which attempts every owned tunnel even when an earlier cleanup fails.
+- The external terminal helper lets the already-started Plugin receive console `Ctrl+C` but ignores
+  that signal itself, so interrupting a remote foreground command does not close the EC2 shell.
 - Profile deletion queries both EC2 and RDS ownership sources before confirmation. Active deletion
   requires an explicit stop-and-delete choice, attempts both cleanup groups even if the first one
   fails, and never removes the profile when observation or cleanup is incomplete.
@@ -53,8 +55,10 @@
   manual recovery guidance without changing the current profile or Secret result.
 - Optional S3 Bucket catalog failure changes only the selector to direct input and never disables
   saved locations, object listing, overwrite preflight or upload.
-- S3 download writes to a uniquely named temporary file in the destination directory. It replaces
-  the selected destination only after GetObject completes and removes the temporary file on failure.
+- S3 batch download expands selected prefixes with paginated listing, removes nested duplicate keys,
+  preserves relative paths, and rejects destination traversal before transfer. Each file uses a
+  uniquely named adjacent temporary file, commits only after GetObject succeeds, and
+  removes partial files on failure or cancellation.
 - Correlation IDs connect user-visible errors and masked diagnostic logs.
 - Log destination and level are versioned SQLite settings shared by GUI and CLI. Reconfiguration
   must install the new rotating handler successfully before the setting is committed, so an
@@ -74,6 +78,12 @@
   cancellation result, including multipart abort completion, before closing the application.
 - S3 upload MFA cancellation clears both the pending authenticated operation and GUI task handle;
   a later GUI shutdown must therefore complete immediately rather than waiting on a finished task.
+- S3 folder upload rejects symbolic links, preserves source-relative paths, and de-duplicates target
+  keys before transfer. `SKIP_EXISTING` rechecks each target and transfers only absent keys, matching
+  `aws s3 sync --no-overwrite` semantics without requiring an AWS CLI process.
 - S3 transfer failures are never retried automatically. An explicit user retry creates a fresh
   operation and multipart upload, resets progress to zero, and reruns exact-key preflight so a
   previous partial success cannot be overwritten without renewed consent.
+
+- S3 download preflight reports existing local files for explicit overwrite/skip/cancel. Default skip rechecks before transfer. Atomic commit refuses replacement unless overwrite was approved for an existing preflight target; newly appearing targets require another confirmation. Direct CLI downloads also refuse implicit replacement.
+- Local upload previews run through GuiTaskRunner and use image downsampling (104×72 target, at most 20 MiB input and 16 million pixels). Unsupported or unreadable images retain type icons; metadata errors are shown on the card. Clearing/rebuilding cards cancels queued previews and ignores stale results.

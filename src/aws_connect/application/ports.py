@@ -329,6 +329,8 @@ class S3Gateway(Protocol):
         destination: Path,
         progress: Callable[[int], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        *,
+        overwrite: bool = False,
     ) -> None: ...
     def put_file(
         self,

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from aws_connect import APPLICATION_NAME
 from aws_connect.application.activity_log_service import ActivityLogService
 from aws_connect.application.authenticated_operation import AuthenticatedOperationCoordinator
 from aws_connect.application.authentication_service import (
@@ -58,11 +59,21 @@ from aws_connect.presentation.gui.errors import (
     GuiErrorViewModel,
     map_error,
 )
-from aws_connect.presentation.gui.icons import gui_icon
+from aws_connect.presentation.gui.icons import (
+    HEADER_ICON_SIZE,
+    NAVIGATION_ICON_SIZE,
+    gui_asset_path,
+    gui_icon,
+    set_button_icon,
+)
+from aws_connect.presentation.gui.list_rows import (
+    set_compact_list_row,
+    update_list_row_separators,
+)
 from aws_connect.presentation.gui.logs import LogsSettingsPage
 from aws_connect.presentation.gui.s3 import S3Page
 from aws_connect.presentation.gui.secrets import SecretsPage
-from aws_connect.presentation.gui.styles import APP_STYLE
+from aws_connect.presentation.gui.styles import APP_STYLE, NAVIGATION_WIDTH
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 from aws_connect.presentation.gui.view_models import (
     ActiveTunnelSummaryViewModel,
@@ -162,12 +173,12 @@ class ProfileDialog(QDialog):
         left.setSpacing(4)
         self.profile_list = QListWidget()
         self.profile_list.setObjectName("profile_list")
-        self.new_button = QPushButton("＋ 새 프로필")
+        self.new_button = QPushButton("새 프로필")
         self.new_button.setObjectName("profile_new_button")
         self.new_button.setProperty("variant", "primary")
         self.new_button.clicked.connect(self.new_profile)
         left.addWidget(self.new_button)
-        left.addWidget(self.profile_list)
+        left.addWidget(self.profile_list, 1)
         body.addWidget(profile_panel)
 
         editor_panel = QWidget()
@@ -175,12 +186,6 @@ class ProfileDialog(QDialog):
         editor = QVBoxLayout(editor_panel)
         editor.setContentsMargins(22, 22, 22, 22)
         editor.setSpacing(5)
-        self.editor_title = QLabel("새 프로필")
-        self.editor_title.setObjectName("profile_editor_title")
-        editor.addWidget(self.editor_title)
-        self.sequence = QLabel("생성 모드 · 저장하면 내부 SEQ가 자동으로 생성됩니다.")
-        self.sequence.setObjectName("profile_sequence")
-        editor.addWidget(self.sequence)
         self.name = QLineEdit()
         self.name.setObjectName("profile_name_input")
         self.account = QLineEdit()
@@ -200,11 +205,11 @@ class ProfileDialog(QDialog):
         self._show_new_credential_placeholders()
         self.access_key.setAccessibleName("Access Key ID")
         self.secret_key.setAccessibleName("Secret Access Key")
-        self.mfa_enabled = QCheckBox("임시 세션 발급 시 MFA 사용")
+        self.mfa_enabled = QCheckBox("토큰 발급 시 2차 인증 사용")
         self.mfa_enabled.setObjectName("profile_mfa_enabled")
         self.mfa_enabled.setChecked(True)
         form = QGridLayout()
-        form.setContentsMargins(0, 13, 0, 0)
+        form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(14)
 
@@ -222,7 +227,7 @@ class ProfileDialog(QDialog):
                 lambda _value, selected=field: self._clear_field_error(selected)
             )
 
-        add_field("사용자 지정 프로필 ID", self.name, 0, 0, 2)
+        add_field("프로필명", self.name, 0, 0, 2)
         add_field("Account ID", self.account, 1, 0)
         add_field("IAM 사용자", self.user, 1, 1)
         add_field("Access Key ID", self.access_key, 2, 0, 2)
@@ -237,18 +242,29 @@ class ProfileDialog(QDialog):
         editor.addWidget(notice)
         editor.addStretch()
         actions = QHBoxLayout()
-        self.delete_button = QPushButton("삭제")
+        self.delete_button = QPushButton()
         self.delete_button.setProperty("variant", "danger")
-        self.clone_button = QPushButton("복제")
-        self.save_button = QPushButton("저장")
-        self.connect_button = QPushButton("이 프로필로 연결")
+        self.clone_button = QPushButton()
+        self.save_button = QPushButton()
+        self.connect_button = QPushButton()
         self.connect_button.setProperty("variant", "primary")
+        for button, icon, label, color in (
+            (self.delete_button, "common-delete.svg", "삭제", "#ffffff"),
+            (self.clone_button, "common-copy.svg", "복제", None),
+            (self.save_button, "common-save.svg", "저장", None),
+            (self.connect_button, "common-start.svg", "이 프로필로 연결", "#ffffff"),
+        ):
+            button.setProperty("action_button", True)
+            set_button_icon(button, icon, tooltip=label, color=color)
         self.delete_button.clicked.connect(self._request_delete)
         self.clone_button.clicked.connect(self._request_clone)
         self.save_button.clicked.connect(self._request_save)
         self.connect_button.clicked.connect(self._request_connect)
-        actions.addWidget(self.delete_button)
-        actions.addWidget(self.clone_button)
+        list_actions = QHBoxLayout()
+        list_actions.addWidget(self.delete_button)
+        list_actions.addStretch()
+        list_actions.addWidget(self.clone_button)
+        left.addLayout(list_actions)
         actions.addStretch()
         actions.addWidget(self.save_button)
         actions.addWidget(self.connect_button)
@@ -264,16 +280,22 @@ class ProfileDialog(QDialog):
         self._profiles = {profile.id: profile for profile in profiles}
         self.profile_list.clear()
         for profile in profiles:
-            item = QListWidgetItem(
-                f"{profile.name}\n{profile.account_id}"
-                + (" · 현재 연결" if profile.is_default else "")
-            )
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, profile.id)
             self.profile_list.addItem(item)
+            set_compact_list_row(
+                self.profile_list,
+                item,
+                profile.name + (" · 현재 연결" if profile.is_default else ""),
+                (f"Account ID  {profile.account_id}", f"IAM  {profile.user_id}"),
+                connected=profile.is_default,
+                status_alignment=Qt.AlignmentFlag.AlignTop,
+            )
             if profile.id == selected_id:
                 self.profile_list.setCurrentItem(item)
         if self.profile_list.currentItem() is None and self.profile_list.count():
             self.profile_list.setCurrentRow(0)
+        update_list_row_separators(self.profile_list)
 
     def new_profile(self) -> None:
         draft = next(
@@ -285,16 +307,16 @@ class ProfileDialog(QDialog):
             None,
         )
         if draft is None:
-            draft = QListWidgetItem("새 프로필\n저장되지 않음")
+            draft = QListWidgetItem()
             draft.setData(Qt.ItemDataRole.UserRole, None)
             self.profile_list.insertItem(0, draft)
+            set_compact_list_row(self.profile_list, draft, "새 프로필", ("저장되지 않음",))
+            update_list_row_separators(self.profile_list)
         self.profile_list.setCurrentItem(draft)
         self._show_new_editor()
 
     def _show_new_editor(self) -> None:
         self._selected_id = None
-        self.editor_title.setText("새 프로필")
-        self.sequence.setText("생성 모드 · 저장하면 내부 SEQ가 자동으로 생성됩니다.")
         for field in (
             self.name,
             self.account,
@@ -324,10 +346,6 @@ class ProfileDialog(QDialog):
         profile_id = int(selected_data)
         profile = self._profiles[profile_id]
         self._selected_id = profile_id
-        self.editor_title.setText(profile.name)
-        self.sequence.setText(
-            f"편집 모드 · 내부 SEQ #{profile_id} · 사용자 지정 ID는 중복될 수 없습니다."
-        )
         self.name.setText(profile.name)
         self.account.setText(profile.account_id)
         self.user.setText(profile.user_id)
@@ -376,6 +394,7 @@ class ProfileDialog(QDialog):
         if draft is None or draft.data(Qt.ItemDataRole.UserRole) is not None:
             return
         self.profile_list.takeItem(self.profile_list.row(draft))
+        update_list_row_separators(self.profile_list)
         if self.profile_list.count():
             self.profile_list.setCurrentRow(0)
         else:
@@ -405,7 +424,7 @@ class FeatureCard(QFrame):
     def __init__(
         self,
         route: str,
-        code: str,
+        icon_filename: str,
         title: str,
         subtitle: str,
         description: str,
@@ -419,8 +438,9 @@ class FeatureCard(QFrame):
         layout.setSpacing(0)
         top = QHBoxLayout()
         top.setSpacing(13)
-        icon = QLabel(code)
+        icon = QLabel()
         icon.setObjectName("feature_icon")
+        icon.setPixmap(gui_icon(icon_filename).pixmap(24, 24))
         top.addWidget(icon)
         heading_copy = QVBoxLayout()
         heading_copy.setSpacing(3)
@@ -432,6 +452,13 @@ class FeatureCard(QFrame):
         heading_copy.addWidget(subtitle_label)
         top.addLayout(heading_copy)
         top.addStretch()
+        button = QPushButton()
+        button.setObjectName(f"dashboard_{route}_button")
+        button.setProperty("variant", "secondary")
+        button.setProperty("icon_only", True)
+        set_button_icon(button, "dashboard-move.svg", tooltip=action)
+        button.clicked.connect(lambda: self.activated.emit(route))
+        top.addWidget(button, alignment=Qt.AlignmentFlag.AlignTop)
         layout.addLayout(top)
         description_label = QLabel(description)
         description_label.setObjectName("feature_description")
@@ -439,12 +466,6 @@ class FeatureCard(QFrame):
         description_label.setContentsMargins(0, 14, 0, 18)
         layout.addWidget(description_label)
         layout.addStretch()
-        button = QPushButton(action)
-        button.setObjectName(f"dashboard_{route}_button")
-        button.setProperty("variant", "secondary")
-        button.setAccessibleName(action)
-        button.clicked.connect(lambda: self.activated.emit(route))
-        layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
 
 
 class MainWindow(QMainWindow):
@@ -506,7 +527,7 @@ class MainWindow(QMainWindow):
         self.activity_log_error_code: str | None = None
         self._closing = False
         self._allow_close = False
-        self.setWindowTitle("AWS Connect")
+        self.setWindowTitle(APPLICATION_NAME)
         self.setMinimumSize(1024, 720)
         self.resize(1424, 894)
         self._build_ui()
@@ -518,11 +539,10 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setObjectName("prototype_background")
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(22, 22, 22, 22)
+        root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
         app_shell = QFrame()
         app_shell.setObjectName("app_shell")
-        app_shell.setMaximumWidth(1380)
         app_layout = QVBoxLayout(app_shell)
         app_layout.setContentsMargins(0, 0, 0, 0)
         app_layout.setSpacing(0)
@@ -643,21 +663,28 @@ class MainWindow(QMainWindow):
         header.setObjectName("authentication_header")
         header.setFixedHeight(92)
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(24, 0, 24, 0)
+        layout.setContentsMargins(0, 0, 24, 0)
         layout.setSpacing(0)
 
         brand_panel = QWidget()
         brand_panel.setObjectName("brand_panel")
-        brand_panel.setFixedWidth(240)
+        brand_panel.setFixedWidth(NAVIGATION_WIDTH)
         brand_layout = QHBoxLayout(brand_panel)
-        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setContentsMargins(15, 0, 15, 0)
         brand_layout.setSpacing(12)
-        brandmark = QLabel("A")
-        brandmark.setObjectName("brandmark")
-        brand = QLabel("AWS Connect")
-        brand.setObjectName("brand")
-        brand_layout.addWidget(brandmark)
-        brand_layout.addWidget(brand)
+        brand_logo = QLabel()
+        brand_logo.setObjectName("brand_logo")
+        logo = QPixmap(gui_asset_path("logo.png"))
+        logo = logo.copy(68, 340, 1325, 353).scaled(
+            190,
+            52,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        brand_logo.setPixmap(logo)
+        brand_logo.setFixedSize(190, 52)
+        brand_logo.setAccessibleName(APPLICATION_NAME)
+        brand_layout.addWidget(brand_logo)
         brand_layout.addStretch()
         layout.addWidget(brand_panel)
 
@@ -698,15 +725,21 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         self.profile_button = QPushButton()
         self.profile_button.setObjectName("profile_button")
-        self.profile_button.setIcon(gui_icon("circle-user-regular-full.svg"))
-        self.profile_button.setIconSize(QSize(21, 21))
-        self.profile_button.setToolTip("프로필 관리")
-        self.profile_button.setAccessibleName("프로필 관리")
+        set_button_icon(
+            self.profile_button,
+            "common-profile.svg",
+            size=HEADER_ICON_SIZE,
+            tooltip="프로필 관리",
+        )
         self.profile_button.clicked.connect(self.open_profiles)
-        self.refresh_button = QPushButton("↻")
+        self.refresh_button = QPushButton()
         self.refresh_button.setObjectName("refresh_button")
-        self.refresh_button.setToolTip("토큰 재발급")
-        self.refresh_button.setAccessibleName("토큰 재발급")
+        set_button_icon(
+            self.refresh_button,
+            "common-refresh.svg",
+            size=HEADER_ICON_SIZE,
+            tooltip="토큰 재발급",
+        )
         self.refresh_button.clicked.connect(self.refresh_token)
         layout.addSpacing(8)
         layout.addWidget(self.profile_button)
@@ -717,7 +750,7 @@ class MainWindow(QMainWindow):
     def _build_navigation(self) -> QWidget:
         navigation = QFrame()
         navigation.setObjectName("navigation")
-        navigation.setFixedWidth(220)
+        navigation.setFixedWidth(NAVIGATION_WIDTH)
         layout = QVBoxLayout(navigation)
         layout.setContentsMargins(14, 22, 14, 22)
         layout.setSpacing(6)
@@ -728,17 +761,18 @@ class MainWindow(QMainWindow):
         group = QButtonGroup(navigation)
         group.setExclusive(True)
         entries = (
-            ("⌂", "대시보드"),
-            ("▣", "EC2 접속"),
-            ("⇄", "RDS 터널"),
-            ("◈", "Secrets"),
-            ("↑", "S3 파일"),
-            ("≡", "실행 로그"),
+            ("tab-dashboard.svg", "대시보드"),
+            ("tab-ec2.svg", "EC2 접속"),
+            ("tab-rds.svg", "RDS 터널"),
+            ("tab-secrets.svg", "Secrets"),
+            ("tab-s3.svg", "S3 파일"),
+            ("tab-log.svg", "실행 로그"),
         )
-        for index, (icon, title) in enumerate(entries):
-            button = QPushButton(f"{icon}    {title}")
+        for index, (icon_filename, title) in enumerate(entries):
+            button = QPushButton(title)
             button.setObjectName(f"nav_{index}")
             button.setAccessibleName(title)
+            set_button_icon(button, icon_filename, size=NAVIGATION_ICON_SIZE)
             button.setCheckable(True)
             button.setChecked(index == 0)
             group.addButton(button, index)
@@ -776,7 +810,7 @@ class MainWindow(QMainWindow):
         details = (
             (
                 "ec2",
-                "EC2",
+                "tab-ec2.svg",
                 "EC2 접속",
                 "외부 터미널",
                 "온라인 인스턴스를 조회하고 선택한 서버에 Session Manager로 접속합니다.",
@@ -784,7 +818,7 @@ class MainWindow(QMainWindow):
             ),
             (
                 "rds",
-                "RDS",
+                "tab-rds.svg",
                 "RDS 터널",
                 "앱 내부 세션 관리",
                 "저장한 터널 세션을 선택해 로컬 포트포워딩을 시작하고 상태를 유지합니다.",
@@ -792,7 +826,7 @@ class MainWindow(QMainWindow):
             ),
             (
                 "secrets",
-                "SEC",
+                "tab-secrets.svg",
                 "Secrets Manager",
                 "민감정보 마스킹",
                 "권한이 있는 Secret을 조회하고 JSON 값을 안전하게 확인하거나 복사합니다.",
@@ -800,7 +834,7 @@ class MainWindow(QMainWindow):
             ),
             (
                 "s3",
-                "S3",
+                "tab-s3.svg",
                 "S3 파일",
                 "탐색 및 업로드",
                 "Bucket과 Prefix를 탐색하고 로컬 파일을 선택하여 업로드합니다.",

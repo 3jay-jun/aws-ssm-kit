@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QToolButton
@@ -166,7 +168,8 @@ def test_s3_page_matches_mockup_header_toolbar_card_and_drop_order() -> None:
     assert card is not None
     assert card.layout().indexOf(page.breadcrumb) < card.layout().indexOf(page.objects)
     assert card.layout().indexOf(page.objects) < card.layout().indexOf(page.drop_zone)
-    assert page.upload.text() == "업로드"
+    assert page.upload.text() == ""
+    assert page.upload.toolTip() == page.upload.accessibleName() == "업로드"
     assert page.findChild(type(page.upload), "s3_file_choose") is None
     assert page.findChild(type(page.upload), "s3_bucket_catalog_load") is None
     assert page.findChild(QFrame, "s3_saved_locations_panel") is not None
@@ -296,7 +299,7 @@ def test_selected_files_and_folders_download_to_one_selected_root(tmp_path: Path
         (selected_file, selected_folder), tmp_path, "test-upload-bucket", 7
     )
     s3.download.assert_called_once()
-    assert page.open_object_button.text() == "다운로드"
+    assert page.open_object_button.toolTip() == "다운로드"
 
 
 def test_profile_change_cancels_owned_upload_and_clears_files(tmp_path: Path) -> None:
@@ -371,8 +374,9 @@ def test_upload_sources_accumulate_remove_clear_and_switch_single_action(tmp_pat
 
     assert page._selected_files == [source.resolve(), folder.resolve()]
     assert page.upload_sources.count() == 2
-    assert page.file_summary.text() == "업로드 대상 2개"
-    assert page.upload.text() == "업로드"
+    assert page.file_summary.text() == "업로드 파일 · 2개"
+    assert page.upload.text() == ""
+    assert page.upload.toolTip() == page.upload.accessibleName() == "업로드"
     assert page.upload.property("variant") == "primary"
     assert page.upload.isEnabled()
 
@@ -381,7 +385,8 @@ def test_upload_sources_accumulate_remove_clear_and_switch_single_action(tmp_pat
     assert page._selected_files == [folder.resolve()]
     page._upload_in_progress = True
     page._sync_upload_action()
-    assert page.upload.text() == "업로드 취소"
+    assert page.upload.text() == ""
+    assert page.upload.toolTip() == page.upload.accessibleName() == "업로드 취소"
     assert page.upload.property("variant") == "danger"
     page._upload_in_progress = False
     page.clear_sources()
@@ -527,3 +532,87 @@ def test_upload_mfa_cancel_clears_handle_and_shutdown_completes_immediately(
     assert page._upload_task is None
     assert not page._upload_in_progress
     assert completed == [True]
+
+
+@pytest.mark.parametrize(
+    "policy", [None, UploadConflictPolicy.OVERWRITE, UploadConflictPolicy.SKIP_EXISTING]
+)
+def test_download_confirmation_cancel_or_policy(tmp_path: Path, policy) -> None:
+    _app()
+    service = Mock()
+    service.download.return_value = DownloadSummary((), 0)
+    page = S3Page(Mock(), service, ImmediateRunner(), confirm_download=lambda *_: policy)  # type: ignore[arg-type]
+    plan = DownloadPlan(
+        7,
+        "ap-northeast-2",
+        (DownloadItem("test-bucket", "file.txt", tmp_path / "file.txt", 2, True),),
+    )
+    page._download_prepared(plan)
+    if policy is None:
+        service.download.assert_not_called()
+    else:
+        assert service.download.call_args.kwargs["policy"] is policy
+
+
+def test_upload_cards_preview_and_blank_area_opens_picker(tmp_path: Path) -> None:
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage
+    from PySide6.QtTest import QTest
+
+    from aws_connect.presentation.gui.upload_sources import UploadSourcesList
+
+    _app()
+    chosen: list[bool] = []
+    cards = UploadSourcesList(
+        lambda *_: None, lambda *_: None, lambda: chosen.append(True), ImmediateRunner()
+    )  # type: ignore[arg-type]
+    cards.resize(500, 184)
+    cards.show()
+    QTest.mouseClick(cards.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(420, 80))
+    assert chosen == [True]
+    source = tmp_path / "a-very-long-image-name-that-needs-to-be-shortened-for-the-card.png"
+    image = QImage(20, 20, QImage.Format.Format_RGB32)
+    image.fill(Qt.GlobalColor.red)
+    image.save(str(source))
+    cards.add_source(source, "image/png", lambda *_: None)
+    card = cards.itemWidget(cards.item(0))
+    assert card.findChild(QLabel, "upload_source_name").text().endswith("…")
+    assert (
+        card.findChild(QLabel, "upload_source_icon").pixmap().toImage().pixelColor(1, 1).red()
+        == 255
+    )
+    metadata = [label.text() for label in card.findChildren(QLabel, "upload_source_metadata")]
+    assert any("B" in value for value in metadata)
+    assert cards.item(0).sizeHint().height() > cards.item(0).sizeHint().width()
+    cards.close()
+
+
+def test_upload_picker_accepts_files_and_folders_together(tmp_path: Path) -> None:
+    from PySide6.QtCore import QItemSelectionModel
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QAbstractItemView, QFileSystemModel
+
+    from aws_connect.presentation.gui.upload_sources import UploadSourceDialog
+
+    _app()
+    source = tmp_path / "file.txt"
+    source.write_text("local", encoding="utf-8")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    parent = S3Page(Mock(), Mock(), ImmediateRunner())  # type: ignore[arg-type]
+    dialog = UploadSourceDialog(parent)
+    dialog.setDirectory(str(tmp_path))
+    dialog.show()
+    QTest.qWait(100)
+    view = next(
+        view
+        for view in dialog.findChildren(QAbstractItemView)
+        if view.isVisible() and isinstance(view.model(), QFileSystemModel)
+    )
+    for path in (source, folder):
+        view.selectionModel().select(
+            view.model().index(str(path)),
+            QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+        )
+    dialog.accept()
+    assert set(dialog.paths) == {source, folder}

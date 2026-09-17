@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import subprocess  # nosec B404
 from base64 import urlsafe_b64decode
 from collections.abc import Sequence
@@ -46,35 +47,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             connection.send({"event": "exited", "exit_code": 252})
         connection.close()
         return 252
+    previous_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        connection.send({"event": "started", "process_id": process.pid})
-    except (BrokenPipeError, EOFError, OSError):
-        _stop_process(process)
-        connection.close()
-        return 252
-    connected = True
-    while process.poll() is None:
-        has_command = False
-        if connected:
-            try:
-                has_command = connection.poll(0.1)
-            except (EOFError, OSError):
-                connected = False
-        if connected and has_command:
-            try:
-                command = connection.recv()
-            except (EOFError, OSError):
-                connected = False
-                continue
-            action = command.get("command") if isinstance(command, dict) else None
-            if action == "terminate":
-                with suppress(OSError):
-                    process.terminate()
-            elif action == "kill":
-                with suppress(OSError):
-                    process.kill()
-        else:
-            Event().wait(0.05)
+        try:
+            connection.send({"event": "started", "process_id": process.pid})
+        except (BrokenPipeError, EOFError, OSError):
+            _stop_process(process)
+            connection.close()
+            return 252
+        connected = True
+        while process.poll() is None:
+            has_command = False
+            if connected:
+                try:
+                    has_command = connection.poll(0.1)
+                except (EOFError, OSError):
+                    connected = False
+            if connected and has_command:
+                try:
+                    command = connection.recv()
+                except (EOFError, OSError):
+                    connected = False
+                    continue
+                action = command.get("command") if isinstance(command, dict) else None
+                if action == "terminate":
+                    with suppress(OSError):
+                        process.terminate()
+                elif action == "kill":
+                    with suppress(OSError):
+                        process.kill()
+            else:
+                Event().wait(0.05)
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint_handler)
     exit_code = int(process.returncode or 0)
     if connected:
         with suppress(BrokenPipeError, EOFError, OSError):

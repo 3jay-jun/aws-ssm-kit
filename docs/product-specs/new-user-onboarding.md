@@ -2,7 +2,7 @@
 
 ## Desired outcome
 
-A Windows user extracts the Portable ZIP, starts AWS Connect, stores a protected
+A Windows user extracts the Portable ZIP, starts aws-ssm-kit, stores a protected
 AWS profile, completes MFA when required, and can diagnose prerequisites without
 installing Python, AWS CLI, or gossm.
 

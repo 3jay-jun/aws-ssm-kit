@@ -36,7 +36,7 @@ def test_doctor_json_uses_composed_application_service(
     assert main(["doctor", "--output", "json"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert payload["application_name"] == "AWS Connect"
+    assert payload["application_name"] == "aws-ssm-kit"
     assert payload["status"] == "ready"
     assert payload["session_manager_plugin"]["version"] == "1.2.707.0"
     assert payload["database"]["migration_version"] == 3

@@ -23,6 +23,7 @@ vendor/session-manager-plugin/
   "version": "1.2.707.0",
   "source_url": "https://approved.example/session-manager-plugin.exe",
   "sha256": "64 lowercase hexadecimal characters",
+  "signer": "Amazon Web Services, Inc.",
   "license_file": "LICENSE",
   "notice_file": "NOTICE",
   "approved": true,
@@ -31,8 +32,9 @@ vendor/session-manager-plugin/
 ```
 
 The checksum must match the exact executable, LICENSE and NOTICE must be non-empty,
-and the executable must report the declared version. A missing, malformed, unapproved,
-or mismatched input fails closed before PyInstaller starts.
+the executable must report the declared version, and release inputs must have a valid
+Authenticode signature matching the approved signer. A missing, malformed, unapproved,
+unsigned, or mismatched input fails closed before PyInstaller starts.
 
 CI uses `scripts/create-test-vendor.ps1` to compile a harmless version-reporting stub.
 That manifest is marked `test_only`; it is accepted only with `-AllowTestVendor`, produces
@@ -72,3 +74,12 @@ in `manifest.json`, and review the matching LICENSE/NOTICE. Then run the product
 on a clean supported Windows VM with no Python, AWS CLI, gossm, or machine-wide Plugin installed.
 Extract beneath a Korean/space path, make the application folder read/execute-only, run `doctor`,
 start GUI/CLI, and register/connect the first approved non-production profile within ten minutes.
+
+## GitHub Release
+
+The approved `vendor/session-manager-plugin` input is versioned with Git LFS. A `vX.Y.Z` tag
+whose version exactly matches `pyproject.toml` triggers `.github/workflows/release.yml`. The
+workflow runs the complete check gate, builds and smoke-tests the production ZIP, and publishes
+the ZIP plus its SHA-256 sidecar to the matching GitHub Release. It never downloads or substitutes
+a Session Manager Plugin; the exact reviewed LFS object in the tagged commit is the only accepted
+release input.

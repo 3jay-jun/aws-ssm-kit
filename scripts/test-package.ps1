@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "package-paths.ps1")
 $resolved = Resolve-Path -LiteralPath $ZipPath -ErrorAction Stop
 if ([IO.Path]::GetExtension($resolved.Path) -ne ".zip") {
     throw "Package smoke input must be a Portable ZIP: $($resolved.Path)"
@@ -29,6 +30,8 @@ $stdoutPath = Join-Path $testRoot "doctor.stdout.txt"
 $stderrPath = Join-Path $testRoot "doctor.stderr.txt"
 $helperStdoutPath = Join-Path $testRoot "helper.stdout.txt"
 $helperStderrPath = Join-Path $testRoot "helper.stderr.txt"
+$guiStdoutPath = Join-Path $testRoot "gui.stdout.txt"
+$guiStderrPath = Join-Path $testRoot "gui.stderr.txt"
 New-Item -ItemType Directory -Force -Path $extractRoot, $dataRoot | Out-Null
 
 $previousPath = $env:PATH
@@ -92,7 +95,7 @@ try {
         throw "SHA256SUMS.txt does not cover every payload file exactly once."
     }
     foreach ($file in $filesBeforeSums) {
-        $relative = [IO.Path]::GetRelativePath($packageRoot, $file.FullName).Replace("\", "/")
+        $relative = ConvertTo-PackageRelativePath -PackageRoot $packageRoot -Path $file.FullName
         $actual = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         if (-not $sumRecords.ContainsKey($relative) -or $sumRecords[$relative] -cne $actual) {
             throw "SHA256SUMS.txt mismatch: $relative"
@@ -100,12 +103,7 @@ try {
     }
 
     # Remove development runtimes and AWS tools from discovery while invoking EXEs by absolute path.
-    $systemRoot = [Environment]::GetFolderPath("Windows")
-    $env:PATH = @(
-        (Join-Path $systemRoot "System32"),
-        (Join-Path $systemRoot "System32/WindowsPowerShell/v1.0"),
-        (Join-Path $systemRoot "System32/Wbem")
-    ) -join ";"
+    $env:PATH = Get-PackageIsolatedPath
     foreach ($forbidden in @("python.exe", "python3.exe", "aws.exe", "gossm.exe", "session-manager-plugin.exe")) {
         if (Get-Command $forbidden -ErrorAction SilentlyContinue) {
             throw "Sanitized PATH unexpectedly exposes forbidden prerequisite: $forbidden"
@@ -215,10 +213,17 @@ try {
         throw "Packaged session host did not execute its fail-closed path: $($helper.ExitCode)"
     }
 
-    $gui = Start-Process -FilePath (Join-Path $packageRoot "aws_connect.exe") -PassThru
+    $gui = Start-Process -FilePath (Join-Path $packageRoot "aws_connect.exe") `
+        -RedirectStandardOutput $guiStdoutPath -RedirectStandardError $guiStderrPath -PassThru
     Start-Sleep -Seconds 3
     if ($gui.HasExited) {
         throw "Packaged GUI exited during startup smoke with code $($gui.ExitCode)."
+    }
+    $guiError = Get-Content -LiteralPath $guiStderrPath -Raw -ErrorAction SilentlyContinue
+    if ($guiError -match '(?m)^(Traceback|ImportError:)') {
+        Stop-Process -Id $gui.Id -Force
+        $gui.WaitForExit()
+        throw "Packaged GUI reported a startup exception: $guiError"
     }
     Stop-Process -Id $gui.Id -Force
     $gui.WaitForExit()

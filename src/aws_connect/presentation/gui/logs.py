@@ -33,6 +33,7 @@ from aws_connect.application.settings_service import (
     UpdateSettingsRequest,
 )
 from aws_connect.domain.app_settings import AppSettings
+from aws_connect.presentation.gui.icons import set_button_icon
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 
@@ -86,8 +87,9 @@ class LogsSettingsPage(QWidget):
         card_layout.setContentsMargins(20, 20, 20, 20)
         card_actions = QHBoxLayout()
         card_actions.addStretch()
-        self.refresh_button = QPushButton("↻ 새로고침")
+        self.refresh_button = QPushButton("새로고침")
         self.refresh_button.setObjectName("logs_refresh")
+        set_button_icon(self.refresh_button, "common-refresh.svg")
         self.export_button = QPushButton("진단 ZIP 내보내기")
         self.export_button.setObjectName("logs_export")
         self.refresh_button.clicked.connect(self.refresh)
@@ -123,6 +125,7 @@ class LogsSettingsPage(QWidget):
         detail_title.setObjectName("managed_log_detail_title")
         self.copy_detail_button = QPushButton("상세 복사")
         self.copy_detail_button.setObjectName("managed_log_detail_copy")
+        set_button_icon(self.copy_detail_button, "common-clipboard.svg")
         self.copy_detail_button.setEnabled(False)
         self.copy_detail_button.clicked.connect(self.copy_selected_detail)
         detail_header.addWidget(detail_title)
@@ -173,6 +176,7 @@ class LogsSettingsPage(QWidget):
         actions = QHBoxLayout()
         self.save_button = QPushButton("설정 저장")
         self.reset_button = QPushButton("기본값 복원")
+        set_button_icon(self.save_button, "common-save.svg")
         self.save_button.clicked.connect(self.update_settings)
         self.reset_button.clicked.connect(self.reset_settings)
         for button in (self.save_button, self.reset_button):

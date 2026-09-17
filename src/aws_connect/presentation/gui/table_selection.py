@@ -1,7 +1,7 @@
 """Shared row-selection painting for data tables."""
 
 from PySide6.QtCore import QModelIndex, QPersistentModelIndex, QRect
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget
 
 
@@ -16,9 +16,11 @@ class FirstColumnSelectionDelegate(QStyledItemDelegate):
     ) -> None:
         clean_option = QStyleOptionViewItem(option)
         selected = bool(clean_option.state & QStyle.StateFlag.State_Selected)
-        if selected:
-            painter.fillRect(option.rect, QColor("#eff6ff"))
-        clean_option.state &= ~(QStyle.StateFlag.State_HasFocus | QStyle.StateFlag.State_Selected)
+        clean_option.palette.setColor(QPalette.ColorRole.Highlight, QColor("#eff6ff"))
+        clean_option.palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#172033"))
+        # Let the stylesheet paint the full selected cell, including its padding.
+        # The first-column bar supplies the row focus cue without a native inset.
+        clean_option.state &= ~QStyle.StateFlag.State_HasFocus
         super().paint(painter, clean_option, index)
         if selected and index.column() == 0:
             painter.save()

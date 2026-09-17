@@ -1,10 +1,10 @@
-# AWS Connect Architecture Map
+# aws-ssm-kit Architecture Map
 
 This is a map. Detailed decisions and contracts live under `docs/`.
 
 ## System
 
-AWS Connect is a Windows-first Python application distributed as a Portable ZIP.
+aws-ssm-kit is a Windows-first Python application distributed as a Portable ZIP.
 The CLI verifies each use case before the GUI connects to the same Application Service.
 
 ```text

@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -41,6 +40,9 @@ from aws_connect.application.secrets_service import (
 from aws_connect.domain.errors import ApplicationError, AwsPermissionError
 from aws_connect.domain.saved_secret import SavedSecret, SecretLookupMode
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner, MfaCodeProvider
+from aws_connect.presentation.gui.clipboard import copy_temporarily
+from aws_connect.presentation.gui.icons import gui_icon, set_button_icon
+from aws_connect.presentation.gui.list_rows import set_compact_list_row, update_list_row_separators
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 
@@ -94,6 +96,7 @@ class SecretsPage(QWidget):
         root.setSpacing(16)
         page_head = QHBoxLayout()
         heading_copy = QVBoxLayout()
+        heading_copy.setSpacing(4)
         heading = QLabel("Secrets Manager")
         heading.setObjectName("page_title")
         subtitle = QLabel("현재 프로필에 조회 권한이 있는 시크릿만 표시합니다.")
@@ -102,8 +105,10 @@ class SecretsPage(QWidget):
         heading_copy.addWidget(subtitle)
         page_head.addLayout(heading_copy)
         page_head.addStretch()
-        self.list_button = QPushButton("↻ 새로고침")
+        self.list_button = QPushButton()
+        self.list_button.setProperty("action_button", True)
         self.list_button.setObjectName("secret_list")
+        set_button_icon(self.list_button, "common-refresh.svg", tooltip="목록 새로고침")
         self.list_button.setEnabled(False)
         self.list_button.clicked.connect(self.load_list)
         page_head.addWidget(self.list_button, alignment=Qt.AlignmentFlag.AlignTop)
@@ -115,6 +120,7 @@ class SecretsPage(QWidget):
         query = QHBoxLayout(toolbar)
         query.setContentsMargins(0, 0, 0, 0)
         mode_group = QVBoxLayout()
+        mode_group.setSpacing(6)
         mode_label = QLabel("조회 방식")
         mode_label.setObjectName("field_label")
         mode_group.addWidget(mode_label)
@@ -125,12 +131,16 @@ class SecretsPage(QWidget):
         mode_group.addWidget(self.lookup_mode)
         query.addLayout(mode_group)
         id_group = QVBoxLayout()
+        id_group.setSpacing(6)
         id_label = QLabel("Secret 검색")
         id_label.setObjectName("field_label")
         id_group.addWidget(id_label)
         self.secret_id = QLineEdit()
         self.secret_id.setObjectName("secret_id")
         self.secret_id.setPlaceholderText("Secret ID 또는 이름")
+        self.secret_id.addAction(
+            gui_icon("common-search.svg"), QLineEdit.ActionPosition.LeadingPosition
+        )
         self.secret_id.textChanged.connect(self._update_actions)
         id_group.addWidget(self.secret_id)
         self.secret_selector = QComboBox()
@@ -145,16 +155,18 @@ class SecretsPage(QWidget):
         self.catalog_status = QLabel("Secret 목록 권한을 확인하는 중입니다.")
         self.catalog_status.setObjectName("helper_text")
         self.catalog_status.setWordWrap(True)
-        id_group.addWidget(self.catalog_status)
         query.addLayout(id_group, 1)
-        self.get_button = QPushButton("조회")
+        self.get_button = QPushButton()
+        self.get_button.setProperty("action_button", True)
         self.get_button.setObjectName("secret_get")
         self.get_button.setProperty("variant", "primary")
+        set_button_icon(self.get_button, "common-search.svg", tooltip="조회", color="#ffffff")
         self.get_button.setEnabled(False)
         self.get_button.clicked.connect(self.get_secret)
         self.secret_id.returnPressed.connect(self.get_secret)
         query.addWidget(self.get_button, alignment=Qt.AlignmentFlag.AlignBottom)
         root.addWidget(toolbar)
+        root.addWidget(self.catalog_status)
 
         relay_panel = QFrame()
         relay_panel.setObjectName("secret_relay_panel")
@@ -172,6 +184,7 @@ class SecretsPage(QWidget):
         root.addWidget(self.relay_consent)
         self.terminal_fallback_button = QPushButton("EC2 직접 조회")
         self.terminal_fallback_button.setObjectName("secret_terminal_fallback")
+        set_button_icon(self.terminal_fallback_button, "common-start.svg")
         self.terminal_fallback_button.clicked.connect(self.open_terminal_fallback)
         self.terminal_fallback_button.hide()
         root.addWidget(self.terminal_fallback_button, alignment=Qt.AlignmentFlag.AlignLeft)
@@ -192,19 +205,23 @@ class SecretsPage(QWidget):
         self.catalog = QListWidget()
         self.catalog.setObjectName("secret_catalog")
         self.catalog.itemClicked.connect(self._catalog_selected)
+        self.catalog.itemDoubleClicked.connect(lambda _item: self.edit_saved())
         self.catalog.currentRowChanged.connect(lambda _row: self._selection_changed())
         catalog.addWidget(self.catalog, 1)
         saved_actions = QHBoxLayout()
-        self.delete_saved_button = QPushButton("삭제")
-        self.delete_saved_button.setProperty("role", "danger")
-        self.edit_saved_button = QPushButton("수정")
-        self.register_saved_button = QPushButton("등록")
+        self.delete_saved_button = QPushButton()
+        self.delete_saved_button.setProperty("variant", "danger")
+        self.delete_saved_button.setProperty("action_button", True)
+        self.register_saved_button = QPushButton()
+        self.register_saved_button.setProperty("action_button", True)
+        set_button_icon(
+            self.delete_saved_button, "common-delete.svg", tooltip="삭제", color="#ffffff"
+        )
+        set_button_icon(self.register_saved_button, "common-save.svg", tooltip="Secret 등록")
         self.delete_saved_button.clicked.connect(self.delete_saved)
-        self.edit_saved_button.clicked.connect(self.edit_saved)
         self.register_saved_button.clicked.connect(self.register_saved)
         saved_actions.addWidget(self.delete_saved_button)
         saved_actions.addStretch()
-        saved_actions.addWidget(self.edit_saved_button)
         saved_actions.addWidget(self.register_saved_button)
         catalog.addLayout(saved_actions)
         content.addWidget(catalog_card)
@@ -232,16 +249,17 @@ class SecretsPage(QWidget):
         result_layout.addWidget(self.fields, 1)
         notice = QLabel(
             "조회한 값과 조회 컨텍스트는 이 PC의 SQLite에 저장됩니다. "
-            "RDS 터널 세션에는 선택한 host와 port만 복사할 수 있습니다."
+            "전체 내용 복사로 원문을 복사할 수 있습니다."
         )
         notice.setObjectName("secret_notice")
         notice.setWordWrap(True)
         self.result_notice = notice
         result_layout.addWidget(notice)
-        self.rds_button = QPushButton("host/port를 RDS 편집기로 복사")
-        self.rds_button.setObjectName("secret_to_rds")
-        self.rds_button.clicked.connect(self.copy_to_rds)
-        result_layout.addWidget(self.rds_button, alignment=Qt.AlignmentFlag.AlignRight)
+        self.copy_all_button = QPushButton("전체 내용 복사")
+        self.copy_all_button.setObjectName("secret_copy_all")
+        set_button_icon(self.copy_all_button, "common-copy.svg")
+        self.copy_all_button.clicked.connect(self.copy_all)
+        result_layout.addWidget(self.copy_all_button, alignment=Qt.AlignmentFlag.AlignRight)
         content.addWidget(result_card, 1)
         root.addLayout(content, 1)
         self._selection_changed()
@@ -254,6 +272,7 @@ class SecretsPage(QWidget):
         self._profile_id = profile_id
         self._clear_result()
         self.summary.setText("조회한 Secret이 없습니다.")
+        self.secret_id.setProperty("source_identifier", None)
         self.secret_id.clear()
         self.relay_instance.clear()
         self._relay_targets = []
@@ -291,9 +310,14 @@ class SecretsPage(QWidget):
         self._saved_entries = list(value)
         self.catalog.clear()
         for saved in self._saved_entries:
-            item = QListWidgetItem(saved.identifier)
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, saved)
             self.catalog.addItem(item)
+            identifier = _short_secret_id(saved.identifier)
+            set_compact_list_row(
+                self.catalog, item, identifier.rsplit("/", 1)[-1], (f"Secret ID  {identifier}",)
+            )
+        update_list_row_separators(self.catalog)
         self.saved_status.setText("" if self._saved_entries else "저장된 Secret이 없습니다.")
         selected_row = next(
             (
@@ -353,7 +377,8 @@ class SecretsPage(QWidget):
     def _selector_changed(self) -> None:
         secret = self.secret_selector.currentData()
         if isinstance(secret, ListedSecret):
-            self.secret_id.setText(secret.arn)
+            self.secret_id.setProperty("source_identifier", secret.arn)
+            self.secret_id.setText(_short_secret_id(secret.arn))
         self._update_actions()
 
     def _catalog_selected(self, item: QListWidgetItem) -> None:
@@ -384,11 +409,13 @@ class SecretsPage(QWidget):
         self._pending_relay_instance_id = saved.relay_instance_id
         if self._relays_loaded_once:
             self._render_relays()
-        self.summary.setText(f"{result.secret_id} · {result.kind.value}")
+        self.summary.clear()
+        self.summary.hide()
         self._render()
 
     def _restore_identifier(self, identifier: str) -> None:
-        self.secret_id.setText(identifier)
+        self.secret_id.setProperty("source_identifier", identifier)
+        self.secret_id.setText(_short_secret_id(identifier))
         match = next(
             (
                 index
@@ -429,14 +456,17 @@ class SecretsPage(QWidget):
         secret = self.secret_selector.currentData()
         if not self.secret_selector.isHidden() and isinstance(secret, ListedSecret):
             return secret.arn
-        return self.secret_id.text().strip()
+        text = self.secret_id.text().strip()
+        source = self.secret_id.property("source_identifier")
+        return source if isinstance(source, str) and _short_secret_id(source) == text else text
 
     def _request_secret(self, identifier: str) -> None:
         if self._profile_id is None:
             return
         profile_id = self._profile_id
         self._restored_identifier = None
-        self.secret_id.setText(identifier)
+        self.secret_id.setProperty("source_identifier", identifier)
+        self.secret_id.setText(_short_secret_id(identifier))
         mode = self.lookup_mode.currentData()
         relay = self.relay_instance.currentData()
         if mode == SecretLookupMode.VIA_EC2 and (
@@ -476,7 +506,8 @@ class SecretsPage(QWidget):
         self._result_generation += 1
         self._revealed_paths.clear()
         self._update_actions()
-        self.summary.setText(f"{self._result.secret_id} · {self._result.kind.value}")
+        self.summary.clear()
+        self.summary.hide()
         self._render()
         self._pending_saved_identifier = self._result.secret_id
         self.load_saved()
@@ -529,11 +560,18 @@ class SecretsPage(QWidget):
             self._render()
 
     def _clear_result(self) -> None:
+        self.summary.show()
         self._result_generation += 1
         self._result = None
         self._revealed_paths.clear()
         self.fields.setRowCount(0)
         self.terminal_fallback_button.hide()
+
+    def copy_all(self) -> None:
+        if self._result is None:
+            return
+        copy_temporarily(self._result.raw_secret_string())
+        self.notice_raised.emit("전체 내용을 복사했습니다. 30초 후 클립보드에서 제거합니다.")
 
     def copy_to_rds(self) -> None:
         if self._result is None:
@@ -554,12 +592,9 @@ class SecretsPage(QWidget):
         has_result = self._result is not None
         saved_selected = 0 <= self.catalog.currentRow() < len(self._saved_entries)
         self.delete_saved_button.setEnabled(saved_selected)
-        self.edit_saved_button.setEnabled(saved_selected)
-        self.register_saved_button.setEnabled(
-            self._profile_id is not None and bool(self._current_identifier())
-        )
-        self.rds_button.setEnabled(has_result)
-        self.rds_button.setVisible(has_result)
+        self.register_saved_button.setEnabled(self._profile_id is not None)
+        self.copy_all_button.setEnabled(has_result)
+        self.copy_all_button.setVisible(has_result)
         self.result_notice.setVisible(has_result)
 
     def resizeEvent(self, event: Any) -> None:  # noqa: N802
@@ -615,14 +650,16 @@ class SecretsPage(QWidget):
     def register_saved(self) -> None:
         if self._profile_id is None:
             return
-        identifier = self._current_identifier()
-        if not identifier:
-            identifier, accepted = QInputDialog.getText(self, "Secret 등록", "Secret 이름 또는 ARN")
-            if not accepted:
-                return
+        edited = _prompt_saved_secret(self, None)
+        if edited is None:
+            return
+        identifier, value = edited
+        profile_id = self._profile_id
         self._runner.submit(
-            lambda: self._secrets.remember(identifier, self._profile_id),
-            lambda _value: self._saved_changed("Secret을 등록했습니다."),
+            lambda: self._secrets.remember(identifier, profile_id, value=value),
+            lambda saved: self._saved_changed(
+                "Secret을 등록했습니다.", saved.require_id(), hydrate=True
+            ),
             self.error_raised.emit,
         )
 
@@ -653,7 +690,10 @@ class SecretsPage(QWidget):
         confirmed = QMessageBox.warning(
             self,
             "저장된 Secret 삭제",
-            f"{selected.identifier} 저장 항목을 삭제할까요? AWS Secret은 삭제되지 않습니다.",
+            (
+                f"{_short_secret_id(selected.identifier)} 저장 항목을 삭제할까요? "
+                "AWS Secret은 삭제되지 않습니다."
+            ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -745,24 +785,49 @@ def _display(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _prompt_saved_secret(parent: QWidget, saved: SavedSecret) -> tuple[str, str] | None:
+def _prompt_saved_secret(parent: QWidget, saved: SavedSecret | None) -> tuple[str, str] | None:
     dialog = QDialog(parent)
-    dialog.setWindowTitle("저장된 Secret 수정")
+    dialog.setWindowTitle("Secret 수정" if saved is not None else "Secret 등록")
+    dialog.resize(520, 360)
     layout = QVBoxLayout(dialog)
     form = QFormLayout()
-    identifier = QLineEdit(saved.identifier)
+    sequence = QLineEdit(str(saved.require_id()) if saved is not None else "저장 시 자동 생성")
+    sequence.setObjectName("saved_secret_sequence")
+    sequence.setReadOnly(True)
+    original_id = saved.identifier if saved is not None else ""
+    identifier = QLineEdit(_short_secret_id(original_id))
     identifier.setObjectName("saved_secret_identifier")
-    secret_value = QPlainTextEdit(saved.value)
+    secret_value = QPlainTextEdit(saved.value if saved is not None else "")
     secret_value.setObjectName("saved_secret_value")
+    form.addRow("ID", sequence)
     form.addRow("Secret ID", identifier)
     form.addRow("Value", secret_value)
     layout.addLayout(form)
     buttons = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
     )
+    buttons.button(QDialogButtonBox.StandardButton.Save).setText("저장")
+    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+    buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(bool(identifier.text().strip()))
+    identifier.textChanged.connect(
+        lambda text: buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(
+            bool(text.strip())
+        )
+    )
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
-    return identifier.text(), secret_value.toPlainText()
+    edited_id = identifier.text().strip()
+    return (
+        original_id if edited_id == _short_secret_id(original_id) else edited_id,
+        secret_value.toPlainText(),
+    )
+
+
+def _short_secret_id(identifier: str) -> str:
+    """Shorten ARN presentation while preserving the original identifier for requests."""
+    if identifier.startswith("arn:") and ":secret:" in identifier:
+        return identifier.partition(":secret:")[2]
+    return identifier

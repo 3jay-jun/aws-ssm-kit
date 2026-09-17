@@ -5,10 +5,10 @@
   body { margin: 0; background: light-dark(#e9eef5,#0c1320); color: light-dark(#172033,#e7edf7); font-family: "Segoe UI", Pretendard, sans-serif; }
   button,input,select { font: inherit; }
   button { cursor: pointer; }
-  #aws-prototype { min-height: 900px; padding: 22px; background: radial-gradient(circle at 85% 0%, light-dark(#dbeafe,#14213a) 0, transparent 32%), light-dark(#e9eef5,#0c1320); }
-  .app { max-width: 1380px; min-height: 850px; margin: auto; display: grid; grid-template-rows: auto 1fr; overflow: hidden; border: 1px solid light-dark(#d4dce8,#26344a); border-radius: 18px; background: light-dark(#f8fafc,#111a29); box-shadow: 0 22px 60px light-dark(#23324a26,#00000066); }
-  .topbar { display: grid; grid-template-columns: 240px 1fr auto; align-items: center; min-height: 92px; padding: 0 24px; border-bottom: 1px solid light-dark(#dce3ed,#26344a); background: light-dark(#ffffff,#141f31); }
-  .brand { display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:-.2px; }
+  #aws-prototype { min-height: 100vh; padding: 0; background: radial-gradient(circle at 85% 0%, light-dark(#dbeafe,#14213a) 0, transparent 32%), light-dark(#e9eef5,#0c1320); }
+  .app { width: 100%; min-height: 100vh; margin: 0; display: grid; grid-template-rows: auto 1fr; overflow: hidden; border: 0; border-radius: 0; background: light-dark(#f8fafc,#111a29); box-shadow: 0 22px 60px light-dark(#23324a26,#00000066); }
+  .topbar { display: grid; grid-template-columns: 220px 1fr auto; align-items: center; min-height: 92px; padding: 0 24px 0 0; border-bottom: 1px solid light-dark(#dce3ed,#26344a); background: light-dark(#ffffff,#141f31); }
+  .brand { width:220px; padding:0 14px; display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:-.2px; }
   .brandmark { width:38px; height:38px; display:grid; place-items:center; border-radius:11px; color:#fff; background:#ff9900; font-weight:800; }
   .profile-summary { min-width: 0; display:flex; align-items:center; gap:16px; padding: 12px 18px; border-left:1px solid light-dark(#e2e8f0,#26344a); }
   .profile-name { min-width:140px; }
@@ -55,7 +55,9 @@
   .feature-top { display:flex; align-items:center; gap:13px; }
   .feature-icon { width:42px; height:42px; display:grid; place-items:center; border-radius:12px; background:light-dark(#eff6ff,#172d4c); color:light-dark(#1d4ed8,#86b2ff); font-weight:800; }
   .feature p { margin:14px 0 18px; color:light-dark(#64748b,#9bacbf); font-size:13px; line-height:1.55; }
-  .feature .btn { margin-top:auto; align-self:flex-start; }
+  .feature-top .btn { margin-left:auto; width:30px; height:30px; padding:0; flex-shrink:0; border:0; background:transparent; }
+  .feature-top .btn img { width:18px; height:18px; }
+  button:focus-visible { outline:2px solid #2563eb; outline-offset:-2px; }
   .running { margin-top:18px; display:flex; align-items:center; gap:14px; }
   .running .grow { flex:1; }
   .running strong,.running small { display:block; }
@@ -73,6 +75,11 @@
   .status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border-radius:99px; color:light-dark(#087443,#62d99f); background:light-dark(#e8f8ef,#143528); font-weight:700; font-size:11px; }
   .split { display:grid; grid-template-columns:310px 1fr; gap:16px; }
   .session-list { padding:8px; }
+  .session-list > .btn,.session-list > input { width:100%; margin-bottom:8px; }
+  .btn:disabled { background:#f1f5f9; border-color:#e2e8f0; color:#94a3b8; }
+  .btn:disabled img { opacity:.4; }
+  [data-panel="ec2"] th,[data-panel="ec2"] td { white-space:nowrap; }
+  [data-panel="ec2"] th:nth-child(2),[data-panel="ec2"] td:nth-child(2) { width:100%; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
   .session { width:100%; padding:13px; border:0; border-radius:10px; color:inherit; background:transparent; text-align:left; }
   .session:hover,.session.active { background:light-dark(#eff6ff,#172c49); }
   .session strong,.session small { display:block; }
@@ -82,10 +89,11 @@
   .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
   .codebox { min-height:260px; margin-top:15px; padding:17px; border-radius:10px; color:light-dark(#263344,#d3def0); background:light-dark(#f1f5f9,#0b1320); font:13px/1.65 Consolas,monospace; white-space:pre-wrap; }
   .secret-layout { display:grid; grid-template-columns:360px 1fr; gap:16px; }
-  .secret-row { padding:12px; border-bottom:1px solid light-dark(#e4e9f1,#29384d); }
+  .secret-row { padding:6px 10px; border-bottom:1px solid light-dark(#e4e9f1,#29384d); }
   .secret-row.active { background:light-dark(#eff6ff,#172c49); }
   .secret-row strong,.secret-row small { display:block; }
-  .secret-row small { margin-top:5px; color:light-dark(#64748b,#98a9c0); }
+  .secret-row:last-child { border-bottom:0; }
+  .secret-row small { margin-top:1px; color:light-dark(#64748b,#98a9c0); }
   .crumbs { display:flex; gap:5px; align-items:center; margin-bottom:14px; color:light-dark(#2563eb,#8ab4ff); font-size:13px; }
   .drop { margin-top:18px; padding:24px; border:1px dashed light-dark(#93a4ba,#4d607b); border-radius:12px; text-align:center; color:light-dark(#64748b,#9babc1); }
   .progress { height:8px; border-radius:99px; overflow:hidden; background:light-dark(#e3e9f1,#26354b); }
@@ -95,20 +103,37 @@
   .dialog { width:min(920px,100%); max-height:720px; overflow:auto; border:1px solid light-dark(#dce3ed,#33445d); border-radius:16px; background:light-dark(#fff,#111c2c); box-shadow:0 25px 80px #0005; }
   .dialog-head { display:flex; align-items:center; justify-content:space-between; padding:18px 20px; border-bottom:1px solid light-dark(#e2e8f0,#2a3950); }
   .dialog-body { display:grid; grid-template-columns:270px 1fr; min-height:480px; }
-  .profiles { padding:14px; border-right:1px solid light-dark(#e2e8f0,#2a3950); background:light-dark(#f8fafc,#0d1725); }
-  .profiles .session { margin-bottom:4px; }
+  .profiles { display:flex; flex-direction:column; padding:14px; border-right:1px solid light-dark(#e2e8f0,#2a3950); background:light-dark(#f8fafc,#0d1725); }
+  .profiles .session,.session-list .session { margin:0; padding:7px 10px; border-radius:0; border-bottom:1px solid #e2e8f0; }
+  .profiles .session:last-of-type,.session-list .session:last-of-type { border-bottom:0; }
+  .profiles .session small,.session-list .session small { margin-top:2px; }
+  .icon-action { width:40px; height:40px; padding:0; display:grid; place-items:center; }
+  .icon-action img { width:18px; height:18px; }
+  .icon-action.danger { background:#dc2626; border-color:#dc2626; }
+  .icon-action.danger img,.icon-action.primary img { filter:brightness(0) invert(1); }
+  .profiles .actions { margin-top:auto; padding-top:12px; justify-content:space-between; }
   .editor { padding:22px; }
   .pk { display:inline-block; margin-top:5px; color:light-dark(#64748b,#98a9c0); font-size:11px; }
   .notice { margin-top:16px; padding:12px 14px; border-radius:10px; color:light-dark(#175cd3,#a8c7ff); background:light-dark(#eff8ff,#142a48); font-size:12px; line-height:1.5; }
   .toast { position:absolute; right:24px; bottom:24px; display:none; padding:12px 15px; border-radius:10px; color:#fff; background:#172033; box-shadow:0 12px 30px #0004; font-size:13px; }
   .toast.show { display:block; animation:fade .15s ease-out; }
   @media(max-width:900px){ .topbar{grid-template-columns:1fr auto}.brand{display:none}.profile-summary{border:0;padding-left:0}.meta{gap:10px}.shell{grid-template-columns:72px 1fr}.sidebar{padding:18px 8px}.nav button{justify-content:center}.nav button span:last-child,.side-label{display:none}.cards,.split,.secret-layout{grid-template-columns:1fr}.dialog-body{grid-template-columns:1fr}.profiles{border-right:0;border-bottom:1px solid light-dark(#e2e8f0,#2a3950)} }
+
+  [data-panel="s3"] h1 { margin-bottom:4px; }
+  [data-panel="s3"] th { padding:6px 10px; }
+  [data-panel="s3"] td { padding:4px 10px; }
+  .upload-selection-head { display:flex; align-items:center; justify-content:space-between; margin:8px 0; }
+  .upload-cards { display:flex; gap:8px; overflow:auto; max-height:112px; }
+  .upload-card { position:relative; flex:0 0 210px; display:flex; align-items:center; gap:8px; padding:8px 30px 8px 10px; border:1px solid #e2e8f0; border-radius:8px; }
+  .upload-card img { width:28px; height:28px; }
+  .upload-card .remove-source { position:absolute; right:4px; top:4px; width:22px; height:22px; border:0; border-radius:4px; background:transparent; }
+  .upload-card strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:132px; font-size:12px; }
 </style>
 
 <div id="aws-prototype">
   <section class="app">
     <header class="topbar">
-      <div class="brand"><span class="brandmark">A</span><span>AWS Connect</span></div>
+      <div class="brand"><span class="brandmark">A</span><span>aws-ssm-kit</span></div>
       <div class="profile-summary">
         <div class="profile-name"><strong>브랜드베이 개발계</strong><small>현재 프로필</small></div>
         <span class="state"><span class="dot"></span>인증됨</span>
@@ -141,40 +166,39 @@
         <section class="page active" data-panel="home">
           <div class="page-head"><div><h1>연결 도구</h1><p class="sub">현재 인증정보로 실행할 AWS 작업을 선택하세요.</p></div></div>
           <div class="cards">
-            <article class="card feature"><div class="feature-top"><span class="feature-icon">EC2</span><div><h2>EC2 접속</h2><span class="sub">외부 터미널</span></div></div><p>온라인 인스턴스를 조회하고 선택한 서버에 Session Manager로 접속합니다.</p><button class="btn" data-go="ec2">인스턴스 선택</button></article>
-            <article class="card feature"><div class="feature-top"><span class="feature-icon">RDS</span><div><h2>RDS 터널</h2><span class="sub">앱 내부 세션 관리</span></div></div><p>저장한 터널 세션을 선택해 로컬 포트포워딩을 시작하고 상태를 유지합니다.</p><button class="btn" data-go="rds">터널 관리</button></article>
-            <article class="card feature"><div class="feature-top"><span class="feature-icon">SEC</span><div><h2>Secrets Manager</h2><span class="sub">민감정보 마스킹</span></div></div><p>권한이 있는 Secret을 조회하고 JSON 값을 안전하게 확인하거나 복사합니다.</p><button class="btn" data-go="secrets">시크릿 조회</button></article>
-            <article class="card feature"><div class="feature-top"><span class="feature-icon">S3</span><div><h2>S3 파일</h2><span class="sub">탐색 및 업로드</span></div></div><p>Bucket과 Prefix를 탐색하고 로컬 파일을 선택하여 업로드합니다.</p><button class="btn" data-go="s3">S3 열기</button></article>
+            <article class="card feature"><div class="feature-top"><span class="feature-icon">EC2</span><div><h2>EC2 접속</h2><span class="sub">외부 터미널</span></div><button class="btn" data-go="ec2" title="인스턴스 선택" aria-label="인스턴스 선택"><img src="../../src/aws_connect/presentation/gui/assets/dashboard-move.svg" alt=""></button></div><p>온라인 인스턴스를 조회하고 선택한 서버에 Session Manager로 접속합니다.</p></article>
+            <article class="card feature"><div class="feature-top"><span class="feature-icon">RDS</span><div><h2>RDS 터널</h2><span class="sub">앱 내부 세션 관리</span></div><button class="btn" data-go="rds" title="터널 관리" aria-label="터널 관리"><img src="../../src/aws_connect/presentation/gui/assets/dashboard-move.svg" alt=""></button></div><p>저장한 터널 세션을 선택해 로컬 포트포워딩을 시작하고 상태를 유지합니다.</p></article>
+            <article class="card feature"><div class="feature-top"><span class="feature-icon">SEC</span><div><h2>Secrets Manager</h2><span class="sub">민감정보 마스킹</span></div><button class="btn" data-go="secrets" title="시크릿 조회" aria-label="시크릿 조회"><img src="../../src/aws_connect/presentation/gui/assets/dashboard-move.svg" alt=""></button></div><p>권한이 있는 Secret을 조회하고 JSON 값을 안전하게 확인하거나 복사합니다.</p></article>
+            <article class="card feature"><div class="feature-top"><span class="feature-icon">S3</span><div><h2>S3 파일</h2><span class="sub">탐색 및 업로드</span></div><button class="btn" data-go="s3" title="S3 열기" aria-label="S3 열기"><img src="../../src/aws_connect/presentation/gui/assets/dashboard-move.svg" alt=""></button></div><p>Bucket과 Prefix를 탐색하고 로컬 파일을 선택하여 업로드합니다.</p></article>
           </div>
           <div class="card running"><span class="dot"></span><div class="grow"><strong>개발 DB 터널</strong><small>localhost:13306 → dev-db.cluster.ap-northeast-2.rds.amazonaws.com:3306</small></div><button class="btn small">주소 복사</button><button class="btn small danger">연결 종료</button></div>
         </section>
 
         <section class="page" data-panel="ec2">
-          <div class="page-head"><div><h1>EC2 접속</h1><p class="sub">인스턴스를 선택하면 별도 Windows Terminal에서 셸을 실행합니다.</p></div><button class="btn">↻ 목록 새로고침</button></div>
+          <div class="page-head"><div><h1>EC2 접속</h1><p class="sub">인스턴스를 선택하면 별도 Windows Terminal에서 셸을 실행합니다.</p></div><button class="btn icon-action" title="새로고침" aria-label="새로고침"><img src="../../src/aws_connect/presentation/gui/assets/common-refresh.svg" alt=""></button></div>
           <div class="toolbar"><div class="field"><label>Region</label><select><option>ap-northeast-2</option></select></div><div class="field"><label>상태</label><select><option>전체</option><option>실행 중</option><option>중지됨</option></select></div><div class="field search"><label>검색</label><input placeholder="이름, Instance ID, Private IP"></div></div>
-          <div class="card"><table><thead><tr><th>즐겨찾기</th><th>이름</th><th>Instance ID</th><th>Private IP</th><th>EC2 상태</th><th>SSM 상태</th><th></th></tr></thead><tbody><tr class="selected"><td>★</td><td><strong>brandbay-web-dev</strong></td><td>i-08f31d4a2b921c3e1</td><td>10.0.12.41</td><td><span class="status-pill">● 실행 중</span></td><td><span class="status-pill">● Online</span></td><td><button class="btn small primary" data-toast="토큰 검증 후 Windows Terminal을 실행합니다.">터미널 열기 ↗</button></td></tr><tr><td>☆</td><td><strong>brandbay-batch-dev</strong></td><td>i-0a231f7c891aa23d4</td><td>10.0.18.72</td><td><span class="status-pill">● 실행 중</span></td><td>Offline</td><td><button class="btn small danger">재부팅</button></td></tr><tr><td>☆</td><td><strong>brandbay-admin-dev</strong></td><td>i-03c941d5dd29c18a7</td><td>10.0.22.16</td><td>중지됨</td><td>—</td><td><button class="btn small">시작</button></td></tr></tbody></table></div>
+          <div class="card"><table><thead><tr><th>즐겨찾기</th><th>이름</th><th>Instance ID</th><th>Private IP</th><th style="width:112px">EC2 상태</th><th>SSM 상태</th><th>Action</th></tr></thead><tbody><tr class="selected"><td>★</td><td><strong>brandbay-web-dev</strong></td><td>i-08f31d4a2b921c3e1</td><td>10.0.12.41</td><td><span class="status-pill">● 실행 중</span></td><td><span class="status-pill">● Online</span></td><td><button class="btn icon-action primary" data-toast="토큰 검증 후 Windows Terminal을 실행합니다." title="터미널 열기" aria-label="터미널 열기"><img style="width:18px;height:18px" src="../../src/aws_connect/presentation/gui/assets/ec2-terminal.svg" alt=""></button></td></tr><tr><td>☆</td><td><strong>brandbay-batch-dev</strong></td><td>i-0a231f7c891aa23d4</td><td>10.0.18.72</td><td><span class="status-pill">● 실행 중</span></td><td>Offline</td><td><button class="btn small danger">재부팅</button></td></tr><tr><td>☆</td><td><strong>brandbay-admin-dev</strong></td><td>i-03c941d5dd29c18a7</td><td>10.0.22.16</td><td>중지됨</td><td>—</td><td><button class="btn icon-action" title="인스턴스 실행" aria-label="인스턴스 실행"><img src="../../src/aws_connect/presentation/gui/assets/common-start.svg" alt=""></button></td></tr></tbody></table></div>
         </section>
 
         <section class="page" data-panel="rds">
-          <div class="page-head"><div><h1>RDS 터널</h1><p class="sub">PuTTY 세션처럼 연결 정보를 저장하고 다시 사용할 수 있습니다.</p></div><button class="btn">＋ 새 세션</button></div>
-          <div class="split"><div class="card session-list"><div class="field"><label>저장 세션 검색</label><input placeholder="세션명 또는 RDS Host"></div><button class="session active"><strong>개발 DB</strong><small>localhost:13306 · 연결됨</small></button><button class="session"><strong>스테이징 DB</strong><small>localhost:23306 · 중지됨</small></button><button class="session"><strong>운영 읽기 전용</strong><small>localhost:33306 · 중지됨</small></button></div><div class="card"><div class="feature-top"><span class="dot"></span><div><h2>개발 DB</h2><span class="sub">현재 터널이 실행 중입니다.</span></div></div><div class="form-grid"><div class="field wide"><label>중계 EC2</label><select><option>brandbay-web-dev · i-08f31d4a2b921c3e1</option></select></div><div class="field wide"><label>RDS Host</label><input value="dev-db.cluster-cxo8ceoaqu7t.ap-northeast-2.rds.amazonaws.com"></div><div class="field"><label>Remote Port</label><input value="3306"></div><div class="field"><label>Local Port</label><input value="13306"></div></div><div class="notice">애플리케이션에서는 <strong>127.0.0.1:13306</strong>으로 접속하세요. 터널 프로세스는 앱이 종료될 때 함께 정리됩니다.</div><div class="actions"><button class="btn">로컬 주소 복사</button><button class="btn">복제</button><button class="btn danger">삭제</button><span style="flex:1"></span><button class="btn">저장</button><button class="btn danger">연결 종료</button></div></div></div>
+          <div class="page-head"><div><h1>RDS 터널</h1><p class="sub">PuTTY 세션처럼 연결 정보를 저장하고 다시 사용할 수 있습니다.</p></div></div>
+          <div class="split"><div class="card session-list"><button class="btn primary" data-toast="목록에 새 세션 · 저장되지 않음 항목이 생성됩니다. 저장하면 SQLite에 기록됩니다.">새 세션</button><input placeholder="세션명 또는 RDS Host" aria-label="저장 세션 검색"><button class="session active" style="display:flex;align-items:center;gap:12px"><span class="dot"></span><span><strong>개발 DB</strong><small>localhost:13306 · 연결됨</small></span></button><button class="session"><strong>스테이징 DB</strong><small>localhost:23306 · 중지됨</small></button><button class="session"><strong>운영 읽기 전용</strong><small>localhost:33306 · 중지됨</small></button><div class="actions" style="margin-top:auto"><button class="btn icon-action danger" title="삭제" aria-label="삭제"><img src="../../src/aws_connect/presentation/gui/assets/common-delete.svg" alt=""></button><span style="flex:1"></span><button class="btn icon-action" title="복제" aria-label="복제"><img src="../../src/aws_connect/presentation/gui/assets/common-copy.svg" alt=""></button></div></div><div class="card"><div class="feature-top" style="gap:20px"><span class="dot"></span><div><h2>개발 DB</h2><span class="sub">현재 터널이 실행 중입니다.</span></div></div><div class="form-grid"><div class="field wide"><label>중계 EC2</label><select><option>brandbay-web-dev · i-08f31d4a2b921c3e1</option></select></div><div class="field wide"><label>RDS Host</label><input value="dev-db.cluster-cxo8ceoaqu7t.ap-northeast-2.rds.amazonaws.com"></div><div class="field"><label>Remote Port</label><input value="3306"></div><div class="field"><label>Local Port</label><input value="13306"></div></div><div class="notice">애플리케이션에서는 <strong>127.0.0.1:13306</strong>으로 접속하세요. 터널 프로세스는 앱이 종료될 때 함께 정리됩니다.</div><div class="actions"><button class="btn icon-action" title="로컬 주소 복사" aria-label="로컬 주소 복사"><img src="../../src/aws_connect/presentation/gui/assets/common-clipboard.svg" alt=""></button><span style="flex:1"></span><button class="btn icon-action" title="저장" aria-label="저장"><img src="../../src/aws_connect/presentation/gui/assets/common-save.svg" alt=""></button><button class="btn icon-action danger" title="연결 종료" aria-label="연결 종료"><img src="../../src/aws_connect/presentation/gui/assets/common-stop.svg" alt=""></button></div></div></div>
         </section>
 
         <section class="page" data-panel="secrets">
-          <div class="page-head"><div><h1>Secrets Manager</h1><p class="sub">현재 프로필에 조회 권한이 있는 시크릿만 표시합니다.</p></div><button class="btn">↻ 새로고침</button></div>
-          <div class="toolbar"><div class="field"><label>조회 방식</label><select><option>직접 조회</option><option>EC2 경유 조회</option></select></div><div class="field search"><label>Secret 검색</label><input value="brandbay/rds" placeholder="Secret ID 또는 이름"></div><button class="btn primary">조회</button></div>
-          <div class="secret-layout"><div class="card"><div class="secret-row active"><strong>brandbay/rds/dev</strong><small>2026-09-08 14:32 수정</small></div><div class="secret-row"><strong>brandbay/rds/staging</strong><small>2026-08-21 09:14 수정</small></div><div class="secret-row"><strong>brandbay/application/dev</strong><small>2026-07-11 17:45 수정</small></div></div><div class="card"><div class="page-head"><div><h2>brandbay/rds/dev</h2><p class="sub">SecretString · JSON</p></div><div><button class="btn small">값 표시</button> <button class="btn small">복사</button></div></div><div class="codebox">{
-  "host": "dev-db.cluster-cxo8ceoaqu7t...",
+          <div class="page-head"><div><h1>Secrets Manager</h1><p class="sub">현재 프로필에 조회 권한이 있는 시크릿만 표시합니다.</p></div><button class="btn icon-action" title="목록 새로고침" aria-label="목록 새로고침"><img src="../../src/aws_connect/presentation/gui/assets/common-refresh.svg" alt=""></button></div>
+          <div class="toolbar"><div class="field"><label>조회 방식</label><select><option>직접 조회</option><option>EC2 경유 조회</option></select></div><div class="field search"><label>Secret 검색</label><input value="brandbay/rds" placeholder="Secret ID 또는 이름"></div><button class="btn primary icon-action" title="조회" aria-label="조회"><img src="../../src/aws_connect/presentation/gui/assets/common-search.svg" alt=""></button></div>
+          <div class="secret-layout"><div class="card" style="display:flex;flex-direction:column"><h2>저장된 Secret</h2><div style="flex:1"><div class="secret-row active" title="더블 클릭: Secret 수정"><strong>dev</strong><small>Secret ID  brandbay/rds/dev</small></div><div class="secret-row"><strong>staging</strong><small>Secret ID  brandbay/rds/staging</small></div></div><div class="actions"><button class="btn danger icon-action" title="삭제" aria-label="삭제"><img src="../../src/aws_connect/presentation/gui/assets/common-delete.svg" alt=""></button><span style="flex:1"></span><button class="btn icon-action" title="Secret 등록" aria-label="Secret 등록" data-toast="Secret 등록: ID는 저장 시 자동 생성, Secret ID와 Value 입력 후 저장 또는 취소"><img src="../../src/aws_connect/presentation/gui/assets/common-save.svg" alt=""></button></div></div><div class="card"><div class="codebox">{
+  "host": "db.example.internal",
   "port": 3306,
-  "username": "brandbay_app",
-  "password": "••••••••••••••••"
-}</div><div class="notice">Secret 조회 결과는 SQLite와 로그에 저장하지 않습니다. RDS 터널 세션에는 선택한 host와 port만 복사할 수 있습니다.</div></div></div>
+  "password": "••••••••"
+}</div><div class="notice">조회 값은 저장 목록의 SQLite 레코드에 보관되며 Secret ID와 Value 수정은 로컬에만 반영됩니다.</div><div class="actions" style="justify-content:flex-end"><button class="btn"><img style="width:18px;height:18px;vertical-align:middle" src="../../src/aws_connect/presentation/gui/assets/common-copy.svg" alt=""> 전체 내용 복사</button></div></div></div>
         </section>
 
         <section class="page" data-panel="s3">
-          <div class="page-head"><div><h1>S3 파일</h1><p class="sub">Bucket을 탐색하거나 현재 Prefix에 로컬 파일을 업로드합니다.</p></div><button class="btn primary">파일 업로드</button></div>
-          <div class="toolbar"><div class="field"><label>Bucket</label><select><option>brandbay-dev-assets</option><option>brandbay-dev-logs</option></select></div><div class="field search"><label>Prefix</label><input value="uploads/2026/09/"></div><button class="btn">이동</button></div>
-          <div class="card"><div class="crumbs">brandbay-dev-assets <span>›</span> uploads <span>›</span> 2026 <span>›</span> 09</div><table><thead><tr><th>이름</th><th>유형</th><th>크기</th><th>수정 시간</th><th></th></tr></thead><tbody><tr><td>📁 images/</td><td>폴더</td><td>—</td><td>2026-09-09 10:22</td><td></td></tr><tr><td>product-list.xlsx</td><td>application/vnd.ms-excel</td><td>2.4 MB</td><td>2026-09-09 09:18</td><td><button class="btn small">다운로드</button></td></tr><tr><td>homepage-banner.png</td><td>image/png</td><td>840 KB</td><td>2026-09-08 18:03</td><td><button class="btn small">다운로드</button></td></tr></tbody></table><div class="drop"><strong>파일을 여기에 놓거나 클릭하여 선택</strong><p class="sub" style="margin-top:6px">업로드 전에 대상 Bucket과 Prefix를 다시 확인합니다.</p></div></div>
+          <div class="page-head"><div><h1>S3 파일</h1><p class="sub">Bucket을 탐색하거나 현재 Prefix에 로컬 파일과 폴더를 업로드합니다.</p></div></div>
+          <div class="toolbar"><div class="field"><label>Bucket</label><select><option>brandbay-dev-assets</option><option>brandbay-dev-logs</option></select></div><div class="field search"><label>Prefix</label><input value="uploads/2026/09/"></div><button class="btn icon-action" title="이동" aria-label="이동"><img src="../../src/aws_connect/presentation/gui/assets/common-search.svg" alt=""></button></div>
+          <div class="card"><div class="crumbs">brandbay-dev-assets <span>›</span> uploads <span>›</span> 2026 <span>›</span> 09</div><table><thead><tr><th>이름</th><th>유형</th><th>크기</th><th>수정 시간</th></tr></thead><tbody><tr><td>📁 images/</td><td>폴더</td><td>—</td><td>2026-09-09 10:22</td></tr><tr><td>product-list.xlsx</td><td>application/vnd.ms-excel</td><td>2.4 MB</td><td>2026-09-09 09:18</td></tr><tr><td>homepage-banner.png</td><td>image/png</td><td>840 KB</td><td>2026-09-08 18:03</td></tr></tbody></table><div class="drop" hidden><strong>파일을 여기에 놓거나 클릭하여 선택</strong></div><div class="upload-selection-head"><strong>선택한 파일 · 3개</strong><button class="btn small" id="clear-upload-sources">전체 비우기</button></div><div class="upload-cards" aria-label="선택한 파일, 파일 드롭 가능"><div class="upload-card" title="C:/example/report.pdf"><img src="../../src/aws_connect/presentation/gui/assets/file-default.svg" alt=""><div><strong>report.pdf</strong><small>파일</small></div><button class="remove-source" title="report.pdf 선택 제거" aria-label="report.pdf 선택 제거">×</button></div><div class="upload-card" title="C:/example/photo.png"><img src="../../src/aws_connect/presentation/gui/assets/file-image.svg" alt=""><div><strong>photo.png</strong><small>이미지</small></div><button class="remove-source" title="photo.png 선택 제거" aria-label="photo.png 선택 제거">×</button></div><div class="upload-card" title="C:/example/clip.mp4"><img src="../../src/aws_connect/presentation/gui/assets/file-video.svg" alt=""><div><strong>clip.mp4</strong><small>비디오</small></div><button class="remove-source" title="clip.mp4 선택 제거" aria-label="clip.mp4 선택 제거">×</button></div></div><div class="actions"><button class="btn icon-action" title="다운로드" aria-label="다운로드"><img src="../../src/aws_connect/presentation/gui/assets/s3-download.svg" alt=""></button><button class="btn icon-action danger" title="선택 파일 삭제" aria-label="선택 파일 삭제"><img src="../../src/aws_connect/presentation/gui/assets/common-delete.svg" alt=""></button><button class="btn icon-action primary" title="업로드" aria-label="업로드"><img src="../../src/aws_connect/presentation/gui/assets/s3-upload.svg" alt=""></button></div></div>
         </section>
 
         <section class="page" data-panel="logs">
@@ -184,7 +208,7 @@
         <div class="modal" id="profile-modal" aria-hidden="true">
           <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title">
             <div class="dialog-head"><div><h2 id="profile-title">AWS 프로필 관리</h2><span class="sub">저장된 인증정보를 관리하거나 다른 프로필로 연결합니다.</span></div><button class="icon-btn" id="close-profile" aria-label="닫기">×</button></div>
-            <div class="dialog-body"><aside class="profiles"><button class="btn primary" style="width:100%;margin-bottom:12px">＋ 새 프로필</button><button class="session active"><strong>브랜드베이 개발계</strong><small>123456789012 · 연결됨</small></button><button class="session"><strong>브랜드베이 운영계</strong><small>987654321098 · 연결 안 됨</small></button><button class="session"><strong>개인 테스트 계정</strong><small>112233445566 · 연결 안 됨</small></button></aside><div class="editor"><h2>브랜드베이 개발계</h2><span class="pk">내부 SEQ #3 · 사용자 지정 ID는 중복될 수 없습니다.</span><div class="form-grid"><div class="field wide"><label>사용자 지정 프로필 ID</label><input value="brandbay-dev"></div><div class="field"><label>Account ID</label><input value="123456789012"></div><div class="field"><label>IAM 사용자</label><input value="brandbay-dev-user"></div><div class="field wide"><label>Access Key ID</label><input value="AKIA••••••••••••7Q2M"></div><div class="field wide"><label>Secret Access Key</label><input type="password" value="not-a-real-secret-value"></div></div><div class="notice">Secret Access Key와 발급 토큰은 OS 사용자 범위로 암호화하여 SQLite에 저장합니다.</div><div class="actions"><button class="btn danger">삭제</button><span style="flex:1"></span><button class="btn">저장</button><button class="btn primary" id="connect-profile">이 프로필로 연결</button></div></div></div>
+            <div class="dialog-body"><aside class="profiles"><button class="btn primary" style="width:100%;margin-bottom:12px">새 프로필</button><button class="session active"><span class="dot" style="float:left;margin-right:12px;margin-top:2px"></span><strong>브랜드베이 개발계</strong><small>123456789012 · 연결됨</small><small>IAM · brandbay-dev-user</small></button><button class="session"><strong>브랜드베이 운영계</strong><small>987654321098 · 연결 안 됨</small><small>IAM · brandbay-prod-user</small></button><button class="session"><strong>개인 테스트 계정</strong><small>112233445566 · 연결 안 됨</small><small>IAM · personal-test-user</small></button><div class="actions"><button class="btn icon-action danger" title="삭제" aria-label="삭제"><img src="../../src/aws_connect/presentation/gui/assets/common-delete.svg" alt=""></button><button class="btn icon-action" title="복제" aria-label="복제"><img src="../../src/aws_connect/presentation/gui/assets/common-copy.svg" alt=""></button></div></aside><div class="editor"><div class="form-grid"><div class="field wide"><label>프로필명</label><input value="brandbay-dev"></div><div class="field"><label>Account ID</label><input value="123456789012"></div><div class="field"><label>IAM 사용자</label><input value="brandbay-dev-user"></div><div class="field wide"><label>Access Key ID</label><input value="AKIA••••••••••••7Q2M"></div><div class="field wide"><label>Secret Access Key</label><input type="password" value="not-a-real-secret-value"></div></div><label><input type="checkbox" checked style="accent-color:#2563eb"> 토큰 발급 시 2차 인증 사용</label><div class="notice">Secret Access Key와 발급 토큰은 OS 사용자 범위로 암호화하여 SQLite에 저장합니다.</div><div class="actions"><span style="flex:1"></span><button class="btn icon-action" title="저장" aria-label="저장"><img src="../../src/aws_connect/presentation/gui/assets/common-save.svg" alt=""></button><button class="btn icon-action primary" id="connect-profile" title="이 프로필로 연결" aria-label="이 프로필로 연결"><img src="../../src/aws_connect/presentation/gui/assets/common-start.svg" alt=""></button></div></div></div>
           </section>
         </div>
         <div class="toast" id="toast" role="status" aria-live="polite"></div>

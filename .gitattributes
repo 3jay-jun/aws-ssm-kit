@@ -1,0 +1,1 @@
+vendor/session-manager-plugin/session-manager-plugin.exe filter=lfs diff=lfs merge=lfs -text

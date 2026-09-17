@@ -52,6 +52,7 @@ gui_exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
+    icon=str(source_root / "aws_connect" / "presentation" / "gui" / "assets" / "logo.ico"),
 )
 cli_exe = EXE(
     cli_pyz,

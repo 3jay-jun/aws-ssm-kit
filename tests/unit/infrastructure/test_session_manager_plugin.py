@@ -167,7 +167,7 @@ def test_external_terminal_argv_is_shell_free_and_contains_no_session_secrets() 
         "new",
         "new-tab",
         "--title",
-        "AWS Connect EC2",
+        "aws-ssm-kit EC2",
         "--suppressApplicationTitle",
     ]
     assert argv[8:10] == ["-m", "aws_connect.session_host"]

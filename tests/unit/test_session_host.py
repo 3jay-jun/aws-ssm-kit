@@ -1,3 +1,5 @@
+import signal
+
 from aws_connect import session_host
 
 
@@ -76,6 +78,39 @@ def test_session_host_receives_plugin_contract_over_pipe_and_reports_lifecycle(
     ]
     assert connection.closed
     assert not process.terminated and not process.killed
+
+
+def test_session_host_ignores_ctrl_c_only_after_plugin_has_inherited_console_handler(
+    monkeypatch,
+) -> None:
+    connection = FakeConnection()
+    process = FakeProcess()
+    events: list[object] = []
+    previous_handler = object()
+
+    monkeypatch.setattr(session_host, "Client", lambda *args, **kwargs: connection)
+    monkeypatch.setattr(
+        session_host, "unprotect_current_user_bytes", lambda value: b"one-use-auth-key"
+    )
+    monkeypatch.setattr(
+        session_host.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (events.append("plugin-started"), process)[1],
+    )
+    monkeypatch.setattr(session_host.signal, "getsignal", lambda _signal: previous_handler)
+
+    def install_handler(received_signal, handler):
+        events.append((received_signal, handler))
+        return previous_handler
+
+    monkeypatch.setattr(session_host.signal, "signal", install_handler)
+
+    assert session_host.main(["--pipe", "aws-connect-test", "--auth", "cHJvdGVjdGVk"]) == 0
+    assert events == [
+        "plugin-started",
+        (signal.SIGINT, signal.SIG_IGN),
+        (signal.SIGINT, previous_handler),
+    ]
 
 
 def test_session_host_stops_plugin_when_started_event_cannot_transfer_ownership(

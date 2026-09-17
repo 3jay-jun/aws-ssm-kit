@@ -195,7 +195,10 @@ def test_secrets_page_matches_mockup_header_toolbar_and_360px_split() -> None:
     assert catalog.minimumWidth() == 360
     assert catalog.maximumWidth() == 360
     assert page.findChild(QFrame, "secret_result_card") is not None
-    assert page.list_button.text() == "↻ 새로고침"
+    assert page.list_button.text() == ""
+    assert page.list_button.toolTip() == "목록 새로고침"
+    assert page.list_button.property("action_button") is True
+    assert not page.list_button.icon().isNull()
 
 
 def test_sensitive_value_reveal_is_temporary_without_copy_or_aws_save_buttons(monkeypatch) -> None:
@@ -370,7 +373,7 @@ def test_saved_secret_buttons_edit_id_and_value_then_delete_only_sqlite_snapshot
     page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
     page.get_secret()
-    assert page.catalog.item(0).text() == "arn:test"
+    assert "arn:test" in page.catalog.item(0).toolTip()
     page.catalog.setCurrentRow(0)
     monkeypatch.setattr(
         "aws_connect.presentation.gui.secrets._prompt_saved_secret",
@@ -381,7 +384,7 @@ def test_saved_secret_buttons_edit_id_and_value_then_delete_only_sqlite_snapshot
         lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
     )
 
-    page.edit_saved_button.click()
+    page.catalog.itemDoubleClicked.emit(page.catalog.item(0))
     assert service.saved[0].identifier == "db/prod"
     assert service.saved[0].value == "locally-edited-value"
     assert service.get_count == 1
@@ -504,3 +507,96 @@ def test_main_window_wires_secret_endpoint_to_unsaved_rds_editor() -> None:
     assert window.rds_page.host.text() == "db.internal"
     assert window.rds_page.remote_port.value() == 3306
     assert window.rds_page.name.text() == ""
+
+
+def test_register_dialog_cancel_and_save_without_aws(monkeypatch) -> None:
+    _app()
+    service = FakeSecrets()
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+    monkeypatch.setattr(
+        "aws_connect.presentation.gui.secrets._prompt_saved_secret", lambda *_: None
+    )
+    page.register_saved_button.click()
+    assert not service.saved
+    monkeypatch.setattr(
+        "aws_connect.presentation.gui.secrets._prompt_saved_secret",
+        lambda *_: ("local/example", "local-test-value"),
+    )
+    page.register_saved_button.click()
+    assert service.saved[0].identifier == "local/example"
+    assert service.saved[0].value == "local-test-value"
+    assert service.get_count == 0
+    assert page.catalog.currentRow() == 0
+
+
+def test_copy_all_uses_exact_raw_value_and_shared_clipboard_policy(monkeypatch) -> None:
+    _app()
+    service = FakeSecrets()
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    copied: list[str] = []
+    monkeypatch.setattr("aws_connect.presentation.gui.secrets.copy_temporarily", copied.append)
+    page.copy_all()
+    assert copied == []
+    page.set_profile(1)
+    page.get_secret()
+    page.copy_all_button.click()
+    assert copied == [service.result.raw_secret_string()]
+    assert page.fields.item(2, 1).text() != RAW
+    assert page.summary.isHidden()
+
+
+def test_short_arn_keeps_full_lookup_identity_and_compact_rows() -> None:
+    _app()
+    service = FakeSecrets()
+    identifier = "arn:aws:secretsmanager:ap-northeast-2:000000000000:secret:demo/database-AbCdEf"
+    service.saved = [SavedSecret(1, 1, identifier, value="local-test-value")]
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+    page._catalog_selected(page.catalog.item(0))
+    assert page.secret_id.text() == "demo/database-AbCdEf"
+    assert page._current_identifier() == identifier
+    item = page.catalog.item(0)
+    assert "arn:" not in item.toolTip()
+    assert page.catalog.itemWidget(item).property("last_row") is True
+    page.secret_id.setText("another/name")
+    assert page._current_identifier() == "another/name"
+
+
+def test_shared_secret_dialog_has_readonly_sequence_and_preserves_arn(monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLineEdit, QPlainTextEdit
+
+    from aws_connect.presentation.gui.secrets import _prompt_saved_secret
+
+    _app()
+    identifier = "arn:aws:secretsmanager:ap-northeast-2:000000000000:secret:demo/db-AbCdEf"
+    saved = SavedSecret(7, 1, identifier, value="local-test-value")
+
+    def accept(dialog: QDialog) -> int:
+        assert dialog.windowTitle() == "Secret 수정"
+        sequence = dialog.findChild(QLineEdit, "saved_secret_sequence")
+        assert sequence.isReadOnly()
+        assert sequence.text() == "7"
+        assert dialog.findChild(QLineEdit, "saved_secret_identifier").text() == "demo/db-AbCdEf"
+        dialog.findChild(QPlainTextEdit, "saved_secret_value").setPlainText("edited-local-value")
+        buttons = dialog.findChild(QDialogButtonBox)
+        assert buttons.button(QDialogButtonBox.StandardButton.Save).text() == "저장"
+        assert buttons.button(QDialogButtonBox.StandardButton.Cancel).text() == "취소"
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", accept)
+    parent = SecretsPage(FakeSecrets(), ImmediateRunner())  # type: ignore[arg-type]
+    assert _prompt_saved_secret(parent, saved) == (identifier, "edited-local-value")
+
+    def cancel(dialog: QDialog) -> int:
+        assert dialog.windowTitle() == "Secret 등록"
+        assert dialog.findChild(QLineEdit, "saved_secret_sequence").isReadOnly()
+        assert (
+            not dialog.findChild(QDialogButtonBox)
+            .button(QDialogButtonBox.StandardButton.Save)
+            .isEnabled()
+        )
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QDialog, "exec", cancel)
+    assert _prompt_saved_secret(parent, None) is None

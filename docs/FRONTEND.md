@@ -10,8 +10,8 @@ visual geometry, colors, spacing, icons, and state presentation.
 - Workers publish shared progress/state contracts and honor cancellation.
 - The central GUI error mapper owns dialogs, toasts, field errors, and recovery actions.
 - UI tests use fake services; business rules belong in Application tests.
-- The canonical visual-comparison viewport is 1424 × 894 (22 px outer inset around a
-  1380 × 850 shell); 1024 × 720 is the no-overlap responsive gate with keyboard-accessible actions.
+- The canonical visual-comparison viewport is 1424 × 894 with a full-window shell and no
+  outer inset; the logo region and navigation share a 220 px width; 1024 × 720 is the no-overlap responsive gate with keyboard-accessible actions.
 - Shared GUI style tokens and reusable page/card/button/status helpers are the visual SSOT; feature
   pages must not redefine conflicting colors, spacing, radii, or primary/danger button semantics.
 - `tools/render_gui.py` renders every real Qt page with isolated local state and no AWS calls for

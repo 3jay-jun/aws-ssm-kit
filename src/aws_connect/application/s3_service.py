@@ -72,6 +72,7 @@ class DownloadItem:
     key: str
     destination: Path
     size: int
+    exists: bool = False
 
     @property
     def uri(self) -> str:
@@ -89,6 +90,7 @@ class DownloadPlan:
 class DownloadSummary:
     downloaded: tuple[Path, ...]
     bytes_transferred: int
+    skipped: tuple[Path, ...] = ()
 
 
 class S3LocationService:
@@ -347,14 +349,16 @@ class S3Service:
                     "s3.download.destination.duplicate",
                     "Two S3 objects resolve to the same local destination",
                 )
-            if target.exists():
+            if target.exists() and not target.is_file():
                 raise ConfigurationError(
                     "s3.download.destination.exists",
                     f"A local file or folder already exists: {target.name}",
                 )
             keys.add(key)
             destinations.add(target)
-            items.append(DownloadItem(location.bucket, key, target, candidate.size))
+            items.append(
+                DownloadItem(location.bucket, key, target, candidate.size, target.exists())
+            )
         if not items:
             raise ConfigurationError(
                 "s3.download.selection.empty",
@@ -362,7 +366,13 @@ class S3Service:
             )
         return DownloadPlan(selected.require_id(), selected.region, tuple(items))
 
-    def download(self, plan: DownloadPlan, context: OperationContext) -> DownloadSummary:
+    def download(
+        self,
+        plan: DownloadPlan,
+        context: OperationContext,
+        *,
+        policy: UploadConflictPolicy = UploadConflictPolicy.SKIP_EXISTING,
+    ) -> DownloadSummary:
         """Download a prepared batch serially with shared progress and cancellation."""
 
         context.raise_if_cancelled()
@@ -370,6 +380,7 @@ class S3Service:
         total = sum(item.size for item in plan.items)
         completed = 0
         downloaded: list[Path] = []
+        skipped: list[Path] = []
         current: DownloadItem | None = None
 
         def report_progress(delta: int) -> None:
@@ -387,6 +398,16 @@ class S3Service:
         try:
             for current in plan.items:
                 context.raise_if_cancelled()
+                if current.destination.exists():
+                    if policy is UploadConflictPolicy.SKIP_EXISTING:
+                        skipped.append(current.destination)
+                        total -= current.size
+                        continue
+                    if not current.exists:
+                        raise ConfigurationError(
+                            "s3.download.destination.exists",
+                            "A destination file appeared after confirmation; retry to confirm it",
+                        )
                 try:
                     current.destination.parent.mkdir(parents=True, exist_ok=True)
                 except OSError as error:
@@ -402,6 +423,7 @@ class S3Service:
                     current.destination,
                     report_progress,
                     lambda: context.cancellation.is_cancellation_requested,
+                    overwrite=policy is UploadConflictPolicy.OVERWRITE and current.exists,
                 )
                 downloaded.append(current.destination)
             context.raise_if_cancelled()
@@ -417,7 +439,7 @@ class S3Service:
                 raise OperationCancelled from error
             raise
         context.report("completed", "s3.download.completed", completed=total, total=total)
-        return DownloadSummary(tuple(downloaded), completed)
+        return DownloadSummary(tuple(downloaded), completed, tuple(skipped))
 
     def upload(
         self,

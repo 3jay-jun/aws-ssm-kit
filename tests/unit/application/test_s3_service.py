@@ -197,7 +197,7 @@ def test_download_reports_serial_progress_and_preserves_partial_failure(tmp_path
     plan = service.prepare_download([first, second], tmp_path, "test-upload-bucket", "dev")
     calls = 0
 
-    def download(*args) -> None:
+    def download(*args, **_kwargs) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -474,3 +474,33 @@ def test_legacy_overwrite_false_maps_to_skip_existing_for_stale_plan(tmp_path: P
 
     assert result.skipped == (plan.items[0].uri,)
     gateway.put_file.assert_not_called()
+
+
+@pytest.mark.parametrize("policy", list(UploadConflictPolicy))
+def test_download_existing_file_requires_policy_and_reports_skips(tmp_path: Path, policy) -> None:
+    _locations, service, _store, gateway = _services()
+    target = tmp_path / "existing.txt"
+    target.write_text("original", encoding="utf-8")
+    plan = service.prepare_download(
+        [S3Object("existing.txt", 3, None)], tmp_path, "test-upload-bucket", "dev"
+    )
+    assert plan.items[0].exists
+    result = service.download(plan, OperationContext(), policy=policy)
+    if policy is UploadConflictPolicy.SKIP_EXISTING:
+        gateway.download_file.assert_not_called()
+        assert result.skipped == (target,)
+        assert result.downloaded == ()
+    else:
+        assert gateway.download_file.call_args.kwargs["overwrite"] is True
+        assert result.downloaded == (target,)
+
+
+def test_download_new_conflict_after_preflight_cannot_be_overwritten(tmp_path: Path) -> None:
+    _locations, service, _store, gateway = _services()
+    plan = service.prepare_download(
+        [S3Object("new.txt", 3, None)], tmp_path, "test-upload-bucket", "dev"
+    )
+    plan.items[0].destination.write_text("newly-created", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="s3.download.destination.exists"):
+        service.download(plan, OperationContext(), policy=UploadConflictPolicy.OVERWRITE)
+    gateway.download_file.assert_not_called()

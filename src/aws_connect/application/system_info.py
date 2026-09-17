@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from aws_connect import APPLICATION_NAME
 from aws_connect.application.ports import PluginDiagnostic
 
 
@@ -26,7 +27,7 @@ class SystemInfoService(Protocol):
 class StaticSystemInfoService:
     """Minimal implementation replaced by real use cases in later phases."""
 
-    application_name: str = "AWS Connect"
+    application_name: str = APPLICATION_NAME
 
     def get(self) -> SystemInfo:
         """Return a deterministic healthy response."""
@@ -159,4 +160,4 @@ class DoctorService:
 
     def get(self) -> tuple[SystemInfo, RuntimeDiagnostics]:
         result = self._probe.inspect()
-        return SystemInfo("AWS Connect", "ready" if result.ready else "degraded"), result
+        return SystemInfo(APPLICATION_NAME, "ready" if result.ready else "degraded"), result

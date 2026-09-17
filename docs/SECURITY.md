@@ -33,18 +33,20 @@
   correlation/operation ID). Command arguments, credentials, MFA input, Secret/file contents,
   `StreamUrl`, and `TokenValue` are not accepted by that schema; managed-log reads reapply the
   central masking policy before values reach either presentation adapter.
-- Secrets Manager values remain in memory only in a `repr=False` operation result. Default CLI
-  and GUI views mask sensitive names and all plain-string/scalar values; raw values cross the
+- Secrets Manager operation results remain `repr=False`. Default CLI and GUI views mask sensitive
+  names and all plain-string/scalar values; raw values cross the
   presentation boundary only after an explicit CLI reveal/update, timed GUI reveal, or RDS
-  endpoint-copy action. GUI reveal is cleared after 30 seconds, and a new lookup or profile change
+  endpoint-copy action, local editor dialog, or explicit whole-value copy. Whole-value copy uses the
+  shared conditional 30-second clipboard clearing and never logs content. GUI reveal is cleared after 30 seconds, and a new lookup or profile change
   discards the previous result.
-- SQLite `saved_secrets` stores only profile-scoped Secret names or ARNs. Successful lookup may
-  auto-register that identifier, but SecretString, flattened fields, revealed values and versions
-  never enter this table. The GUI has no Secret value copy or PutSecretValue action.
+- SQLite `saved_secrets` stores profile-scoped Secret names/ARNs, raw Value, lookup mode and optional
+  relay instance ID. This is an explicit product exception: Value is plaintext protected only by
+  the existing current-user-only database DACL, is never written to logs/diagnostics, and is omitted
+  from object repr. GUI edits update SQLite only and never call PutSecretValue.
 - RDS local endpoint copy exposes only `127.0.0.1:<local-port>` and uses the same conditional
   30-second clipboard clearing policy; it never copies the RDS host or credentials implicitly.
 - RDS endpoint copy reads only top-level `host` and `port`, populates an unsaved editor, and never
-  persists any other Secret field. Neither lookup results nor clipboard values enter SQLite or logs.
+  persists any other Secret field. Clipboard values never enter SQLite or logs.
 - A production package requires an approved, checksummed upstream Session Manager Plugin plus its
   LICENSE and NOTICE. Synthetic plugin inputs remain visibly `TEST-ONLY` and cannot satisfy the
   release build gate.
@@ -60,9 +62,8 @@
   never exposes StopInstances or TerminateInstances, and records only masked structured metadata.
 - EC2-mediated Secret lookup is an explicit opt-in path, never an automatic permission fallback.
   It targets one Online managed node with a fixed command template and validated Secret identifier,
-  disables S3/CloudWatch command output, and keeps returned plaintext memory-only. The UI warns that
-  Systems Manager command output can temporarily contain the Secret value; logs, SQLite, diagnostics,
-  repr, command arguments shown by AWS Connect, and clipboard history must not retain it.
+  disables S3/CloudWatch command output. The returned plaintext may enter the approved `saved_secrets`
+  SQLite record but not logs, diagnostics, repr, displayed command arguments, or clipboard history.
 - When `ssm:SendCommand` is denied, the user may explicitly open an
   `AWS-StartInteractiveCommand` session. The app passes only the same fixed, validated lookup and a
   platform-specific shell continuation so the terminal remains open after the value is printed.

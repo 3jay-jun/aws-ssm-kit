@@ -383,3 +383,24 @@ def test_explicit_retry_after_aborted_multipart_uses_new_upload_id(tmp_path: Pat
     )
     client.complete_multipart_upload.assert_called_once()
     assert client.complete_multipart_upload.call_args.kwargs["UploadId"] == "retry-upload"
+
+
+@pytest.mark.parametrize("overwrite", (False, True))
+def test_download_commit_preserves_existing_file_without_consent(tmp_path: Path, overwrite) -> None:
+    destination = tmp_path / "file.txt"
+    destination.write_bytes(b"original")
+    client = Mock()
+    client.download_file.side_effect = lambda _bucket, _key, name: Path(name).write_bytes(b"new")
+    gateway = Boto3S3Gateway(lambda _credentials, _region: client)
+    if overwrite:
+        gateway.download_file(
+            _credentials(), "ap-northeast-2", "test-bucket", "file.txt", destination, overwrite=True
+        )
+        assert destination.read_bytes() == b"new"
+    else:
+        with pytest.raises(S3TransferError, match="s3.download.destination.exists"):
+            gateway.download_file(
+                _credentials(), "ap-northeast-2", "test-bucket", "file.txt", destination
+            )
+        assert destination.read_bytes() == b"original"
+    assert list(tmp_path.glob(".aws-connect-*.download")) == []

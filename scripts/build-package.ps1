@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "package-paths.ps1")
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 if (-not $env:UV_CACHE_DIR) {
     $env:UV_CACHE_DIR = Join-Path $repositoryRoot ".uv-cache"
@@ -65,6 +66,19 @@ $actualHash = (Get-FileHash -LiteralPath $pluginPath -Algorithm SHA256).Hash.ToL
 if ($actualHash -cne ([string]$vendor.sha256).ToLowerInvariant()) {
     throw "Session Manager Plugin checksum mismatch. Expected $($vendor.sha256), got $actualHash."
 }
+if (-not $isTestOnly) {
+    if ($null -eq $vendor.PSObject.Properties["signer"] -or -not [string]$vendor.signer) {
+        throw "Release vendor manifest must declare the expected Authenticode signer."
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $pluginPath
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Session Manager Plugin Authenticode signature is not valid: $($signature.Status)."
+    }
+    $signerSubject = [string]$signature.SignerCertificate.Subject
+    if ($signerSubject -notmatch [regex]::Escape([string]$vendor.signer)) {
+        throw "Session Manager Plugin signer does not match the approved manifest signer."
+    }
+}
 $reportedVersion = (& $pluginPath --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $reportedVersion -notmatch [regex]::Escape([string]$vendor.version)) {
     throw "Session Manager Plugin did not report manifest version '$($vendor.version)'."
@@ -90,9 +104,13 @@ if (Test-Path -LiteralPath $buildRoot) {
 }
 New-Item -ItemType Directory -Force -Path $pyinstallerDist, $pyinstallerWork, $outputRoot | Out-Null
 
+$uvExecutable = (Get-Command uv -CommandType Application -ErrorAction Stop).Source
+$previousBuildPath = $env:PATH
 Push-Location $repositoryRoot
 try {
-    & uv run --no-sync pyinstaller --noconfirm --clean `
+    # Prevent unrelated DLLs on the developer PATH from contaminating the Portable ZIP.
+    $env:PATH = Get-PackageIsolatedPath
+    & $uvExecutable run --no-sync pyinstaller --noconfirm --clean `
         --distpath $pyinstallerDist `
         --workpath $pyinstallerWork `
         (Join-Path $repositoryRoot "packaging/aws_connect.spec")
@@ -100,6 +118,7 @@ try {
         throw "PyInstaller failed with exit code $LASTEXITCODE."
     }
 } finally {
+    $env:PATH = $previousBuildPath
     Pop-Location
 }
 
@@ -119,14 +138,14 @@ Set-Content -LiteralPath (Join-Path $packageRoot "VERSION.txt") -Encoding ascii 
 $payloadFiles = Get-ChildItem -LiteralPath $packageRoot -Recurse -File | Sort-Object FullName
 $fileRecords = foreach ($file in $payloadFiles) {
     [ordered]@{
-        path = [IO.Path]::GetRelativePath($packageRoot, $file.FullName).Replace("\", "/")
+        path = ConvertTo-PackageRelativePath -PackageRoot $packageRoot -Path $file.FullName
         size = $file.Length
         sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
 $buildManifest = [ordered]@{
     schema_version = 1
-    application = "AWS Connect"
+    application = "aws-ssm-kit"
     version = $Version
     package_format = "pyinstaller-onedir-portable-zip"
     platform = "windows-x64"
@@ -138,6 +157,7 @@ $buildManifest = [ordered]@{
         source_url = [string]$vendor.source_url
         sha256 = $actualHash
         approved = [bool]$vendor.approved
+        signer = if ($isTestOnly) { $null } else { [string]$vendor.signer }
     }
     files = @($fileRecords)
 }
@@ -146,7 +166,7 @@ $buildManifest | ConvertTo-Json -Depth 6 | Set-Content `
 
 $checksumFiles = Get-ChildItem -LiteralPath $packageRoot -Recurse -File | Sort-Object FullName
 $checksumLines = foreach ($file in $checksumFiles) {
-    $relative = [IO.Path]::GetRelativePath($packageRoot, $file.FullName).Replace("\", "/")
+    $relative = ConvertTo-PackageRelativePath -PackageRoot $packageRoot -Path $file.FullName
     $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $relative"
 }

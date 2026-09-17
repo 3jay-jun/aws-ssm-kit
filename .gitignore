@@ -14,7 +14,13 @@ coverage.xml
 htmlcov/
 build/
 dist/
-vendor/
+vendor/*
+!vendor/session-manager-plugin/
+vendor/session-manager-plugin/*
+!vendor/session-manager-plugin/session-manager-plugin.exe
+!vendor/session-manager-plugin/LICENSE
+!vendor/session-manager-plugin/NOTICE
+!vendor/session-manager-plugin/manifest.json
 *.db
 *.sqlite3
 *.log

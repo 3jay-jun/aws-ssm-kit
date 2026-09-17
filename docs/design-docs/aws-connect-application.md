@@ -1,4 +1,4 @@
-# AWS Connect 구현 사전 계획
+# aws-ssm-kit 구현 사전 계획
 
 ## 1. 목적
 
@@ -275,6 +275,8 @@ MFA 필요는 최종 실패가 아니라 복구 가능한 `MFA_REQUIRED` 상태�
 - CLI의 EC2 접속은 현재 콘솔에 연결하고 프로세스 종료까지 대기한다.
 - GUI의 EC2 접속은 별도 Windows Terminal을 열고 `ExternalSessionHandle`로 시작·실행·종료·실패 상태를 추적한다.
 - 성공적으로 열린 EC2 외부 터미널은 사용자 소유로 전환하며 GUI 종료만으로 강제 종료하지 않는다.
+- 외부 터미널의 `Ctrl+C`는 Session Manager Plugin을 통해 원격 foreground 명령에 전달하되,
+  로컬 session host는 종료하지 않아 EC2 셸을 유지한다.
 - RDS 터널은 생성한 GUI 또는 CLI 프로세스가 소유한다.
 - GUI가 소유한 RDS 터널은 GUI 종료 시 정리한다.
 - CLI의 `rds tunnel start`는 기본적으로 foreground에서 실행하고 `Ctrl+C`를 취소 요청으로 처리한 뒤 터널을 정리한다.
@@ -502,14 +504,28 @@ SQLite 연결 시 `PRAGMA foreign_keys = ON`을 반드시 적용한다.
 → 터널 상태 표시 및 종료 처리
 ```
 
-### 8.4 S3 조회와 업로드
+### 8.4 Secrets 조회와 로컬 저장
+
+```text
+직접 또는 EC2 경유 GetSecretValue
+→ 공통 parse/masking
+→ SavedSecret(identifier, value, lookup mode, relay instance) SQLite upsert
+→ 저장 항목 선택 시 AWS 호출 없이 같은 parser로 결과 복원
+→ ID/Value 편집은 SQLite update만 수행
+```
+
+- raw Value는 `repr=False` 모델로 전달하고 로그·진단에는 포함하지 않는다.
+- `saved_secrets` 평문 Value 저장은 사용자가 승인한 제품 예외이며 current-user-only DACL에 의존한다.
+- 저장 항목 선택과 수정은 `GetSecretValue`와 `PutSecretValue`를 호출하지 않는다.
+
+### 8.5 S3 조회와 배치 전송
 
 ```text
 저장 위치 또는 직접 Bucket/Prefix 입력
 → ListObjectsV2(Delimiter=/) 페이지 탐색
-→ 로컬 파일 선택 또는 드롭
+→ 로컬 파일·폴더 선택 또는 드롭 → 상대 경로 보존 목록
 → ListObjectsV2 exact-key로 존재 여부와 최종 s3:// URI preflight
-→ 사용자 확인(기존 key는 별도 overwrite 동의)
+→ 사용자 확인(OVERWRITE / SKIP_EXISTING / CANCEL)
 → 16 MiB 미만 PutObject / 이상 multipart
 → ProgressEvent 발행
 → 성공 완료 또는 취소·실패 시 AbortMultipartUpload 정리
@@ -522,6 +538,10 @@ SQLite 연결 시 `PRAGMA foreign_keys = ON`을 반드시 적용한다.
 - human CLI는 같은 `ProgressEvent`를 전송 중 즉시 stderr에 출력하고 stdout의 최종 결과와
   JSON machine contract를 분리한다. JSON 모드는 완료 payload에 event 배열을 포함한다.
 - GUI는 같은 Application `UploadPlan`, `ProgressEvent`, `CancellationToken`을 사용한다.
+- `SKIP_EXISTING`은 각 전송 직전 exact-key 존재 여부를 다시 확인하고 기존 key를 제외해
+  AWS CLI 프로세스 없이 `s3 sync --no-overwrite`와 같은 결과를 만든다.
+- 파일·prefix 혼합 다운로드는 Application `DownloadPlan`이 재귀 목록, 중복 key와 안전한
+  상대 경로를 확정하고 각 파일에 기존 임시 파일 + atomic replace 계약을 적용한다.
 - 프로필 변경 또는 GUI 종료는 업로드 취소를 요청하고 multipart abort를 포함한 작업 종료
   콜백이 온 뒤에만 앱 종료 절차를 계속한다.
 - 전송 실패는 자동 재시도하지 않는다. 사용자가 명시적으로 다시 실행하면 새로운 operation과
@@ -582,7 +602,7 @@ SQLite 연결 시 `PRAGMA foreign_keys = ON`을 반드시 적용한다.
   하나만 둔다. 이후 생성되는 SQLite sidecar와 회전 로그는 이 ACE를 상속할 수 있지만
   effective DACL에는 다른 trustee가 없어야 한다. 기존 파일과 entropy/진단 archive는 같은
   current-user-only ACL을 직접 적용한다.
-- DB에는 비밀 원문을 저장하지 않는다.
+- 인증정보 원문은 DB에 저장하지 않는다. `saved_secrets.value`는 승인된 평문 저장 예외다.
 - 백업 또는 내보내기 시 암호문을 유지하고 복호화된 값은 포함하지 않는다.
 
 ## 11. 오류 모델
@@ -704,15 +724,16 @@ DataProtectionError
 
 - 저장 Bucket/Prefix CRUD
 - 객체 목록
-- 파일 선택 및 업로드
-- 덮어쓰기 확인과 진행률
+- 파일·폴더 선택 목록과 상대 경로 보존 업로드
+- 덮어쓰기·기존 key 무시 확인과 진행률
+- 파일·폴더 혼합 다중 다운로드
 - multipart upload
 - `s3 list|upload` CLI 명령
 
 완료 조건:
 
 - `ListAllMyBuckets` 없이 지정 Bucket 사용
-- 동일 키 덮어쓰기 확인
+- 동일 key 덮어쓰기·`sync --no-overwrite` 의미의 무시 확인
 - 실패한 multipart upload 정리
 - GUI 연결 전에 CLI의 목록·업로드·덮어쓰기 시나리오 통과
 
@@ -747,7 +768,7 @@ DataProtectionError
 - 기능별 CLI 인자 파싱과 Application DTO 변환
 - 기본 출력과 `--output json` 계약
 - 오류별 CLI 종료 코드
-- 민감정보가 AWS Connect/Windows Terminal/helper 인자와 출력에 포함되지 않는지
+- 민감정보가 aws-ssm-kit/Windows Terminal/helper 인자와 출력에 포함되지 않는지
   검사한다. 공식 Plugin의 최종 argv에는 upstream 계약상 단기 transport 값이 필요하므로
   이 경계는 별도로 마스킹·비기록·프로세스 진단 범위를 검사한다.
 - GUI 이벤트와 Application DTO 변환

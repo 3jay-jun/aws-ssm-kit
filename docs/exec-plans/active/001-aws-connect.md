@@ -1,4 +1,4 @@
-# AWS Connect 실행 계획
+# aws-ssm-kit 실행 계획
 
 ## 1. 계획 목적
 
@@ -1259,6 +1259,185 @@ MFA 설정 변경은 기존 임시 세션을 삭제한다. MFA 미사용 프로�
 추가 작업 필요: 승인된 비운영 MFA 사용/미사용 IAM 사용자로 두 `GetSessionToken` 요청과 이후
 EC2/RDS/S3/Secrets 원래 작업 1회 재개를 smoke한다.
 
+#### 9.13 GitHub Windows 출력 인코딩·생성 문서 CI 보완 (2026-09-15)
+
+SSOT 검색: `PYTHONIOENCODING|OutputEncoding|reconfigure|ensure_ascii|render_doctor` 결과 CLI 출력은
+`cli_main.main`의 `print` 경계 한 곳에서 수행되며 별도 인코딩 정책은 없었다.
+
+- [x] GitHub Actions run `34939744109`의 최신 로그에서 `check`는 migration 8 생성 문서 drift,
+  `package-windows`는 redirected cp1252 stdout의 한국어 경로 `UnicodeEncodeError`임을 확인했다.
+- [x] CLI 진입 시 stdout/stderr를 UTF-8로 재구성해 Windows redirected stream에서도 JSON을 보존한다.
+- [x] cp1252 redirected stdout과 한국어 진단 경로를 조합한 회귀 테스트를 추가한다.
+- [x] migration 8의 생성 DB schema 문서를 현재 코드와 동기화한다.
+
+검증 결과:
+
+- `pytest tests/adapter/cli/test_cli_main.py -q --no-cov` → 2 passed
+- `scripts/check.ps1` → 문서·format·lint·architecture/import·mypy·407 passed/1 skipped,
+  coverage 85.85%, critical branch, secret scan, Bandit 통과; sandbox 외부 `pip-audit` → 취약점 0건
+- TEST-ONLY Portable ZIP 재빌드 후 `PYTHONIOENCODING=cp1252` package smoke → 성공
+
+런타임 사이드이펙트: CLI stdout/stderr 인코딩이 UTF-8로 고정된다. 프로세스 시작 순서, 포트,
+네트워크 연결과 메모리 수명주기에는 영향이 없다.
+
+#### 9.14 Windows PowerShell 5.1 패키지 상대 경로 호환 (2026-09-16)
+
+SSOT 검색: `GetRelativePath|MakeRelativeUri|RelativePath` 결과 상대 경로 생성은
+`scripts/build-package.ps1` 2곳과 `scripts/test-package.ps1` 1곳에만 있었고 기존 호환 helper는 없었다.
+
+- [x] .NET Framework에 없는 `IO.Path.GetRelativePath` 호출을 공통 `Uri.MakeRelativeUri` helper로 교체한다.
+- [x] URI escaping을 복원하고 `/`로 정규화해 manifest/checksum 경로 계약을 유지한다.
+- [x] Windows PowerShell 5.1에서 한글·공백·`#`·`%` 경로, release ZIP 빌드와 전체 smoke를 검증한다.
+
+검증 결과:
+
+- Windows PowerShell `5.1.26100.9444` parser 및 helper 직접 검증 →
+  `하위 폴더/파일 # 100%.txt`, 세 스크립트 parse 성공
+- `scripts/build-package.ps1 -VendorDirectory ./vendor/session-manager-plugin` →
+  `dist/aws-connect-0.1.0-windows-x64.zip` 생성 성공
+- 생성 manifest 2,176개와 checksum 2,177개 경로 → 모두 상대 경로 및 `/` 구분자 확인
+- `scripts/test-package.ps1 -ZipPath ./dist/aws-connect-0.1.0-windows-x64.zip` →
+  한글/공백 경로, read-only 디렉터리, checksum/manifest, GUI/CLI/session host 전체 smoke 성공
+- `scripts/check.ps1` → 기존 미추적 `.vendor-license-source` 제3자 CHANGELOG의 깨진 링크를
+  documentation gate가 수집해 중단; 이번 변경 파일의 `git diff --check`는 성공
+
+런타임 사이드이펙트: 패키징 시 상대 경로 문자열 생성 방식만 바뀌며 애플리케이션 프로세스,
+포트, 초기화 순서와 패키지 보안 검증에는 영향이 없다.
+
+#### 9.15 패키지 GUI QtWidgets DLL 로드 사용자 보고 (2026-09-16)
+
+SSOT 검색: `PySide|Qt|binaries|runtime` 결과 Qt 수집은 `packaging/aws_connect.spec`의 PyInstaller
+Analysis/COLLECT 한 곳이며 별도 DLL override는 없다.
+
+- [x] windowed 오류 대화상자가 프로세스를 유지해 기존 `HasExited` smoke를 통과하는 문제를
+  stderr traceback 검증으로 재현하고 회귀 방지한다.
+- [x] PyInstaller TOC에서 Codex PATH의 Poppler `icuuc.dll`/`icudt78.dll`이 Qt 의존성으로 잘못
+  수집됐음을 확인하고 build subprocess PATH를 시스템 디렉터리로 격리한다.
+- [x] package/TOC의 외부 ICU 부재, 정확한 build EXE 직접 시작, release ZIP 전체 smoke를 검증한다.
+
+검증 결과:
+
+- 결함 패키지 `aws_connect.exe` → 프로세스 생존 중 stderr의 `QtWidgets` ImportError 재현
+- 외부 ICU 두 파일만 제외한 진단 실행 → QtCore/QtGui/QtWidgets 정상 로드
+- `scripts/build-package.ps1 -VendorDirectory ./vendor/session-manager-plugin` → release ZIP 재생성,
+  SHA-256 `e7b1f50f82fdcd8737ae76e2e10c52bb75bf16a0001b3172783e3817374f14f4`
+- `build/package/aws-connect/aws_connect.exe` → 5초 시작 유지 및 stderr 없음
+- `scripts/test-package.ps1 -ZipPath ./dist/aws-connect-0.1.0-windows-x64.zip` → 강화된 GUI 시작과
+  기존 한글/공백·read-only·checksum/manifest·CLI/session host·비밀정보 smoke 전체 성공
+
+런타임 사이드이펙트: PyInstaller subprocess의 PATH만 빌드 동안 격리하고 `finally`에서 복원한다.
+애플리케이션 런타임, 포트와 초기화 순서는 바뀌지 않으며 패키징 spec은 수정하지 않았다.
+
+
+#### 9.19 S3 조회 공간·업로드 파일 카드·아이콘 작업 (2026-09-17)
+
+사용자 요청대로 S3 상단/조회/하단 액션, 파일 카드/drop, S3 전용 스타일을 서브 에이전트 3명에게 분담했다. 부모가 영역별 수정의 통합과 기존 시그널·선택·drop·업로드 취소 연결을 소스로 감독했다. 상세 검증과 회귀 테스트는 사용자 담당이라는 지시를 유지했다.
+
+SSOT 검색: `upload_sources|_render_sources|dragEnterEvent|_sync_upload_action|setRowHeight|action_button`으로 기존 파일 선택/중복 제거/드롭/업로드 및 공통 아이콘 버튼을 확인하고 재사용했다.
+
+- [x] S3 제목과 설명 간격 4px, 이동 버튼 icon-only 및 tooltip/접근성 이름.
+- [x] 조회 헤더 padding 6px/10px, 조회 행 34px(기존 46px 덮어쓰기 제거), 행번호 숨김, 이름 Stretch 및 나머지 내용 기반 크기. 남은 세로 공간은 조회 목록에 할당.
+- [x] 선택 전 드롭 안내, 선택 후 안내 숨김 + 78px 높이 가로 카드 목록 표시. 빈 선택 목록/header는 숨겨 조회 공간 확보.
+- [x] 220×54px 카드에 파일명/파일형식 SVG, 전체 경로 tooltip, 우측 위 × 제거. 경로에 바인딩하여 잘못된 행을 제거하지 않는다.
+- [x] 파일·이미지·비디오 분류의 MIME 판정은 기존 객체 유형과 _file_type을 공유. 첨부 file-default.svg/file-image.svg/file-video.svg를 원본 그대로 assets에 추가(기존 패키징 assets 디렉터리 포함 규칙 재사용).
+- [x] 카드 목록 viewport의 dragEnter/Move/drop을 페이지 핸들러에 위임하고 기존 add_sources를 재사용. 선택 제거 버튼 제거, 전체 비우기는 선택 파일 header 우측.
+- [x] 하단 다운로드/선택 파일 삭제/업로드는 공통 action_button 아이콘만 표시. 삭제 빨강/흰색, 업로드 파랑/흰색, 업로드 중 취소 빨강/흰색 및 tooltip/접근성 이름 전환 유지.
+- [x] DESIGN·목업·기존 업로드 버튼 표시 테스트 기대값 갱신.
+
+정적 확인(실행/회귀 검증 아님):
+- `.venv/Scripts/ruff.exe check src/aws_connect/presentation/gui/s3.py src/aws_connect/presentation/gui/upload_sources.py src/aws_connect/presentation/gui/styles.py tests/adapter/gui/test_s3.py` → 최초 통합 시 긴 행 2개 발견, format 후 All checks passed.
+- 위 4파일 `.venv/Scripts/ruff.exe format --check ...` → 4 files already formatted.
+- 위 4파일 `.venv/Scripts/python.exe -m compileall -q ...` → exit 0.
+- Python ElementTree.parse 및 read_bytes 비교 → 첨부 SVG 3개 XML 유효, 원본과 byte 일치.
+- 상세 GUI/drop/회귀 테스트·전체 check.ps1·패키지 빌드 미실행. 새 UI 실행 통과로 간주하지 않는다.
+
+사이드이펙트: 선택한 파일마다 작은 카드 widget/icon을 만들므로 매우 많은 선택은 GUI 메모리·재렌더 비용을 증가시킬 수 있다. 이미지/비디오 디코딩은 하지 않으며 AWS 호출·업로드 처리·포트·프로세스 수명주기 변화 없음.
+다음 단계: 사용자 수동 확인(파일/폴더 추가, 카드 위 추가 drop, ×/전체비우기 후 빈 상태, 업로드/취소, 조회/다운로드/삭제). 기존 배포 EXE에 반영하려면 패키지 재빌드 필요.
+
+#### 9.18 EC2 열 너비·RDS 목록과 공통 작업 버튼 (2026-09-16)
+
+사용자 요청에 따라 EC2/RDS/공통 표현 재사용을 서브 에이전트 3명에게 분담하고 부모가 통합 소스와 버튼 시그널·상태 전환을 검토했다. 상세 검증·회귀 테스트는 사용자 담당이라는 기존 지시를 유지했다.
+
+- [x] EC2 새로고침 아이콘 전용 + tooltip/접근성 이름, 행 시작 아이콘 제거.
+- [x] 이름 열만 Stretch, 나머지는 ResizeToContents 및 전체 행 계산. 기존 고정폭 resize 로직과 작업 버튼 폭 제한 제거.
+- [x] RDS 새 세션은 목록 맨 위 primary 텍스트 버튼. 검색 제목 제거, 입력의 placeholder/접근성 이름 유지.
+- [x] RDS 하단 5개 버튼은 프로필과 동일한 공통 action_button 스타일. 삭제·종료 빨강/흰색, 시작 파랑/흰색, 복사·복제·저장 흰색/검정 및 공통 비활성화 표현.
+- [x] 연결 시작/종료는 아이콘과 tooltip/접근성 이름을 함께 갱신하며 기존 시그널 유지.
+- [x] 프로필 기존 행 구현을 list_rows.py로 추출하여 RDS에 재사용. 작은 padding·마지막 행 제외 구분선·키보드 선택/접근성 유지. 검색 후 표시되는 마지막 행에도 구분선을 생략.
+- [x] DESIGN/목업과 기존 EC2 열폭·RDS 버튼 표시 테스트 기대를 변경 명세에 맞게 갱신.
+
+SSOT 검색: `setSectionResizeMode|set_button_icon|profile_action|_render_sessions|_set_profile_row`로 기존 열폭/아이콘/행 구현을 확인했다. 새 아키텍처나 라이브러리 추가 없이 기존 GUI 표현 helper를 공유한다.
+
+확인 명령/결과(테스트 실행 아님):
+- `.venv/Scripts/ruff.exe check src/aws_connect/presentation/gui/ec2_rds.py src/aws_connect/presentation/gui/window.py src/aws_connect/presentation/gui/styles.py src/aws_connect/presentation/gui/list_rows.py tests/adapter/gui/test_ec2_rds.py` → 최초 테스트 파일 101자 행 E501 발견, format 수정 후 All checks passed.
+- 위 5파일 `.venv/Scripts/ruff.exe format --check ...` → 5 files already formatted.
+- 위 5파일 `.venv/Scripts/python.exe -m compileall -q ...` → exit 0.
+- 상세 UI/회귀/전체 check.ps1/패키징은 사용자 요청에 따라 미실행. 실행 검증 통과로 간주하지 않는다.
+
+사이드이펙트: 전체 EC2 행에 맞춘 열폭 계산과 RDS compact 행 widget으로 대량 목록의 GUI 계산·메모리 사용량이 증가할 수 있다. AWS/DB/네트워크/포트/프로세스 수명주기 변화 없음.
+다음 단계: 사용자 수동 UI·회귀 확인(EC2 실제 긴 값, RDS 검색·선택·시작/종료·비활성 버튼 확인). 기존 배포 EXE에는 패키지 재빌드 필요.
+
+#### 9.17 제품 표시명·공통 레이아웃·프로필·대시보드 정리 (2026-09-16)
+
+- 사용자 요청에 따라 공통 셸, 프로필 관리, 대시보드를 3개 서브 에이전트에 분담하고 부모가 통합 소스를 검토했다.
+- 제품 표시명만 `aws-ssm-kit`으로 변경한다는 사용자 답변을 반영했다. Python 패키지·실행 명령·배포 파일명·기존 AWSConnect 데이터 경로는 유지한다.
+- 런타임 표시명의 SSOT는 `aws_connect.APPLICATION_NAME`; 창/시스템 정보/EC2 터미널 제목/진단 안내에서 공유한다.
+- [x] 전체 창 바깥 여백/최대폭 제한 제거, 로고와 탐색 영역 220px 정렬.
+- [x] 키보드 포커스 접근성을 유지하고 선택된 테이블 셀의 padding까지 같은 배경으로 그린다.
+- [x] 새 프로필은 텍스트만, 목록은 작은 여백과 Account ID/IAM 메타데이터, 마지막 행 제외 구분선.
+- [x] 삭제/복제/저장/연결 아이콘 전용, 삭제 빨강+흰색/연결 파랑+흰색 및 tooltip/접근성 이름 유지.
+- [x] 대시보드 이동 아이콘을 각 카드 타이틀 행 맨 오른쪽으로 배치.
+- [x] DESIGN/FRONTEND/목업/제품 문서 갱신, 기존 표시명 및 geometry 테스트 기대값 갱신.
+
+SSOT 검색: `AWS Connect|ProfileDialog|FeatureCard|setContentsMargins|set_button_icon|State_HasFocus`로 기존 표시명·카드·아이콘·선택 delegate를 확인하고 재사용했다.
+
+최소 확인 명령/결과:
+- `.venv/Scripts/ruff.exe check src/aws_connect/presentation/gui/window.py src/aws_connect/presentation/gui/styles.py src/aws_connect/presentation/gui/table_selection.py src/aws_connect/presentation/gui/icons.py src/aws_connect/__init__.py src/aws_connect/gui_main.py src/aws_connect/application/system_info.py src/aws_connect/infrastructure/diagnostic_logs.py src/aws_connect/infrastructure/session_manager_plugin.py tools/generate_third_party_notices.py` → All checks passed.
+- 위 동일 10파일 `.venv/Scripts/ruff.exe format --check ...` → 10 files already formatted.
+- 에이전트 AST/compileall 구문 확인 성공. 상세 UI 검증·회귀 테스트·전체 check.ps1·패키지 빌드는 사용자가 직접 수행한다는 요청에 따라 미실행이며 통과로 간주하지 않는다.
+
+런타임 영향: GUI 배치/선택 렌더링과 소형 아이콘 색상 pixmap 생성만 변경. AWS/DB/네트워크/포트/프로세스 수명주기 변화 없음(EC2 창 표시 제목만 변경).
+다음 단계: 사용자가 실제 창에서 키보드 선택·프로필 작업·카드 이동과 기존 기능 회귀를 확인한다. 배포본 반영에는 패키지 재빌드가 필요하다.
+
+후속 배치 요청 (2026-09-16): 삭제/복제 기존 버튼을 목록 하단으로 이동하고 삭제 왼쪽·복제 오른쪽 끝에 배치했다. 목록 stretch=1로 빈 공간을 채우며 저장/연결은 편집 영역 하단에 유지한다. 프로필 담당 서브 에이전트가 window.py를 수정하고 부모가 버튼 재사용·시그널 유지·배치를 소스 검토했다. DESIGN과 HTML 목업을 함께 갱신했다.
+- 검색: `delete_button|clone_button|left.addWidget|actions.addWidget` → 기존 버튼/레이아웃 재사용.
+- `.venv/Scripts/ruff.exe check src/aws_connect/presentation/gui/window.py` → All checks passed.
+- `.venv/Scripts/ruff.exe format --check src/aws_connect/presentation/gui/window.py` → 1 file already formatted.
+- `.venv/Scripts/python.exe -m compileall -q src/aws_connect/presentation/gui/window.py` → exit 0.
+- 사이드이펙트: 레이아웃만 변경, AWS/DB/프로세스/네트워크 영향 없음. 상세·회귀 테스트는 사용자 요청에 따라 미실행. 다음 단계는 사용자 GUI 확인이며 배포본에는 재빌드 필요.
+
+#### 9.16 GUI 브랜드 로고·의미 기반 SVG 아이콘 적용 (2026-09-16)
+
+SSOT 검색: `gui_icon|gui_asset_path|setIcon|search.svg|3s-download|QPushButton` 결과 asset 경로는
+`presentation/gui/icons.py` 한 곳에서 해석하고 기존 `search.svg`/`3s-download.svg` 참조는 없었다.
+
+- [x] 제공된 `tab-*`, `common-*`, 도메인 전용 SVG와 `logo.ico`/`logo.png`를 기존 GUI asset
+  디렉터리에 원본 그대로 추가하고 공통 로더·크기 정책을 재사용한다.
+- [x] 6개 navigation 탭, dashboard 이동, 프로필, EC2/RDS, Secrets, S3, 로그의 현재 버튼에
+  의미 매핑대로 아이콘을 적용하고 주요 작업 텍스트는 유지한다.
+- [x] RDS 연결 시작/종료와 S3 업로드/취소 아이콘을 현재 동작 상태와 함께 전환한다.
+- [x] 아이콘-only 헤더·즐겨찾기 버튼의 tooltip과 accessible name을 보존·보완한다.
+- [x] GUI 헤더에 `logo.png`, QApplication과 PyInstaller GUI EXE에 `logo.ico`를 적용한다.
+
+검증 결과:
+
+- 제공 SVG 20개 XML parse 성공, `tests/adapter/gui/test_icons.py`에서 SVG/PNG/ICO 22개 로드 확인
+- Ruff, mypy, GUI adapter → 76 passed; 전체 코드 게이트 → 410 passed/1 skipped,
+  coverage 85.94%, architecture/import, critical branch, secret scan, Bandit 통과
+- `tools/render_gui.py`의 dashboard/EC2/RDS/Secrets/S3/Log/Profile 7개 화면 육안 검증 →
+  로고·탭·액션 아이콘 표시 및 레이아웃 잘림 없음
+- `uv run aws-connect` → 격리 데이터 경로에서 5초 시작 유지
+- `scripts/build-package.ps1` → Portable ZIP 생성, SHA-256
+  `b103a7cdd4a21b3af469abad5460af8147d072fef663d9deed91e6c67f9700c2`
+- 패키지에 GUI asset 26개 포함, EXE 추출 아이콘 pixel hash가 `logo.ico`와 일치
+- `scripts/test-package.ps1` → 읽기 전용·한글 경로에서 packaged GUI/CLI/helper smoke 성공
+- `pip-audit` → 알려진 취약점 없음
+- `scripts/check.ps1`은 코드 검사 전에 기존 미추적 `.vendor-license-source`의 외부 CHANGELOG 깨진
+  링크로 중단했다. 같은 코드·테스트·보안 게이트는 위 개별 명령으로 모두 통과했다.
+
+런타임 사이드이펙트: QApplication 창 아이콘 초기화와 Qt의 소형 SVG/PNG pixmap 로드만 추가된다.
+프로세스 시작 순서, 네트워크, 포트, 세션 수명주기와 AWS 호출에는 영향이 없다.
+
 상태와 데이터 흐름:
 
 ```text
@@ -1338,6 +1517,9 @@ S3/log presentation                            permission and detail flows
 
 구현 및 검증 기록(2026-09-15):
 
+- EC2 외부 터미널 session host는 Plugin을 먼저 시작한 뒤 자체 `SIGINT`만 무시한다. 따라서
+  원격 로그 스트리밍에서 `Ctrl+C`를 눌러도 Plugin은 신호를 받고 로컬 host와 EC2 셸은 유지된다.
+  handler 설치 순서와 복원을 `tests/unit/test_session_host.py` 회귀 테스트로 고정했다.
 - 목업 CSS/DOM의 shell, top bar, navigation, page header, card, form, table, status pill,
   split layout, drop zone와 profile dialog 수치를 `presentation/gui/styles.py`와 기존 화면
   widget에 직접 매핑했다. 페이지별 중복 비즈니스 로직은 추가하지 않았다.
@@ -1663,3 +1845,78 @@ Phase 0에서 다음 항목을 확정해야 한다.
 - 필수 CI 게이트와 깨끗한 Windows 패키지 smoke가 통과한다.
 - 활성 실행 계획과 기술 부채가 실제 상태를 반영한다.
 - 새 에이전트가 `AGENTS.md`와 저장소 내 문서만으로 기능을 탐색하고 검증할 수 있다.
+
+
+### 2026-09-16 테이블 선택·EC2 작업·RDS 임시 세션 후속 수정
+
+- Phase 9 범위: 공통 테이블 선택선 첫 셀만 표시, EC2 아이콘/상태 폭, RDS 목록 하단 삭제·복제 및 저장 전 임시 항목.
+- 수용 기준: 임시 항목 생성/삭제는 서비스 저장·삭제를 호출하지 않음, polling 중 유지, 저장 성공 후 동일 ID 갱신. 기존 Application/SQLite 계약 재사용.
+- 런타임 영향: 신규 네트워크·프로세스·타이머 없음. 임시 항목은 GUI 메모리에만 유지하며 저장 성공 시 해제.
+- 첨부 경로 ec2-terminal.svg 없음. Downloads/terminal-solid-full.svg 사용 여부 질문 대기.
+- 초기 검증: GUI 대상 테스트 20 passed, 1 failed(변경 전 상태 열 ResizeToContents 기대). 112px 고정 폭 계약에 맞춰 기대 수정.
+- 다음 단계: GUI 회귀 및 scripts/check.ps1 실행, 터미널 아이콘 파일 확인.
+
+- 사용자 경로 재확인 후 ec2-terminal.svg를 읽고 원본 흰 도형을 패키지 asset에 추가. 검은 rect만 제거하여 파란 버튼 배경 유지. 새 라이브러리/아키텍처 없음.
+- 환경: Python 3.12.13, PySide6 6.11.2.
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_ec2_rds.py tests/adapter/gui/test_table_selection.py --no-cov -q -o cache_dir=.test-cache-ui-0916-b --basetemp=.test-ui-0916-b` → 21 passed.
+- `./scripts/check.ps1` → documentation 단계 실패: 기존 .vendor-license-source SDK CHANGELOG의 깨진 링크. 코드와 무관한 디렉터리는 변경하지 않음.
+- `.venv/Scripts/ruff.exe format --check src tests tools` → 143 files already formatted; `.venv/Scripts/ruff.exe check src tests tools` → All checks passed; `.venv/Scripts/mypy.exe` → 77 source files 성공.
+- `.venv/Scripts/python.exe -m pytest --basetemp=.test-ui-full-0916 -o cache_dir=.test-cache-ui-full-0916` → 410 passed, 1 skipped, 2 failed, coverage 85.89%. 실패는 test_shell.py의 기존 profile draft.text()/dashboard button.text() 기대와 compact widget/icon-only UI 불일치. 해당 소스/테스트는 이번 작업에서 수정하지 않음.
+- `.venv/Scripts/python.exe tools/architecture_check.py`, `.venv/Scripts/lint-imports.exe`, `.venv/Scripts/bandit.exe -q -r src`, `.venv/Scripts/python.exe tools/verify_critical_coverage.py coverage.xml` → 모두 성공(critical 5 files 100%).
+- `.venv/Scripts/detect-secrets.exe scan`에 이번 변경 GUI 코드·SVG·테스트 5파일 전달 → 잠재 비밀정보 없음.
+- 실제 Qt offscreen 렌더 `.qa-ui-0916/selection.png`, `rds.png` 확인: 첫 셀만 파란 선택선, 목록 아래 삭제 좌/복제 우. 이 임시 harness는 typography 초기화를 생략해 글꼴은 검증하지 않음.
+- 남은 게이트: 별도 기존 UI 테스트 기대 정합성/문서 스캐너 범위 정리 후 전체 check 재실행. 배포 EXE에는 재빌드 필요. 실제 AWS 호출 및 패키징은 수행하지 않음.
+- 최종 아이콘 포함 검증: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_ec2_rds.py tests/adapter/gui/test_table_selection.py tests/adapter/gui/test_icons.py --no-cov -q -o cache_dir=.test-cache-ui-final-0916 --basetemp=.test-ui-final-0916` → 23 passed. 두 변경 테스트 파일 ruff check 성공.
+
+### 2026-09-17 Secrets 레이아웃·저장 팝업·전체 복사
+
+- Phase 9 범위: 제목 간격/조회 정렬, 아이콘 전용 조회·등록·삭제, 공통 compact 목록, 더블 클릭 수정, 읽기 전용 SEQ 및 Secret ID/Value 팝업, 짧은 ARN 표시, 원문 전체 복사.
+- 기존 remember/update_saved, _prompt_saved_secret, raw_secret_string, copy_temporarily, list_rows 재사용. DB schema/의존성/프로세스/네트워크 변경 없음. clipboard 원문은 명시적 클릭 시 30초 조건부 정리 정책 적용.
+- 가정: 별도 타이틀 컬럼 없이 Secret ID 마지막 이름을 타이틀로 사용(사용자 질문 후 응답 대기 중 기본 적용). ARN은 표시만 축약하고 원본 식별자는 유지.
+- 수용 기준: 저장/취소, 수정 시 동일 SEQ와 ARN 유지, AWS 변경 없음, 전체 원문 복사, compact separator 및 실제 레이아웃 확인.
+- 초기 검증: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_secrets.py --no-cov -q -o cache_dir=.test-cache-secret-0917 --basetemp=.test-secret-0917` → 17 passed. `ruff check src tests tools`, `mypy` → 통과(78 source files).
+- `.qa-secret-0917/secrets.png` Qt 실제 렌더 확인: 제목 간격, toolbar 하단 정렬, 삭제/등록 아이콘, compact 행, ARN 없는 결과 및 전체 복사 버튼.
+- 다음 단계: 팝업 계약 테스트 추가 검증 및 scripts/check.ps1.
+
+- 최종 `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_secrets.py --no-cov -q -o cache_dir=.test-cache-secret-final-0917 --basetemp=.test-secret-final-0917` → 18 passed(등록 취소/저장, 더블 클릭 수정, ID 읽기 전용, ARN 보존, 원문 복사와 마스킹 유지 포함).
+- `./scripts/check.ps1` → 기존 .vendor-license-source CHANGELOG broken links로 documentation exit 1. `.test-secret-check-0917.log`에 결과 기록.
+- `.venv/Scripts/python.exe -m pytest --basetemp=.test-secret-full-0917 -o cache_dir=.test-cache-secret-full-0917` → 412 passed, 1 skipped, 4 failed. 이번 수정 밖 test_s3.py의 selected_files_and_folders_download/upload_sources_accumulate 및 기존 test_shell.py의 profile_new_draft/dashboard 기대 실패. `.test-secret-full-0917.log` 참조.
+- `ruff format --check src tests tools` 144 files 통과, `ruff check src tests tools` 통과, `mypy` 78 files 통과, `tools/architecture_check.py`, `bandit -q -r src`, `tools/verify_critical_coverage.py coverage.xml` 통과. 변경 3개 Python 파일 detect-secrets scan 잠재 비밀정보 없음.
+- 마지막 원본 ARN profile 전환 초기화 보완 후 Secrets 18 tests 및 해당 파일 ruff 재통과.
+- 다음 단계: QA-001 기존 전체 게이트 실패 정리 및 배포 시 EXE 재빌드. 이번 요청에는 DB migration/의존성 추가 없음. 전체 검사 통과로 간주하지 않음.
+
+### 2026-09-17 프로필·EC2·Secrets·RDS 시각 보완
+
+- Phase 9 범위/수용 기준: 프로필 편집 제목·SEQ 제거, 프로필명 레이블, EC2 Action 열·좌우 여백·투명 terminal cutout, EC2/Secrets 공통 정사각 새로고침, RDS 연결 점 12px 여백과 목록 표시.
+- SSOT 검색: action_button/ec2_row_action/status_dot/set_compact_list_row. 기존 스타일 재사용, compact 행에 connected 옵션만 추가. SVG even-odd fill로 흰 타일에서 원래 터미널 도형을 투명하게 표현.
+- 사이드이펙트: 연결 목록 행마다 9px 상태점 widget 하나 추가. 네트워크·DB·프로세스·타이머·연결 로직 변경 없음.
+- 다음 단계: Qt 실제 렌더 및 기존 GUI 회귀, scripts/check.ps1. 기존 QA-001/QA-002 전체 게이트 차단은 별도 기록 유지.
+
+- 구현 완료: 프로필 title/SEQ widget 제거 및 프로필명 레이블. EC2 Action 헤더/좌우 padding, 새로고침 action_button 재사용. Secrets refresh 텍스트 제거. RDS 상세/목록 초록점과 12px 여백. EC2 QSS 셀 padding 때문에 버튼 우측이 잘리는 렌더 발견 → 작업 셀 size hint에 padding 공간 포함.
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_ec2_rds.py tests/adapter/gui/test_secrets.py tests/adapter/gui/test_icons.py --no-cov -q -o cache_dir=.test-cache-polish-target-0917 --basetemp=.test-polish-target-0917` → 40 passed.
+- test_shell.py 포함 동일 GUI 실행(`.test-polish-final-0917.log`) → 59 passed, 기존 QA-001 2 failed(profile draft.text, dashboard button.text 기대). 변경된 프로필 제목 제거 기대는 통과.
+- `./scripts/check.ps1` → 기존 .vendor-license-source broken links로 documentation exit 1 (`.test-polish-check-0917.log`). 전체 게이트 통과로 간주하지 않음.
+- `ruff check src tests tools`, `ruff format --check src tests tools`(144 files), `mypy`(78 source files), `tools/architecture_check.py` 통과. 변경 GUI 5파일 및 SVG detect-secrets scan 성공.
+- `.qa-polish-0917/ec2.png`, `rds.png`, `profile.png` 실제 Qt 렌더 확인. 수정 후 EC2 button.geometry().right() < viewport.width() 확인, 둥근 모서리 잘림 해소.
+- 다음 단계: 기존 QA-001/QA-002 별도 정합성 수정 후 전체 게이트. 배포 EXE에는 재빌드 필요. DB migration/새 의존성 없음.
+
+### 2026-09-17 체크박스·프로필 연결점·EC2 정사각형·포트 입력
+
+- 수용 기준: 프로필 MFA 문구 변경/파란 체크 배경·흰 체크, 현재 프로필 행 좌상단 초록점, EC2 Action 공통 정사각형, RDS 포트 NoButtons.
+- SSOT: action_button/list_rows/status_dot/QSpinBox 기존 구현 재사용. EC2 별도 가로 padding 스타일 제거, 공통 40px 버튼 적용. list_rows 상태점 정렬만 선택 가능하게 확장.
+- 사이드이펙트: DB/인증/포트 검증/연결·프로세스 변경 없음. QSpinBox 숫자 입력과 범위 검증은 유지.
+- ruff check src tests tools 및 mypy(78 source files) 통과. 다음 단계: 실제 Qt 렌더와 GUI 회귀 및 check.ps1.
+
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_ec2_rds.py tests/adapter/gui/test_shell.py tests/adapter/gui/test_icons.py --no-cov -q -o cache_dir=.test-cache-square-0917 --basetemp=.test-square-0917` → 41 passed, 기존 QA-001 2 failed(profile draft.text/dashboard button.text 기대). `.test-square-0917.log` 참조.
+- `./scripts/check.ps1` → 기존 외부 vendor CHANGELOG broken links로 documentation exit 1(`.test-square-check-0917.log`).
+- Qt 실제 렌더 `.qa-square-0917/ec2.png`, `profile.png`: EC2 버튼 width==height==42(공통 content 40px+border), profile checked white-on-blue 및 좌상단 연결점 확인. 양쪽 port ButtonSymbols.NoButtons assertion 통과.
+- 변경 GUI 4파일·common-check.svg detect-secrets scan 잠재 비밀정보 없음. 기존 QA-001 게이트 미해결이며 다음 단계는 별도 기대 정합성 정리/EXE 배포 시 재빌드. DB migration/의존성 추가 없음.
+
+### 2026-09-17 S3 업로드 카드·선택기·다운로드 충돌 및 RDS 간격
+
+- 수용 기준: 하단 삭제/비우기 좌측·업로드/다운로드 우측, 빈 목록 배경에서 파일/폴더 혼합 선택, 152×160 카드의 이름 말줄임/썸네일/수정일/크기, file-folder.svg, 다운로드 중복 확인과 비동의 파일 보호. RDS 상세 상태점 간격 20px, 목록 연결점 유지.
+- 사용자 선택: Windows 기본 파일/폴더 분리 대신 한 창 혼합 선택이 가능한 Qt 선택기 승인. QFileDialog subclass로 기존 파일 선택 흐름 재사용, 중간 QMessageBox 제거.
+- SSOT 검색: UploadSourcesList/_confirm_upload/prepare_download/download_file. 충돌 확인 공통 함수와 기존 UploadConflictPolicy 재사용, DownloadItem.exists/DownloadSummary.skipped로 typed 결과 확장. 기존 gateway에 overwrite keyword만 추가. 새 라이브러리/DB schema 없음.
+- 런타임 영향: 로컬 이미지/metadata 작업이 기존 thread pool을 사용. 20 MiB/16MP 입력 제한 및 작은 이미지로 축소, stale preview cancel/무시. 폴더 재귀 크기 계산 없음. 다운로드는 인접 임시 파일을 완료 후 반영하며 기본 commit은 기존 파일을 덮어쓰지 않음. 작은 화면은 S3 카드 내부 스크롤 제공.
+- 초기 검증: `.venv/Scripts/python.exe -m pytest tests/unit/application/test_s3_service.py tests/integration/infrastructure/test_aws_s3_gateway.py tests/adapter/gui/test_s3.py --no-cov -q -o cache_dir=.test-cache-s3cards-b-0917 --basetemp=.test-s3cards-b-0917` → 60 passed, 1 skipped. 혼합 선택 Qt test, 미리보기/복사 정책/취소/기존 파일 유지 포함. mypy 78 files 성공.
+- 다음 단계: 문서/목업 정합성, compact scroll 재검증, 전체 check.ps1 및 테스트. 실제 AWS 미사용.

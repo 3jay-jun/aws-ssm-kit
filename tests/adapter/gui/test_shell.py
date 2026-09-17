@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFrame,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -304,12 +305,12 @@ def test_profile_dialog_omits_implementation_mfa_and_preserves_masked_credential
     assert captured[0].mfa_enabled
     assert captured[0].access_key is None
     assert captured[0].secret_key is None
-    assert "편집 모드 · 내부 SEQ #1" in window.profile_dialog.sequence.text()
+    assert window.profile_dialog.findChild(QLabel, "profile_sequence") is None
 
     window.profile_dialog.new_profile()
 
-    assert window.profile_dialog.editor_title.text() == "새 프로필"
-    assert window.profile_dialog.sequence.text().startswith("생성 모드")
+    assert window.profile_dialog.findChild(QLabel, "profile_editor_title") is None
+    assert not hasattr(window.profile_dialog, "sequence")
     assert "입력" in window.profile_dialog.access_key.placeholderText()
 
 
@@ -455,6 +456,8 @@ def test_gui_entry_point_wires_composed_connection_lifecycle(monkeypatch) -> Non
     monkeypatch.setattr(gui_main, "MainWindow", capture)
     assert gui_main.main([]) == 0
     assert captured["connection_lifecycle"] is services.connection_lifecycle
+    app_icon = application.setWindowIcon.call_args.args[0]
+    assert not app_icon.isNull()
     window.show.assert_called_once_with()
 
 
@@ -503,8 +506,24 @@ def test_dashboard_matches_mockup_card_content_and_routes() -> None:
         button = card.findChild(QPushButton, f"dashboard_{route}_button")
         assert button is not None
         assert button.text() == action
+        assert not button.icon().isNull()
         button.click()
         assert window.pages.currentIndex() == page
+
+    for index, title in enumerate(
+        ("대시보드", "EC2 접속", "RDS 터널", "Secrets", "S3 파일", "실행 로그")
+    ):
+        button = window.findChild(QPushButton, f"nav_{index}")
+        assert button is not None
+        assert button.text() == title
+        assert not button.icon().isNull()
+
+    assert window.profile_button.toolTip() == "프로필 관리"
+    assert window.profile_button.accessibleName() == "프로필 관리"
+    assert not window.profile_button.icon().isNull()
+    assert window.refresh_button.toolTip() == "토큰 재발급"
+    assert window.refresh_button.accessibleName() == "토큰 재발급"
+    assert not window.refresh_button.icon().isNull()
 
 
 def test_gui_error_presentation_kind_controls_dialog_toast_and_field() -> None:
@@ -627,9 +646,9 @@ def test_desktop_shell_uses_mockup_geometry_tokens_exactly() -> None:
     navigation = window.findChild(QFrame, "navigation")
     dashboard = window.findChild(QWidget, "dashboard")
 
-    assert shell is not None and shell.size().width() == 1380
-    assert shell.size().height() == 850
-    assert shell.pos().x() == 22 and shell.pos().y() == 22
+    assert shell is not None and shell.size().width() == 1424
+    assert shell.size().height() == 894
+    assert shell.pos().x() == 0 and shell.pos().y() == 0
     assert header is not None and header.height() == 92
     assert navigation is not None and navigation.width() == 220
     assert window.profile_button.size().width() == 42
