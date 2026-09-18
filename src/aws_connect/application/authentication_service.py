@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Lock
 
+from aws_connect.application.activity_log_service import ActivityLogService, record_success
+from aws_connect.application.execution_context import current_execution, execution_scope
+from aws_connect.application.execution_logging import logged_operation
 from aws_connect.application.operations import (
     MAX_PENDING_AUTHENTICATION_OPERATIONS,
     MfaChallenge,
@@ -46,11 +49,13 @@ class AuthenticationService:
         protector: CredentialProtector,
         gateway: IdentityGateway,
         clock: Clock,
+        activity_logs: ActivityLogService | None = None,
     ) -> None:
         self._profiles = profiles
         self._store = store
         self._protector = protector
         self._gateway = gateway
+        self._activity_logs = activity_logs
         self._clock = clock
         self._session_guard = SessionGuard(profiles, store, protector, gateway, clock)
         self._refresh_locks: dict[int, Lock] = {}
@@ -85,6 +90,7 @@ class AuthenticationService:
             reusable,
         )
 
+    @logged_operation("auth", "validate", completion=False)
     def validate(self, selector: str | int | None = None) -> AuthenticationStatus:
         profile = self._profiles.resolve(selector)
         identity = self._gateway.get_identity(
@@ -93,6 +99,7 @@ class AuthenticationService:
         self._assert_identity(
             profile.account_id, profile.user_id, identity.account_id, identity.user_id
         )
+        record_success(self._activity_logs, "auth", "validate", profile_id=profile.require_id())
         return self.status(profile.id)
 
     def reusable_credentials(self, selector: str | int | None = None) -> PlainCredentials | None:
@@ -113,6 +120,7 @@ class AuthenticationService:
         self._store.delete_session(profile_id)
         return profile_id
 
+    @logged_operation("auth", "refresh", completion=False)
     def refresh(self, profile_id: int, mfa_code: str | None = None) -> AuthenticationStatus:
         refresh_lock = self._profile_refresh_lock(profile_id)
         with refresh_lock:
@@ -133,6 +141,18 @@ class AuthenticationService:
                 profile.mfa_arn if profile.mfa_enabled else None,
                 mfa_code if profile.mfa_enabled else None,
             )
+            if self._activity_logs is not None:
+                from aws_connect.domain.execution_log import ExecutionPhase
+
+                self._activity_logs.record(
+                    feature="auth",
+                    operation="issue_session",
+                    result="SUCCESS",
+                    level="INFO",
+                    phase=ExecutionPhase.PROGRESS,
+                    message_code="auth.session.issued",
+                    profile_id=profile_id,
+                )
             identity = self._gateway.get_identity(issued.credentials, profile.region)
             self._assert_identity(
                 profile.account_id, profile.user_id, identity.account_id, identity.user_id
@@ -149,6 +169,7 @@ class AuthenticationService:
                 verified_at_utc=now,
             )
             self._store.put_session(session)
+            record_success(self._activity_logs, "auth", "refresh", profile_id=profile_id)
             return self.status(profile_id)
 
     def _profile_refresh_lock(self, profile_id: int) -> Lock:
@@ -228,6 +249,7 @@ class SessionGuard:
 class _PendingRefresh:
     profile_id: int
     expires_at: datetime
+    correlation_id: str
     resumed: bool = False
 
 
@@ -236,6 +258,7 @@ class OperationCoordinator:
 
     def __init__(self, authentication: AuthenticationService, clock: Clock) -> None:
         self._authentication = authentication
+        self._activity_logs = getattr(authentication, "_activity_logs", None)
         self._clock = clock
         self._pending: dict[str, _PendingRefresh] = {}
         self._lock = Lock()
@@ -252,10 +275,13 @@ class OperationCoordinator:
             self._authentication.discard_cached_session(selector)
         status = self._authentication.status(selector)
         operation_id = new_operation_id()
+        identity = current_execution.get()
+        correlation_id = identity.correlation_id if identity else new_operation_id()
         if status.reusable:
             return OperationResult(operation_id, OperationState.SUCCEEDED, value=status)
         if not status.profile.mfa_enabled:
-            refreshed = self._authentication.refresh(status.profile.id)
+            with execution_scope(correlation_id, operation_id):
+                refreshed = self._authentication.refresh(status.profile.id)
             return OperationResult(operation_id, OperationState.SUCCEEDED, value=refreshed)
         expires_at = self._clock.now() + timedelta(minutes=5)
         challenge = MfaChallenge(
@@ -271,7 +297,9 @@ class OperationCoordinator:
             self._sweep_expired_locked()
             if len(self._pending) >= MAX_PENDING_AUTHENTICATION_OPERATIONS:
                 return self._capacity_failure(operation_id)
-            self._pending[operation_id] = _PendingRefresh(status.profile.id, expires_at)
+            self._pending[operation_id] = _PendingRefresh(
+                status.profile.id, expires_at, correlation_id
+            )
         return OperationResult(operation_id, OperationState.MFA_REQUIRED, challenge=challenge)
 
     def resume(
@@ -284,11 +312,22 @@ class OperationCoordinator:
             pending.resumed = True
             self._pending.pop(operation_id, None)
         if mfa_code is None:
+            if self._activity_logs is not None:
+                self._activity_logs.record(
+                    feature="auth",
+                    operation="mfa",
+                    result="CANCELLED",
+                    level="INFO",
+                    message_code="auth.mfa.cancelled",
+                    correlation_id=pending.correlation_id,
+                    operation_id=operation_id,
+                )
             return OperationResult(operation_id, OperationState.CANCELLED)
         if self._clock.now() >= pending.expires_at:
             return self._failure(operation_id, "mfa.challenge.expired")
         try:
-            status = self._authentication.refresh(pending.profile_id, mfa_code)
+            with execution_scope(pending.correlation_id, operation_id):
+                status = self._authentication.refresh(pending.profile_id, mfa_code)
         except MfaValidationError as error:
             return OperationResult(operation_id, OperationState.FAILED, error=error)
         return OperationResult(operation_id, OperationState.SUCCEEDED, value=status)
@@ -297,7 +336,17 @@ class OperationCoordinator:
         """Forget a pending refresh owned by a higher-level operation."""
 
         with self._lock:
-            self._pending.pop(operation_id, None)
+            pending = self._pending.pop(operation_id, None)
+        if pending is not None and self._activity_logs is not None:
+            self._activity_logs.record(
+                feature="auth",
+                operation="mfa",
+                result="CANCELLED",
+                level="INFO",
+                message_code="auth.mfa.cancelled",
+                correlation_id=pending.correlation_id,
+                operation_id=operation_id,
+            )
 
     def _sweep_expired_locked(self) -> None:
         now = self._clock.now()

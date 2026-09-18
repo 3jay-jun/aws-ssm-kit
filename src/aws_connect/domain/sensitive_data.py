@@ -6,6 +6,8 @@ import re
 
 REDACTED = "***REDACTED***"
 _SENSITIVE_PARTS = (
+    "token",
+    "key",
     "access_key",
     "secret",
     "session_token",

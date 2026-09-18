@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
+from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
+from aws_connect.application.execution_logging import logged_operation
 from aws_connect.application.operations import (
     OperationCancelled,
     OperationContext,
@@ -138,12 +140,18 @@ class S3LocationService:
 
 class S3Service:
     def __init__(
-        self, profiles: ProfileService, sessions: SessionGuard, gateway: S3Gateway
+        self,
+        profiles: ProfileService,
+        sessions: SessionGuard,
+        gateway: S3Gateway,
+        activity_logs: ActivityLogService | None = None,
     ) -> None:
         self._profiles = profiles
         self._sessions = sessions
         self._gateway = gateway
+        self._activity_logs = activity_logs
 
+    @logged_operation("s3", "list_buckets", completion=True)
     def list_buckets(self, profile: str | int | None = None) -> list[str]:
         """Return the optional catalog; direct Bucket input never depends on it."""
 
@@ -151,15 +159,71 @@ class S3Service:
         credentials = self._sessions.require_credentials(selected.require_id())
         return self._gateway.list_buckets(credentials, selected.region)
 
+    @logged_operation("s3", "list_objects", completion=False, target_parameter="bucket")
     def list_objects(
-        self, bucket: str, prefix: str = "", profile: str | int | None = None
+        self,
+        bucket: str,
+        prefix: str = "",
+        profile: str | int | None = None,
+        *,
+        query: str | None = None,
     ) -> list[S3Object]:
         selected = self._profiles.resolve(profile)
         credentials = self._sessions.require_credentials(selected.require_id())
         location = S3Location(None, selected.require_id(), "direct", bucket, prefix)
-        return self._gateway.list_objects(
-            credentials, selected.region, location.bucket, location.prefix
+        listing = (
+            self._gateway.list_objects if query is None else self._gateway.list_objects_recursive
         )
+        result = listing(credentials, selected.region, location.bucket, location.prefix)
+        if query is not None:
+            result = [
+                item
+                for item in result
+                if not item.is_prefix and query.casefold() in item.key.rsplit("/", 1)[-1].casefold()
+            ]
+        record_success(
+            self._activity_logs,
+            "s3",
+            "list",
+            target=location.bucket,
+            profile_id=selected.require_id(),
+            region=selected.region,
+        )
+        return result
+
+    @logged_operation("s3", "rename", target_parameter="key")
+    def rename_object(
+        self,
+        bucket: str,
+        key: str,
+        name: str,
+        profile: str | int | None = None,
+    ) -> str:
+        """Rename one file within its existing prefix, never replacing another key."""
+        selected = self._profiles.resolve(profile)
+        location = S3Location(None, selected.require_id(), "direct", bucket)
+        name = name.strip()
+        if (
+            not key
+            or key.endswith("/")
+            or not name
+            or name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+        ):
+            raise ConfigurationError(
+                "s3.rename.invalid", "폴더가 아닌 파일의 새 이름을 입력하세요."
+            )
+        target = f"{key.rpartition('/')[0]}/{name}" if "/" in key else name
+        if target == key:
+            return target
+        credentials = self._sessions.require_credentials(selected.require_id())
+        if self._gateway.object_exists(credentials, selected.region, location.bucket, target):
+            raise ConfigurationError(
+                "s3.rename.exists", "같은 이름의 파일이 있습니다. 다른 이름을 입력하세요."
+            )
+        self._gateway.rename_object(credentials, selected.region, location.bucket, key, target)
+        return target
 
     def prepare_upload(
         self,
@@ -256,6 +320,7 @@ class S3Service:
             )
         return UploadPlan(selected.require_id(), selected.region, tuple(items))
 
+    @logged_operation("s3", "delete_object", completion=True, target_parameter="key")
     def delete_object(
         self,
         bucket: str,
@@ -270,6 +335,7 @@ class S3Service:
             raise ConfigurationError("s3.delete.object.required", "Select one non-prefix S3 object")
         self._gateway.delete_object(credentials, selected.region, location.bucket, normalized_key)
 
+    @logged_operation("s3", "download_object", completion=False, target_parameter="key")
     def download_object(
         self,
         bucket: str,
@@ -290,6 +356,14 @@ class S3Service:
             )
         self._gateway.download_file(
             credentials, selected.region, location.bucket, normalized_key, target
+        )
+        record_success(
+            self._activity_logs,
+            "s3",
+            "download",
+            target=normalized_key,
+            profile_id=selected.require_id(),
+            region=selected.region,
         )
         return target
 
@@ -366,6 +440,7 @@ class S3Service:
             )
         return DownloadPlan(selected.require_id(), selected.region, tuple(items))
 
+    @logged_operation("s3", "download", completion=False)
     def download(
         self,
         plan: DownloadPlan,
@@ -439,8 +514,19 @@ class S3Service:
                 raise OperationCancelled from error
             raise
         context.report("completed", "s3.download.completed", completed=total, total=total)
+        record_success(
+            self._activity_logs,
+            "s3",
+            "download",
+            profile_id=plan.profile_id,
+            region=plan.region,
+            operation_id=context.operation_id,
+            warning=bool(skipped),
+            metadata={"file_size": completed, "skipped_count": len(skipped)},
+        )
         return DownloadSummary(tuple(downloaded), completed, tuple(skipped))
 
+    @logged_operation("s3", "upload", completion=False)
     def upload(
         self,
         plan: UploadPlan,
@@ -471,19 +557,42 @@ class S3Service:
         completed = 0
         uploaded: list[str] = []
 
+        for uri in skipped:
+            context.report("skipped", "s3.upload.item.skipped", target=uri)
+
         if not transfer_items:
             context.report("completed", "s3.upload.completed", completed=0, total=0)
+            record_success(
+                self._activity_logs,
+                "s3",
+                "upload",
+                profile_id=plan.profile_id,
+                region=plan.region,
+                operation_id=context.operation_id,
+                warning=bool(skipped),
+                metadata={"file_size": completed, "skipped_count": len(skipped)},
+            )
             return UploadSummary((), 0, tuple(skipped))
 
         def progress_for(item: UploadItem) -> Callable[[int], None]:
+            item_completed = 0
+
             def emit(delta: int) -> None:
-                nonlocal completed
+                nonlocal completed, item_completed
                 completed += delta
+                item_completed += delta
                 context.report(
                     "uploading",
                     "s3.upload.progress",
                     completed=completed,
                     total=total,
+                    target=item.uri,
+                )
+                context.report(
+                    "uploading",
+                    "s3.upload.item.progress",
+                    completed=item_completed,
+                    total=item.size,
                     target=item.uri,
                 )
 
@@ -493,12 +602,20 @@ class S3Service:
         try:
             for item in transfer_items:
                 context.raise_if_cancelled()
+                context.report(
+                    "starting",
+                    "s3.upload.item.started",
+                    completed=0,
+                    total=item.size,
+                    target=item.uri,
+                )
                 if (
                     conflict_policy is UploadConflictPolicy.SKIP_EXISTING
                     and self._gateway.object_exists(credentials, plan.region, item.bucket, item.key)
                 ):
                     skipped.append(item.uri)
                     total -= item.size
+                    context.report("skipped", "s3.upload.item.skipped", target=item.uri)
                     continue
                 if item.size >= MULTIPART_THRESHOLD:
                     self._gateway.multipart_file(
@@ -523,6 +640,13 @@ class S3Service:
                         lambda: context.cancellation.is_cancellation_requested,
                     )
                 uploaded.append(item.uri)
+                context.report(
+                    "completed",
+                    "s3.upload.item.completed",
+                    completed=item.size,
+                    total=item.size,
+                    target=item.uri,
+                )
             context.raise_if_cancelled()
         except ApplicationError as error:
             if error.message_code == "s3.upload.cancelled":

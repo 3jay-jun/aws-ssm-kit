@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from aws_connect.application.activity_log_service import ActivityLogService
+from aws_connect.application.execution_logging import logged_operation
 from aws_connect.application.ports import DiagnosticLogExporter, LoggingConfigurator, SettingsStore
 from aws_connect.domain.app_settings import AppSettings, LogLevel
 from aws_connect.domain.errors import ConfigurationError
@@ -37,6 +39,11 @@ class SettingsService:
         self._store = store
         self._default_log_directory = default_log_directory
         self._configurator = configurator
+        self._activity_logs: ActivityLogService | None = None
+
+    def bind_execution_log(self, recorder: ActivityLogService) -> None:
+        """Resolve the settings/history composition cycle before user operations."""
+        self._activity_logs = recorder
 
     def get(self) -> AppSettings:
         directory = self._store.get_setting(LOG_DIRECTORY_KEY)
@@ -46,6 +53,7 @@ class SettingsService:
             LogLevel.parse(level) if level else LogLevel.INFO,
         )
 
+    @logged_operation("program", "settings_update")
     def update(self, request: UpdateSettingsRequest) -> AppSettings:
         current = self.get()
         directory = (
@@ -78,6 +86,7 @@ class SettingsService:
             ) from error
         return candidate
 
+    @logged_operation("program", "settings_reset")
     def reset(self) -> AppSettings:
         candidate = AppSettings(self._default_log_directory, LogLevel.INFO)
         current = self.get()

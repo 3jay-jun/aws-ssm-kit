@@ -87,6 +87,26 @@ def mapped_error_types_for_gui() -> frozenset[type[ApplicationError]]:
 
 
 _MESSAGES: dict[str, tuple[str, str]] = {
+    "s3.rename.changed": (
+        "파일 상태가 변경되었습니다",
+        "대상 파일이 생겼거나 원본이 변경되었습니다. 목록을 새로고침해 확인하세요.",
+    ),
+    "s3.rename.invalid": (
+        "파일 이름을 확인하세요",
+        "폴더가 아닌 파일의 이름만 입력하세요. 경로 구분자는 사용할 수 없습니다.",
+    ),
+    "s3.rename.exists": (
+        "같은 이름의 파일이 있습니다",
+        "다른 이름을 입력하세요. 기존 파일은 덮어쓰지 않습니다.",
+    ),
+    "s3.rename.too_large": (
+        "파일이 너무 큽니다",
+        "이름 변경은 5 GiB 이하 파일을 지원합니다. 원본은 유지됩니다.",
+    ),
+    "s3.rename.partial": (
+        "복사 후 원본 삭제에 실패했습니다",
+        "새 이름의 복사본과 원본이 남아 있을 수 있습니다. 목록을 새로고침해 확인하세요.",
+    ),
     "profile.name.required": (
         "프로필 ID를 입력하세요",
         "고유한 사용자 지정 프로필 ID가 필요합니다.",

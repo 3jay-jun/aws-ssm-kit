@@ -8,6 +8,7 @@ from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[impor
 
 from aws_connect.application.ports import RdsEndpoint
 from aws_connect.domain.aws_profile import PlainCredentials
+from aws_connect.infrastructure.aws_diagnostics import observed_client
 from aws_connect.infrastructure.aws_identity_gateway import translate_aws_error
 
 ClientFactory = Callable[[PlainCredentials, str], Any]
@@ -52,10 +53,12 @@ class Boto3RdsEndpointGateway:
 
 
 def _client(credentials: PlainCredentials, region: str) -> Any:
-    return boto3.client(
-        "rds",
-        region_name=region,
-        aws_access_key_id=credentials.access_key,
-        aws_secret_access_key=credentials.secret_key,
-        aws_session_token=credentials.session_token,
+    return observed_client(
+        boto3.client(
+            "rds",
+            region_name=region,
+            aws_access_key_id=credentials.access_key,
+            aws_secret_access_key=credentials.secret_key,
+            aws_session_token=credentials.session_token,
+        )
     )

@@ -67,25 +67,26 @@ def test_logs_page_is_authentication_free_and_renders_masked_entries(tmp_path: P
     assert page.log_directory.text() == str(tmp_path / "로그")
     assert page.log_level.currentText() == "WARNING"
     assert page.entries.rowCount() == 1
-    assert page.entries.columnCount() == 5
-    assert [page.entries.horizontalHeaderItem(index).text() for index in range(5)] == [
-        "No",
+    assert page.entries.columnCount() == 6
+    assert [page.entries.horizontalHeaderItem(index).text() for index in range(6)] == [
         "시간",
-        "대상(탭)",
-        "내용",
+        "기능",
+        "작업",
+        "대상",
         "결과",
+        "내용",
     ]
-    assert page.entries.item(0, 0).text() == "1"
-    assert page.entries.item(0, 2).text() == "gui"
-    assert page.entries.rowHeight(0) >= 48
-    assert "메시지 코드: gui.notice" in page.detail_text.text()
-    assert "Correlation ID: correlation-1" in page.detail_text.text()
-    assert "Operation ID: operation-1" in page.detail_text.text()
-    assert "AWS 서비스: s3" in page.detail_text.text()
-    assert "AWS Action: ListObjectsV2" in page.detail_text.text()
-    assert "재시도 가능: 예" in page.detail_text.text()
-    assert "상세 원인: Access denied after safe retry" in page.detail_text.text()
+    assert page.entries.cellWidget(0, 1).findChild(QLabel).pixmap() is not None
+    assert page.entries.item(0, 3).text() == "logs"
+    assert page.entries.rowHeight(0) >= 40
+    assert page.detail_message.text() == "Access denied after safe retry"
+    assert page._metadata_labels["Correlation ID"].text() == "correlation-1"
+    assert page._metadata_labels["Operation ID"].text() == "operation-1"
+    assert page._metadata_labels["AWS 서비스"].text() == "s3"
+    assert page._metadata_labels["AWS Action"].text() == "ListObjectsV2"
+    assert page._metadata_labels["AWS Request ID"].text() == "-"
     assert page.findChild(QLabel, "page_title").text() == "실행 로그"
+    assert "프로그램 동작과 AWS 요청 이력" in page.findChild(QLabel, "page_subtitle").text()
     assert page.findChild(QFrame, "managed_log_card") is not None
     assert page.open_button.text() == "로그 폴더 열기 ↗"
     assert page.settings_panel.isHidden()
@@ -125,10 +126,32 @@ def test_detail_selection_and_copy_use_only_masked_entry_projection(tmp_path: Pa
     page.copy_detail_button.click()
 
     copied = QApplication.clipboard().text()
-    assert "메시지 코드: second.succeeded" in copied
+    assert "메시지: second.succeeded" in copied
     assert "재시도 가능: 아니요" in copied
     assert "first.failed" not in copied
     assert "마스킹된" in notices[-1]
+
+
+def test_log_filters_are_combined_in_activity_log_query(tmp_path: Path) -> None:
+    _app()
+    settings = Mock()
+    settings.get.return_value = AppSettings(tmp_path, LogLevel.INFO)
+    activity = Mock()
+    activity.recent.return_value = []
+    page = LogsSettingsPage(settings, activity, Mock(), ImmediateTaskRunner())  # type: ignore[arg-type]
+
+    page.period_filter.setCurrentText("최근 7일")
+    page.level_filter.setCurrentText("ERROR")
+    page.feature_filter.setCurrentText("EC2")
+    page.search.setText("StartSession")
+    page.errors_only.setChecked(True)
+
+    query = activity.recent.call_args.kwargs["query"]
+    assert query.period_days == 7
+    assert query.levels == ("ERROR",)
+    assert query.features == ("ec2",)
+    assert query.search == "StartSession"
+    assert query.errors_only is True
 
 
 def test_update_reset_and_explicit_export_use_background_runner_contract(tmp_path: Path) -> None:
@@ -218,3 +241,123 @@ def test_open_log_folder_reports_os_rejection(monkeypatch, tmp_path: Path) -> No
     page.open_log_folder()
 
     assert errors[0].message_code == "logs.directory.open_failed"
+
+
+def test_styled_log_labels_badges_fit_and_details_keep_columns(tmp_path: Path) -> None:
+    from aws_connect.presentation.gui.styles import APP_STYLE
+
+    app = _app()
+    settings = Mock()
+    settings.get.return_value = AppSettings(tmp_path, LogLevel.INFO)
+    activity = Mock()
+    activity.recent.return_value = [
+        ManagedLogEntry(datetime.now(UTC), feature, "-", result, "완료", level="INFO")
+        for feature in ("ec2", "rds", "s3", "secrets", "auth", "dashboard", "program")
+        for result in ("SUCCESS", "WARNING", "FAILURE")
+    ]
+    page = LogsSettingsPage(settings, activity, Mock(), ImmediateTaskRunner())  # type: ignore[arg-type]
+    page.setStyleSheet(APP_STYLE)
+    page.resize(1204, 894)
+    page.refresh()
+    page.show()
+    app.processEvents()
+    for caption, control in (
+        ("기간", page.period_filter),
+        ("레벨", page.level_filter),
+        ("기능", page.feature_filter),
+        ("검색", page.search),
+    ):
+        label = next(label for label in page.findChildren(QLabel) if label.buddy() is control)
+        assert label.text() == caption and label.isVisible()
+        assert label.geometry().bottom() < control.geometry().top()
+    for width in (1204, 804):
+        page.resize(width, 894)
+        app.processEvents()
+        for row in range(page.entries.rowCount()):
+            for column in (1, 4):
+                widget = page.entries.cellWidget(row, column)
+                label = widget.findChild(QLabel, "icon_text_label")
+                assert label.width() >= label.sizeHint().width()
+                assert widget.width() >= widget.minimumSizeHint().width()
+            page.entries.selectRow(row)
+            app.processEvents()
+            badge = page.entries.cellWidget(row, 4).findChild(QLabel, "icon_text_label")
+            assert badge.styleSheet() == page._detail_labels["결과"].styleSheet()
+    positions = [label.geometry().x() for label in page._metadata_labels.values()]
+    assert len(set(positions)) == 2
+    page._show_detail(None)
+    app.processEvents()
+    assert all(label.text() == "-" for label in page._metadata_labels.values())
+    page.close()
+
+
+def test_compact_detail_prioritizes_rows_and_preserves_copy_when_collapsed(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from aws_connect.domain.execution_log import ErrorCategory
+    from aws_connect.presentation.gui.styles import APP_STYLE
+
+    app = _app()
+    settings = Mock()
+    settings.get.return_value = AppSettings(tmp_path, LogLevel.INFO)
+    activity = Mock()
+    success = ManagedLogEntry(
+        datetime.now(UTC),
+        "rds",
+        "(DEV) example",
+        "SUCCESS",
+        "터널이 종료되었습니다.",
+        level="INFO",
+        operation="stop",
+        operation_id="operation-example",
+        correlation_id="correlation-example",
+    )
+    failure = replace(
+        success,
+        result="FAILURE",
+        level="ERROR",
+        error_code="AccessDenied",
+        error_category=ErrorCategory.PERMISSION,
+        required_permission="ssm:StartSession",
+    )
+    activity.recent.return_value = [success, failure] + [success] * 18
+    page = LogsSettingsPage(settings, activity, Mock(), ImmediateTaskRunner())  # type: ignore[arg-type]
+    page.setStyleSheet(APP_STYLE)
+    page.resize(1204, 780)  # Content area below the application header.
+    page.refresh()
+    page.show()
+    app.processEvents()
+    assert page.entries.viewport().height() // page.entries.rowHeight(0) >= 7
+    assert page.detail_errors.isHidden()
+    expanded_height = page.entries.height()
+    page.detail_toggle.click()
+    app.processEvents()
+    assert page.detail_body.isHidden()
+    assert page.entries.height() > expanded_height + 100
+    assert page.entries.viewport().height() // page.entries.rowHeight(0) >= 10
+    page.entries.selectRow(1)
+    page.copy_detail_button.click()
+    assert "AccessDenied" in QApplication.clipboard().text()
+    assert "Operation ID: operation-example" in QApplication.clipboard().text()
+    assert page.detail_body.isHidden()
+    page.detail_toggle.click()
+    app.processEvents()
+    assert page.detail_errors.isVisible()
+    assert "필요 권한: ssm:StartSession" in page.detail_errors.text()
+    page._show_detail(replace(failure, result="SUCCESS"))
+    assert page.detail_errors.isHidden()
+    page._show_detail(replace(success, result="WARNING"))
+    assert page.detail_errors.isHidden()
+    page._show_detail(replace(failure, result="WARNING"))
+    assert not page.detail_errors.isHidden()
+    page._show_detail(replace(failure, target="long-target-" * 100, masked_detail="message " * 500))
+    app.processEvents()
+    assert page.entries.viewport().height() // page.entries.rowHeight(0) >= 7
+    assert page.detail_body.verticalScrollBar().maximum() > 0
+    page.detail_toggle.click()
+    page.refresh()
+    assert page.detail_body.isHidden()
+    page._show_detail(None)
+    assert page.detail_errors.isHidden()
+    assert not page.copy_detail_button.isEnabled()
+    page.close()

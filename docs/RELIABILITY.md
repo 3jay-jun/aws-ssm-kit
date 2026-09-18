@@ -87,3 +87,22 @@
 
 - S3 download preflight reports existing local files for explicit overwrite/skip/cancel. Default skip rechecks before transfer. Atomic commit refuses replacement unless overwrite was approved for an existing preflight target; newly appearing targets require another confirmation. Direct CLI downloads also refuse implicit replacement.
 - Local upload previews run through GuiTaskRunner and use image downsampling (104×72 target, at most 20 MiB input and 16 million pixels). Unsupported or unreadable images retain type icons; metadata errors are shown on the card. Clearing/rebuilding cards cancels queued previews and ignores stale results.
+
+- S3 per-item upload events supplement aggregate byte events; completion is emitted only after the
+  gateway succeeds, so later failure cannot erase already completed rows. Retry uses fresh preflight.
+- S3 rename uses CopyObject with destination IfNoneMatch and source CopySourceIfMatch, followed by
+  DeleteObject IfMatch. This is not atomic: delete failure preserves both objects and surfaces a
+  dedicated partial-completion error. Single-copy rename is limited to 5 GiB. No automatic retry.
+  API contracts: [CopyObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/copy_object.html),
+  [DeleteObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/delete_object.html).
+- S3 GUI rejects stale listing/catalog/preflight results after navigation/profile changes. Queue
+  mutation is blocked during preflight/transfer, and shutdown prevents a late preflight from uploading.
+
+## SQLite execution history (2026-09-18)
+
+- `execution_logs` is the primary GUI history source; file parsing is only a legacy compatibility API, not the production data source. Existing files are not imported or used to infer successful operations.
+- Migration 10 adds indexed history. WAL, the existing 5-second busy timeout and short transactions preserve concurrent worker access. Current-user DACLs cover DB/WAL/SHM files.
+- Retention is 30 days and at most 10,000 rows, enforced on insert; queries also exclude expired rows. File size/count rotation remains unchanged.
+- Logging executes on the existing use-case workers. No queue, background daemon, or shutdown flush protocol is added. Progress bytes are not persisted; start, completion, cancellation, retry and meaningful diagnostics are.
+- SQL filters run before LIMIT. Dates use the local day boundary, stored timestamps use UTC, query values are bound parameters.
+- MFA rebind preserves correlation ID; individual operation IDs remain available for SQLite/file tracing.

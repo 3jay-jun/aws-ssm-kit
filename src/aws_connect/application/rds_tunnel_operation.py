@@ -28,6 +28,9 @@ class RdsTunnelOperationCoordinator:
         self._tunnels = tunnels
         self._authentication = authentication
 
+    def local_port_available(self, port: int) -> bool:
+        return self._tunnels.local_port_available(port)
+
     def start(
         self,
         request: StartTunnelRequest,

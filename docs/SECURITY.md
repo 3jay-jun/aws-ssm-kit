@@ -72,3 +72,27 @@
 - Detailed activity records accept only bounded structured error fields. Technical text is centrally
   masked before write, re-masked after read, and re-masked before copy; arbitrary tracebacks, command
   arguments and response payloads are excluded from the schema.
+
+- EC2 connection history adds only profile ID and Region to the existing allowlisted activity schema.
+  A dedicated success event is written after an ordinary external shell launch succeeds; failures,
+  arbitrary notices, and Secret command terminals never establish EC2 connection history.
+  EC2 tags remain read-only response metadata and are not copied to activity logs or status messages.
+
+- Secrets JSON presentation is read-only and recursively uses the shared sensitive-name policy,
+  including password/secret/token/key substrings. Raw reveal is an explicit 30-second action;
+  hide-all and profile/result changes immediately revoke both field and JSON exposure.
+  Per-value and raw/JSON/key-value copies reuse conditional 30-second clipboard clearing.
+- Saved Secret last_retrieved_at contains only a successful lookup timestamp; SQLite migration 9
+  defaults legacy rows to NULL. Local editing does not claim a new AWS lookup occurred.
+
+- S3 file rename requires source GetObject, destination PutObject, and source DeleteObject (and
+  applicable KMS permissions). Destination replacement is forbidden; source ETag guards copy/delete.
+  Copy can change ACL ownership/storage defaults according to bucket policy; versioned buckets retain
+  older versions as normal. Rename never recursively deletes prefixes or performs batch deletion.
+
+## Structured execution history (2026-09-18)
+
+- SQLite execution events contain typed status/phase, bounded masked diagnostic text and an allowlisted metadata JSON object. Credentials, Secret responses and arbitrary exception payloads are not accepted by operation instrumentation.
+- The common sanitizer applies before both sinks and after SQLite reads. Metadata is bounded to 8 KiB input and allowlists profile/region/instance/bucket/key/file size/ports/retry data; the shared sensitive-key policy still redacts key fields.
+- AWS after-call observers retain only service, action and Request ID, never response payloads. Only explicit permission codes produce PERMISSION; network/timeouts remain separate. Required IAM actions use API-to-permission mapping where names differ.
+- GUI detail copy uses only the sanitized DTO projection. Python diagnostic tracebacks remain available with central masking applied to formatted exception/stack text. No raw traceback is placed in SQLite.

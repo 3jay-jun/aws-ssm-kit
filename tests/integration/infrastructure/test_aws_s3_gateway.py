@@ -24,6 +24,59 @@ def _client():
     )
 
 
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_rename_uses_conditional_copy_then_conditional_delete(delete_fails: bool) -> None:
+    client = _client()
+    gateway = Boto3S3Gateway(lambda *_: client)
+    with Stubber(client) as stubber:
+        stubber.add_response(
+            "head_object",
+            {"ContentLength": 10, "ETag": '"source"'},
+            {"Bucket": "test-upload-bucket", "Key": "old.txt"},
+        )
+        stubber.add_response(
+            "copy_object",
+            {"CopyObjectResult": {"ETag": '"copy"'}},
+            {
+                "Bucket": "test-upload-bucket",
+                "Key": "new.txt",
+                "CopySource": {"Bucket": "test-upload-bucket", "Key": "old.txt"},
+                "CopySourceIfMatch": '"source"',
+                "IfNoneMatch": "*",
+            },
+        )
+        arguments = {"Bucket": "test-upload-bucket", "Key": "old.txt", "IfMatch": '"source"'}
+        if delete_fails:
+            stubber.add_client_error("delete_object", "AccessDenied", expected_params=arguments)
+            with pytest.raises(S3TransferError, match="s3.rename.partial"):
+                gateway.rename_object(
+                    _credentials(), "ap-northeast-2", "test-upload-bucket", "old.txt", "new.txt"
+                )
+        else:
+            stubber.add_response("delete_object", {}, arguments)
+            gateway.rename_object(
+                _credentials(), "ap-northeast-2", "test-upload-bucket", "old.txt", "new.txt"
+            )
+        stubber.assert_no_pending_responses()
+
+
+def test_failed_rename_copy_never_deletes_source() -> None:
+    client = _client()
+    gateway = Boto3S3Gateway(lambda *_: client)
+    with Stubber(client) as stubber:
+        stubber.add_response(
+            "head_object",
+            {"ContentLength": 10, "ETag": '"source"'},
+            {"Bucket": "test-upload-bucket", "Key": "old.txt"},
+        )
+        stubber.add_client_error("copy_object", "AccessDenied")
+        with pytest.raises(AwsPermissionError):
+            gateway.rename_object(
+                _credentials(), "ap-northeast-2", "test-upload-bucket", "old.txt", "new.txt"
+            )
+        stubber.assert_no_pending_responses()
+
+
 def test_list_objects_uses_delimiter_empty_prefix_and_paginates() -> None:
     client = _client()
     gateway = Boto3S3Gateway(lambda _credentials, _region: client)

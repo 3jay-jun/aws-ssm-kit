@@ -15,6 +15,7 @@ from aws_connect.application.authentication_service import (
     SessionGuard,
 )
 from aws_connect.application.connection_lifecycle import ProfileConnectionLifecycleService
+from aws_connect.application.dashboard_service import DashboardService
 from aws_connect.application.ec2_service import Ec2Service
 from aws_connect.application.legacy_import import LegacyIniImportService
 from aws_connect.application.ports import SessionPlugin
@@ -45,6 +46,7 @@ from aws_connect.infrastructure.aws_ssm_gateway import (
 from aws_connect.infrastructure.clock import SystemClock
 from aws_connect.infrastructure.data_protection import WindowsDpapiProtector
 from aws_connect.infrastructure.diagnostic_logs import MaskedDiagnosticLogExporter
+from aws_connect.infrastructure.execution_log_masking import MaskedExecutionLogSanitizer
 from aws_connect.infrastructure.local_port_checker import SocketLocalPortChecker
 from aws_connect.infrastructure.logging_setup import RotatingLogConfigurator
 from aws_connect.infrastructure.managed_logs import (
@@ -75,6 +77,7 @@ class ApplicationServices:
     s3_locations: S3LocationService | None = None
     s3: S3Service | None = None
     activity_logs: ActivityLogService | None = None
+    dashboard: DashboardService | None = None
     authenticated_operations: AuthenticatedOperationCoordinator | None = None
     connection_lifecycle: ProfileConnectionLifecycleService | None = None
 
@@ -159,7 +162,10 @@ def _build_local_foundation(data_directory: Path | None = None) -> _LocalFoundat
         MaskedManagedLogReader(),
         StructuredActivityEventWriter(),
         clock,
+        repository=store,
+        sanitizer=MaskedExecutionLogSanitizer(),
     )
+    settings.bind_execution_log(activity_logs)
     legacy_import = LegacyIniImportService(store, store, protector)
     doctor = DoctorService(LocalRuntimeDiagnosticProbe(store, protector, plugin, settings, clock))
     return _LocalFoundation(
@@ -185,7 +191,9 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
     gateway = Boto3IdentityGateway()
     clock = local.clock
     profiles = ProfileService(store, protector, gateway)
-    authentication = AuthenticationService(profiles, store, protector, gateway, clock)
+    authentication = AuthenticationService(
+        profiles, store, protector, gateway, clock, activity_logs=local.activity_logs
+    )
     sessions = authentication.session_guard
     managed_instances = Boto3ManagedInstanceGateway()
     metadata = Boto3Ec2MetadataGateway()
@@ -202,18 +210,22 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
         inventory=metadata,
         power=metadata,
         favorites=store,
+        activity_logs=local.activity_logs,
     )
+    secrets_gateway = Boto3SecretsGateway()
+    s3_gateway = Boto3S3Gateway()
     secrets = SecretsService(
         profiles,
         sessions,
-        Boto3SecretsGateway(),
+        secrets_gateway,
         managed_instances=managed_instances,
         remote_gateway=Boto3RemoteSecretCommandGateway(),
         metadata=metadata,
         saved=store,
+        activity_logs=local.activity_logs,
     )
     s3_locations = S3LocationService(profiles, store)
-    s3 = S3Service(profiles, sessions, Boto3S3Gateway())
+    s3 = S3Service(profiles, sessions, s3_gateway, activity_logs=local.activity_logs)
     tunnel_sessions = TunnelSessionService(profiles, store)
     rds_endpoints = RdsEndpointService(profiles, sessions, Boto3RdsEndpointGateway())
     tunnel_service = RdsTunnelService(
@@ -226,6 +238,7 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
         SocketLocalPortChecker(),
         clock,
         managed_runner,
+        activity_logs=local.activity_logs,
     )
     operations = OperationCoordinator(authentication, clock)
     authenticated_operations = AuthenticatedOperationCoordinator(operations, clock)
@@ -248,5 +261,15 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
         s3_locations=s3_locations,
         s3=s3,
         activity_logs=local.activity_logs,
+        dashboard=DashboardService(
+            profiles,
+            sessions,
+            local.activity_logs,
+            clock,
+            metadata,
+            managed_instances,
+            secrets_gateway,
+            s3_gateway,
+        ),
         connection_lifecycle=ProfileConnectionLifecycleService(profiles, store, ec2, rds_tunnels),
     )

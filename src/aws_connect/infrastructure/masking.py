@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import traceback
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -64,4 +65,12 @@ class MaskingFilter(logging.Filter):
             record.args = tuple(
                 mask(item, known_secrets=self._known_secrets) for item in record.args
             )
+        if record.exc_info:
+            record.exc_text = mask_text(
+                "".join(traceback.format_exception(*record.exc_info)),
+                known_secrets=self._known_secrets,
+            )
+            record.exc_info = None
+        if record.stack_info:
+            record.stack_info = mask_text(record.stack_info, known_secrets=self._known_secrets)
         return True

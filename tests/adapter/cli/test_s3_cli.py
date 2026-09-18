@@ -22,6 +22,48 @@ def _services() -> ApplicationServices:
     return ApplicationServices(Mock(), Mock(), Mock(), Mock(), s3_locations=Mock(), s3=Mock())
 
 
+def test_search_and_rename_share_service_contract(capsys) -> None:
+    app = _services()
+    app.s3.list_objects.return_value = []
+    assert (
+        main(
+            [
+                "s3",
+                "list",
+                "--bucket",
+                "test-upload-bucket",
+                "--prefix",
+                "images/",
+                "--query",
+                "logo",
+            ],
+            services=app,
+        )
+        == 0
+    )
+    app.s3.list_objects.assert_called_with("test-upload-bucket", "images/", None, query="logo")
+    app.s3.rename_object.return_value = "images/new.png"
+    assert (
+        main(
+            [
+                "s3",
+                "rename",
+                "--bucket",
+                "test-upload-bucket",
+                "--key",
+                "images/old.png",
+                "--name",
+                "new.png",
+            ],
+            services=app,
+        )
+        == 0
+    )
+    app.s3.rename_object.assert_called_once_with(
+        "test-upload-bucket", "images/old.png", "new.png", None
+    )
+
+
 def test_location_crud_and_direct_list_do_not_require_bucket_catalog(capsys) -> None:
     app = _services()
     location = S3Location(3, 7, "reports", "test-upload-bucket", "reports/")

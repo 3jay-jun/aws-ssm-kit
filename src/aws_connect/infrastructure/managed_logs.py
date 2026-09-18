@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from aws_connect.application.activity_log_service import ActivityEvent, ManagedLogEntry
+from aws_connect.infrastructure.execution_log_masking import sanitize_metadata_json
 from aws_connect.infrastructure.masking import mask_text
 
 _FILE_NAME = re.compile(r"^aws-connect\.log(?:\.\d+)?$")
@@ -17,7 +18,19 @@ _MAX_FILES = 8
 _MAX_FILE_BYTES = 256 * 1024
 _MAX_TOTAL_BYTES = 1024 * 1024
 _FIELD_LIMIT = 160
-_RESULTS = frozenset({"started", "succeeded", "failed", "cancelled", "notice"})
+_RESULTS = frozenset(
+    {
+        "started",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "notice",
+        "SUCCESS",
+        "WARNING",
+        "FAILURE",
+        "CANCELLED",
+    }
+)
 
 
 class StructuredActivityEventWriter:
@@ -26,19 +39,40 @@ class StructuredActivityEventWriter:
     def write(self, event: ActivityEvent) -> None:
         payload = {
             "occurred_at": event.occurred_at.isoformat(),
+            "phase": event.phase.value,
+            "error_category": event.error_category.value if event.error_category else None,
+            "error_code": _safe_optional(event.error_code),
+            "required_permission": _safe_optional(event.required_permission),
+            "metadata_json": sanitize_metadata_json(event.metadata_json),
+            "profile_id": event.profile_id,
+            "region": _safe_optional(event.region),
             "feature": _safe(event.feature),
+            "operation": _safe_optional(event.operation),
             "target": _safe(event.target),
             "result": event.result if event.result in _RESULTS else "failed",
             "message_code": _safe(event.message_code),
+            "level": _safe_optional(event.level),
             "correlation_id": _safe_optional(event.correlation_id),
             "operation_id": _safe_optional(event.operation_id),
             "aws_service": _safe_optional(event.aws_service),
             "aws_action": _safe_optional(event.aws_action),
+            "aws_request_id": _safe_optional(event.aws_request_id),
             "retryable": event.retryable if isinstance(event.retryable, bool) else None,
             "masked_detail": _safe_optional(event.masked_detail),
         }
-        logging.getLogger("aws_connect.activity").info(
-            "%s%s", _EVENT_MARKER, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        level = event.level or (
+            "ERROR"
+            if event.result in {"failed", "FAILURE"}
+            else "WARNING"
+            if event.result in {"notice", "cancelled", "WARNING"}
+            else "INFO"
+        )
+        payload["level"] = level
+        logging.getLogger("aws_connect.activity").log(
+            {"ERROR": logging.ERROR, "WARNING": logging.WARNING}.get(level, logging.INFO),
+            "%s%s",
+            _EVENT_MARKER,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         )
 
 
@@ -123,14 +157,21 @@ def _parse_entry(line: str) -> ManagedLogEntry | None:
         occurred_at = datetime.fromisoformat(str(payload["occurred_at"]))
         return ManagedLogEntry(
             occurred_at=occurred_at,
+            profile_id=int(payload["profile_id"])
+            if payload.get("profile_id") is not None
+            else None,
+            region=_safe_optional(payload.get("region")),
             feature=_safe(str(payload["feature"])),
             target=_safe(str(payload["target"])),
             result=_safe(str(payload["result"])),
             message_code=_safe(str(payload["message_code"])),
+            operation=_safe_optional(payload.get("operation")),
+            level=_safe_optional(payload.get("level")),
             correlation_id=_safe_optional(payload.get("correlation_id")),
             operation_id=_safe_optional(payload.get("operation_id")),
             aws_service=_safe_optional(payload.get("aws_service")),
             aws_action=_safe_optional(payload.get("aws_action")),
+            aws_request_id=_safe_optional(payload.get("aws_request_id")),
             retryable=_safe_bool_optional(payload.get("retryable")),
             masked_detail=_safe_optional(payload.get("masked_detail")),
         )

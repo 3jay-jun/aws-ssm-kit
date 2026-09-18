@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from threading import Lock
 
+from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
+from aws_connect.application.execution_logging import logged_operation
 from aws_connect.application.operations import OperationContext, OperationState
 from aws_connect.application.ports import (
     Ec2FavoriteStore,
@@ -45,6 +48,12 @@ class Ec2Target:
     instance_state: str | None = "running"
     favorite: bool = False
     power_actions_available: bool = True
+    tags: tuple[tuple[str, str], ...] = ()
+    last_connected_at: datetime | None = None
+
+    @property
+    def ssm_ready(self) -> bool:
+        return self.ssm_ping_status == "Online"
 
     @property
     def ping_status(self) -> str:
@@ -60,6 +69,7 @@ class Ec2TargetFilter:
     keyword: str = ""
     ping_status: str = "Online"
     instance_state: str = "all"
+    favorites_only: bool = False
 
 
 def filter_ec2_targets(targets: list[Ec2Target], criteria: Ec2TargetFilter) -> list[Ec2Target]:
@@ -80,6 +90,7 @@ def filter_ec2_targets(targets: list[Ec2Target], criteria: Ec2TargetFilter) -> l
         target
         for target in targets
         if (criteria.ping_status == "all" or target.ssm_ping_status == criteria.ping_status)
+        and (not criteria.favorites_only or target.favorite)
         and (criteria.instance_state == "all" or target.instance_state == criteria.instance_state)
         and (
             not query
@@ -155,6 +166,7 @@ class Ec2Service:
         inventory: Ec2InventoryGateway | None = None,
         power: Ec2PowerGateway | None = None,
         favorites: Ec2FavoriteStore | None = None,
+        activity_logs: ActivityLogService | None = None,
     ) -> None:
         self._profiles = profiles
         self._sessions = sessions
@@ -163,16 +175,19 @@ class Ec2Service:
         self._inventory = inventory
         self._power = power
         self._favorites = favorites
+        self._activity_logs = activity_logs
         self._runner = ForegroundSsmSessionRunner(managed_instances, plugin)
         self._managed_runner = managed_runner or ManagedSsmSessionRunner(managed_instances, plugin)
         self._external: dict[str, _ExternalSession] = {}
         self._external_lock = Lock()
 
+    @logged_operation("ec2", "list_targets", completion=False)
     def list_targets(self, selector: str | int | None = None) -> list[Ec2Target]:
         profile = self._profiles.resolve(selector)
         credentials = self._sessions.require_credentials(profile.require_id())
         return self._list(credentials, profile.region, profile.require_id())
 
+    @logged_operation("ec2", "list_targets_in_region", completion=False)
     def list_targets_in_region(
         self,
         selector: str | int | None,
@@ -205,6 +220,7 @@ class Ec2Service:
             profile.require_id(), selected_region, normalized_id, favorite
         )
 
+    @logged_operation("ec2", "start_instance", completion=True, target_parameter="instance_id")
     def start_instance(
         self,
         instance_id: str,
@@ -215,6 +231,7 @@ class Ec2Service:
     ) -> Ec2PowerActionResult:
         return self._power_action("start", instance_id, selector, region, context)
 
+    @logged_operation("ec2", "reboot_instance", completion=True, target_parameter="instance_id")
     def reboot_instance(
         self,
         instance_id: str,
@@ -225,6 +242,7 @@ class Ec2Service:
     ) -> Ec2PowerActionResult:
         return self._power_action("reboot", instance_id, selector, region, context)
 
+    @logged_operation("ec2", "connect", completion=False, target_parameter="instance_id")
     def connect(
         self,
         instance_id: str,
@@ -242,11 +260,14 @@ class Ec2Service:
         self._require_target(credentials, selected_region, instance_id)
 
         result = self._runner.run(credentials, selected_region, instance_id, context=context)
+        if result.plugin_exit_code == 0:
+            self._record_connection(profile.require_id(), selected_region, instance_id)
         return Ec2ConnectionResult(instance_id, result.session_id, result.plugin_exit_code)
 
     def diagnose_plugin(self) -> PluginDiagnostic:
         return self._runner.diagnose()
 
+    @logged_operation("ec2", "connect_external", completion=False, target_parameter="instance_id")
     def connect_external(
         self,
         instance_id: str,
@@ -289,7 +310,21 @@ class Ec2Service:
             self._external[managed.operation_id] = _ExternalSession(
                 profile.require_id(), instance_id, managed.process_id, managed.session_id
             )
+        if document_name is None and parameters is None and managed.state is OperationState.RUNNING:
+            self._record_connection(profile.require_id(), selected_region, instance_id)
         return self._external_handle(managed, profile.require_id(), instance_id)
+
+    def _record_connection(self, profile_id: int, region: str, instance_id: str) -> None:
+        if self._activity_logs is not None:
+            self._activity_logs.record(
+                feature="ec2",
+                target=instance_id,
+                result="succeeded",
+                message_code="ec2.connection.succeeded",
+                operation="connect",
+                profile_id=profile_id,
+                region=region,
+            )
 
     @staticmethod
     def _validated_region(region: str) -> str:
@@ -329,6 +364,7 @@ class Ec2Service:
                     self._external.pop(operation_id, None)
         return handles
 
+    @logged_operation("ec2", "stop_external", completion=True)
     def stop_external(
         self,
         operation_id: str,
@@ -390,11 +426,40 @@ class Ec2Service:
         )
 
     def _list(self, credentials: PlainCredentials, region: str, profile_id: int) -> list[Ec2Target]:
+        targets = self._list_inventory_or_fallback(credentials, region, profile_id)
+        record_success(self._activity_logs, "ec2", "list", profile_id=profile_id, region=region)
+        history = (
+            self._activity_logs.recent_ec2_connections(profile_id, region)
+            if self._activity_logs is not None
+            else {}
+        )
+        return [
+            replace(target, last_connected_at=history.get(target.instance_id)) for target in targets
+        ]
+
+    def _list_inventory_or_fallback(
+        self, credentials: PlainCredentials, region: str, profile_id: int
+    ) -> list[Ec2Target]:
         if self._inventory is not None:
             try:
                 return self._inventory_targets(credentials, region, profile_id)
-            except AwsPermissionError:
-                pass
+            except AwsPermissionError as error:
+                if self._activity_logs is not None:
+                    self._activity_logs.record(
+                        feature="ec2",
+                        operation="list_fallback",
+                        result="WARNING",
+                        level="WARNING",
+                        message_code="ec2.inventory.permission_fallback",
+                        aws_service=error.aws_service,
+                        aws_action=error.aws_action,
+                        aws_request_id=error.aws_request_id,
+                        error_category=error.error_category,
+                        error_code=error.error_code,
+                        required_permission=error.required_permission,
+                        profile_id=profile_id,
+                        region=region,
+                    )
         return self._online_fallback(credentials, region, profile_id)
 
     def _online_fallback(
@@ -420,6 +485,7 @@ class Ec2Service:
                     instance_state=None,
                     favorite=item.instance_id in favorites,
                     power_actions_available=False,
+                    tags=details.tags if details else (),
                 )
             )
         return sorted(targets, key=_target_sort_key)
@@ -447,6 +513,7 @@ class Ec2Service:
                     ssm_ping_status="Online" if ssm and ssm.ping_status == "Online" else "Offline",
                     instance_state=instance.state,
                     favorite=instance.instance_id in favorites,
+                    tags=instance.tags,
                 )
             )
         return sorted(targets, key=_target_sort_key)

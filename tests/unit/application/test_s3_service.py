@@ -320,7 +320,7 @@ def test_upload_uses_progress_and_cancellation_contract(tmp_path: Path) -> None:
     assert result.bytes_transferred == 4
     assert events[0].operation_id == context.operation_id == events[-1].operation_id
     assert events[1].target == "s3://test-upload-bucket/small.txt"
-    assert events[1].message_code == "s3.upload.progress"
+    assert any(event.message_code == "s3.upload.progress" for event in events)
 
     token = CancellationToken()
     token.cancel()
@@ -389,7 +389,9 @@ def test_multi_file_failure_preserves_completed_file_summary(tmp_path: Path) -> 
             context=OperationContext(progress=events.append),
         )
 
-    assert events[-1].completed == 3
+    assert [event for event in events if event.message_code == "s3.upload.progress"][
+        -1
+    ].completed == 3
     assert gateway.put_file.call_count == 2
 
 

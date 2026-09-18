@@ -6,15 +6,26 @@ import builtins
 import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from aws_connect.application.ports import PrivateFileAccess
 from aws_connect.domain.aws_profile import AwsProfile, SessionCredentials
 from aws_connect.domain.errors import ConfigurationError
+from aws_connect.domain.execution_log import (
+    EXECUTION_LOG_MAX_ROWS,
+    EXECUTION_LOG_RETENTION_DAYS,
+    ErrorCategory,
+    ExecutionLevel,
+    ExecutionLogEvent,
+    ExecutionLogFilter,
+    ExecutionPhase,
+    ExecutionResult,
+)
 from aws_connect.domain.s3_location import S3Location
 from aws_connect.domain.saved_secret import SavedSecret, SecretLookupMode
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
+from aws_connect.infrastructure.execution_log_masking import MaskedExecutionLogSanitizer
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
     (
@@ -148,6 +159,30 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         ADD COLUMN relay_instance_id TEXT;
         """,
     ),
+    (9, "ALTER TABLE saved_secrets ADD COLUMN last_retrieved_at TEXT;"),
+    (
+        10,
+        """
+        CREATE TABLE execution_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            level TEXT NOT NULL CHECK(level IN ('DEBUG','INFO','WARNING','ERROR')),
+            result TEXT NOT NULL CHECK(result IN ('SUCCESS','WARNING','FAILURE','CANCELLED')),
+            phase TEXT NOT NULL CHECK(phase IN ('STARTED','PROGRESS','COMPLETED')),
+            feature TEXT NOT NULL, action TEXT NOT NULL,
+            target TEXT NOT NULL, message TEXT NOT NULL,
+            correlation_id TEXT, operation_id TEXT, aws_service TEXT, aws_action TEXT,
+            aws_request_id TEXT, error_category TEXT, error_code TEXT, required_permission TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX execution_logs_by_time ON execution_logs(occurred_at DESC, id DESC);
+        CREATE INDEX execution_logs_by_feature ON execution_logs(feature, occurred_at DESC);
+        CREATE INDEX execution_logs_by_level ON execution_logs(level, occurred_at DESC);
+        CREATE INDEX execution_logs_by_result ON execution_logs(result, occurred_at DESC);
+        CREATE INDEX execution_logs_by_correlation ON execution_logs(correlation_id);
+        CREATE INDEX execution_logs_by_operation ON execution_logs(operation_id);
+    """,
+    ),
 )
 
 
@@ -162,6 +197,8 @@ class SqliteProfileStore:
             file_access.restrict(path.parent)
             self._restrict_existing_database_files()
         self.migrate()
+        with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
         if file_access is not None:
             self._restrict_existing_database_files()
 
@@ -221,6 +258,124 @@ class SqliteProfileStore:
         ):
             if candidate.exists():
                 self._file_access.restrict(candidate)
+
+    @contextmanager
+    def _execution_connection(self) -> Iterator[sqlite3.Connection]:
+        try:
+            with self._connect() as connection:
+                yield connection
+        except sqlite3.Error as error:
+            raise ConfigurationError("logs.storage.failed", type(error).__name__) from error
+
+    def append_execution_log(self, event: ExecutionLogEvent) -> None:
+        safe = MaskedExecutionLogSanitizer().sanitize(event)
+        values = (
+            safe.occurred_at.astimezone(UTC).isoformat(),
+            safe.level.value,
+            safe.result.value,
+            safe.phase.value,
+            safe.feature,
+            safe.action,
+            safe.target,
+            safe.message,
+            safe.correlation_id,
+            safe.operation_id,
+            safe.aws_service,
+            safe.aws_action,
+            safe.aws_request_id,
+            safe.error_category.value if safe.error_category else None,
+            safe.error_code,
+            safe.required_permission,
+            safe.metadata_json,
+        )
+        with self._execution_connection() as connection:
+            connection.execute(
+                "INSERT INTO execution_logs (occurred_at, level, result, phase, feature, action, "
+                "target, message, correlation_id, operation_id, aws_service, aws_action, "
+                "aws_request_id, error_category, error_code, required_permission, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                values,
+            )
+            cutoff = (datetime.now(UTC) - timedelta(days=EXECUTION_LOG_RETENTION_DAYS)).isoformat()
+            connection.execute("DELETE FROM execution_logs WHERE occurred_at < ?", (cutoff,))
+            connection.execute(
+                "DELETE FROM execution_logs WHERE id IN (SELECT id FROM execution_logs "
+                "ORDER BY occurred_at DESC, id DESC LIMIT -1 OFFSET ?)",
+                (EXECUTION_LOG_MAX_ROWS,),
+            )
+
+    def query_execution_logs(
+        self, query: ExecutionLogFilter, limit: int
+    ) -> list[ExecutionLogEvent]:
+        cutoff = datetime.now(UTC) - timedelta(days=EXECUTION_LOG_RETENTION_DAYS)
+        since = max(cutoff, query.since.astimezone(UTC)) if query.since else cutoff
+        clauses = ["occurred_at >= ?"]
+        parameters: list[object] = [since.isoformat()]
+        for column, values in (("level", query.levels), ("feature", query.features)):
+            if values:
+                clauses.append(column + " IN (" + ",".join("?" for _ in values) + ")")
+                parameters.extend(values)
+        for column, value in (
+            ("correlation_id", query.correlation_id),
+            ("operation_id", query.operation_id),
+        ):
+            if value:
+                clauses.append(column + " = ?")
+                parameters.append(value)
+        if query.errors_only:
+            clauses.append("result = 'FAILURE'")
+        if query.completed_only:
+            clauses.append("phase = 'COMPLETED'")
+        if query.search.strip():
+            columns = (
+                "message",
+                "target",
+                "operation_id",
+                "correlation_id",
+                "aws_action",
+                "error_code",
+            )
+            clauses.append(
+                "("
+                + " OR ".join("instr(lower(COALESCE(" + c + ",'')), lower(?)) > 0" for c in columns)
+                + ")"
+            )
+            parameters.extend([query.search.strip()] * len(columns))
+        parameters.append(max(1, min(limit, EXECUTION_LOG_MAX_ROWS)))
+        with self._execution_connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM execution_logs WHERE "  # nosec B608
+                + " AND ".join(clauses)
+                + " ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                parameters,
+            ).fetchall()
+        sanitizer = MaskedExecutionLogSanitizer()
+        return [
+            sanitizer.sanitize(
+                ExecutionLogEvent(
+                    occurred_at=datetime.fromisoformat(row["occurred_at"]),
+                    level=ExecutionLevel(row["level"]),
+                    result=ExecutionResult(row["result"]),
+                    phase=ExecutionPhase(row["phase"]),
+                    feature=row["feature"],
+                    action=row["action"],
+                    target=row["target"],
+                    message=row["message"],
+                    correlation_id=row["correlation_id"],
+                    operation_id=row["operation_id"],
+                    aws_service=row["aws_service"],
+                    aws_action=row["aws_action"],
+                    aws_request_id=row["aws_request_id"],
+                    error_category=ErrorCategory(row["error_category"])
+                    if row["error_category"]
+                    else None,
+                    error_code=row["error_code"],
+                    required_permission=row["required_permission"],
+                    metadata_json=row["metadata_json"],
+                )
+            )
+            for row in rows
+        ]
 
     def list(self) -> list[AwsProfile]:
         with self._connect() as connection:
@@ -663,7 +818,7 @@ class SqliteProfileStore:
                 cursor = connection.execute(
                     """INSERT INTO saved_secrets
                     (profile_id, identifier, value, lookup_mode, relay_instance_id,
-                     created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                     created_at, updated_at, last_retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         saved_secret.profile_id,
                         saved_secret.identifier,
@@ -672,6 +827,7 @@ class SqliteProfileStore:
                         saved_secret.relay_instance_id,
                         now,
                         now,
+                        _optional_datetime_text(saved_secret.last_retrieved_at),
                     ),
                 )
                 saved_secret_id = int(cursor.lastrowid or 0)
@@ -691,11 +847,13 @@ class SqliteProfileStore:
                 connection.execute(
                     """INSERT INTO saved_secrets
                     (profile_id, identifier, value, lookup_mode, relay_instance_id,
-                     created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+                     created_at, updated_at, last_retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(profile_id, identifier) DO UPDATE SET
                         value=excluded.value,
                         lookup_mode=excluded.lookup_mode,
                         relay_instance_id=excluded.relay_instance_id,
+                        last_retrieved_at=COALESCE(
+                            excluded.last_retrieved_at, saved_secrets.last_retrieved_at),
                         updated_at=excluded.updated_at""",
                     (
                         saved_secret.profile_id,
@@ -705,6 +863,7 @@ class SqliteProfileStore:
                         saved_secret.relay_instance_id,
                         now,
                         now,
+                        _optional_datetime_text(saved_secret.last_retrieved_at),
                     ),
                 )
                 row = connection.execute(
@@ -805,6 +964,11 @@ def _saved_secret(row: sqlite3.Row) -> SavedSecret:
         profile_id=int(row["profile_id"]),
         identifier=str(row["identifier"]),
         value=str(row["value"]),
+        last_retrieved_at=(
+            datetime.fromisoformat(str(row["last_retrieved_at"]))
+            if row["last_retrieved_at"]
+            else None
+        ),
         lookup_mode=SecretLookupMode(str(row["lookup_mode"])),
         relay_instance_id=(
             str(row["relay_instance_id"]) if row["relay_instance_id"] is not None else None

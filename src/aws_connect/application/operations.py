@@ -9,6 +9,7 @@ from enum import StrEnum
 from threading import Event
 from uuid import uuid4
 
+from aws_connect.application.execution_context import execution_scope
 from aws_connect.domain.errors import ApplicationError, ConfigurationError
 
 MAX_PENDING_AUTHENTICATION_OPERATIONS = 128
@@ -61,6 +62,8 @@ class OperationContext:
     operation_id: str = field(default_factory=lambda: str(uuid4()))
     cancellation: CancellationToken = field(default_factory=CancellationToken)
     progress: ProgressReporter | None = field(default=None, repr=False)
+    correlation_id: str = field(default_factory=lambda: str(uuid4()))
+    attempt: int = 1
 
     def report(
         self,
@@ -90,7 +93,9 @@ class OperationContext:
     def rebound(self, operation_id: str) -> OperationContext:
         """Keep cancellation/progress ownership while MFA supplies the final ID."""
 
-        return OperationContext(operation_id, self.cancellation, self.progress)
+        return OperationContext(
+            operation_id, self.cancellation, self.progress, self.correlation_id, self.attempt
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +128,8 @@ def execute_operation[T](
     current = context or OperationContext()
     try:
         current.raise_if_cancelled()
-        return OperationResult(current.operation_id, OperationState.SUCCEEDED, action(current))
+        with execution_scope(current.correlation_id, current.operation_id):
+            return OperationResult(current.operation_id, OperationState.SUCCEEDED, action(current))
     except OperationCancelled:
         return OperationResult(current.operation_id, OperationState.CANCELLED)
     except ApplicationError as error:

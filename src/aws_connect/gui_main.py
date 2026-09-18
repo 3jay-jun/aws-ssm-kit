@@ -38,6 +38,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         services.diagnostic_logs,
         services.rds_endpoints,
         authenticated_operations=services.authenticated_operations,
+        dashboard=services.dashboard,
         connection_lifecycle=connection_lifecycle,
     )
     window.show()

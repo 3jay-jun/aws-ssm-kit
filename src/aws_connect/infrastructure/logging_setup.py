@@ -72,5 +72,7 @@ class RotatingLogConfigurator:
             item.close()
         logger.addHandler(handler)
         logger.setLevel(settings.log_level.value)
+        # Activity history remains complete regardless of diagnostic verbosity.
+        logging.getLogger("aws_connect.activity").setLevel(logging.INFO)
         logger.propagate = False
         return path

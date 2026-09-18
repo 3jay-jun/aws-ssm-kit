@@ -30,6 +30,8 @@ def test_supplied_gui_assets_exist_and_load_through_packaged_lookup() -> None:
         "dashboard-move.svg",
         "ec2-terminal.svg",
         "file-folder.svg",
+        "folder-plus-solid-full.svg",
+        "clock-solid-full.svg",
         "profile-create.svg",
         "rds-create.svg",
         "s3-download.svg",

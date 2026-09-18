@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QWidget,
@@ -33,7 +34,6 @@ from aws_connect.domain.errors import ApplicationError, ConfigurationError
 from aws_connect.presentation.gui.errors import GuiErrorPresentation
 from aws_connect.presentation.gui.tasks import ApplicationTask, GuiTaskRunner
 from aws_connect.presentation.gui.view_models import (
-    ActiveTunnelSummaryViewModel,
     build_authentication_header,
     empty_authentication_header,
 )
@@ -333,6 +333,44 @@ def test_profile_dialog_new_credentials_keep_existing_save_signal_contract() -> 
     assert captured[0].secret_key == "new-secret"  # pragma: allowlist secret
 
 
+def test_profile_eyes_only_toggle_new_input_and_reset_on_selection() -> None:
+    window, profiles, _operations = _window(auto_start=False)
+    dialog = window.profile_dialog
+    dialog.set_profiles(profiles.items, 1)
+    for field in (dialog.access_key, dialog.secret_key):
+        eye = field.actions()[0]
+        assert not eye.isEnabled()
+        assert not field.text()
+        field.setText(os.urandom(12).hex())
+        eye.trigger()
+        assert field.echoMode() == QLineEdit.EchoMode.Normal
+        eye.trigger()
+        assert field.echoMode() == QLineEdit.EchoMode.Password
+        eye.trigger()
+    dialog.profile_list.setCurrentRow(1)
+    for field in (dialog.access_key, dialog.secret_key):
+        assert not field.text()
+        assert field.echoMode() == QLineEdit.EchoMode.Password
+        assert not field.actions()[0].isEnabled()
+        assert not field.actions()[0].isChecked()
+    assert dialog.save_button.text() == "저장"
+    assert dialog.connect_button.text() == "이 프로필로 연결"
+    assert dialog.new_button.text() == "+ 새 프로필"
+    assert not hasattr(dialog, "clone_button")
+    assert not hasattr(dialog, "delete_button")
+
+
+def test_profile_row_menu_delete_targets_clicked_row() -> None:
+    window, profiles, _operations = _window(auto_start=False)
+    dialog = window.profile_dialog
+    dialog.set_profiles(profiles.items, 1)
+    row = dialog.profile_list.itemWidget(dialog.profile_list.item(1))
+    row.findChild(QPushButton, "profile_row_more").click()
+    menu = dialog.findChild(QMenu, "profile_row_menu")
+    menu.actions()[1].trigger()
+    assert profiles.deleted == [2]
+
+
 def test_profile_without_mfa_connects_without_requesting_a_code() -> None:
     window, profiles, operations = _window(auto_start=False)
     profiles.items[1] = _profile(2, "운영계", default=False, mfa_enabled=False)
@@ -369,7 +407,7 @@ def test_profile_new_draft_selection_details_and_clone_flow() -> None:
     draft = window.profile_dialog.profile_list.currentItem()
     assert draft is not None
     assert draft.data(Qt.ItemDataRole.UserRole) is None
-    assert "저장되지 않음" in draft.text()
+    assert "저장되지 않음" in draft.data(Qt.ItemDataRole.AccessibleTextRole)
     window.profile_dialog.name.setText("임시 프로필")
     window.profile_dialog.account.setText("123456789012")
     window.profile_dialog.user.setText("new-user")
@@ -381,7 +419,12 @@ def test_profile_new_draft_selection_details_and_clone_flow() -> None:
     window.profile_dialog.profile_list.setCurrentRow(0)
     assert window.profile_dialog.name.text() == "개발계"
     assert window.profile_dialog.account.text() == "123456789012"
-    window.profile_dialog.clone_button.click()
+    dialog = window.profile_dialog
+    row = dialog.profile_list.itemWidget(dialog.profile_list.currentItem())
+    row.findChild(QPushButton, "profile_row_more").click()
+    menu = dialog.findChild(QMenu, "profile_row_menu")
+    assert [action.text() for action in menu.actions()] == ["프로필 복제", "프로필 삭제"]
+    menu.actions()[0].trigger()
 
     assert profiles.cloned == [(1, "개발계-copy")]
 
@@ -391,7 +434,12 @@ def test_unsaved_profile_delete_discards_draft_without_service_delete() -> None:
     window.profile_dialog.set_profiles(profiles.items, 1)
     window.profile_dialog.new_profile()
 
-    window.profile_dialog.delete_button.click()
+    dialog = window.profile_dialog
+    row = dialog.profile_list.itemWidget(dialog.profile_list.currentItem())
+    row.findChild(QPushButton, "profile_row_more").click()
+    menu = dialog.findChild(QMenu, "profile_row_menu")
+    assert not menu.actions()[0].isEnabled()
+    menu.actions()[1].trigger()
 
     assert profiles.deleted == []
     assert window.profile_dialog.profile_list.currentItem() is not None
@@ -461,40 +509,20 @@ def test_gui_entry_point_wires_composed_connection_lifecycle(monkeypatch) -> Non
     window.show.assert_called_once_with()
 
 
-def test_dashboard_renders_active_tunnel_summary_projection() -> None:
-    app = _app()
+def test_dashboard_has_no_active_tunnel_summary() -> None:
     window, _profiles, _operations = _window(auto_start=False)
-    window.show()
-
-    window.update_active_tunnels(
-        [ActiveTunnelSummaryViewModel("개발 DB", 13306, "db.internal", 3306, "operation-1")]
-    )
-    app.processEvents()
-
-    assert window.tunnel_summary.text() == "1개 실행 중"
-    assert window.dashboard_tunnels.count() == 1
-    row = window.dashboard_tunnels.itemWidget(window.dashboard_tunnels.item(0))
-    assert row is not None
-    assert window.dashboard_tunnels.viewport().height() >= row.height()
-    assert all(
-        button.geometry().bottom() < row.height() for button in row.findChildren(QPushButton)
-    )
-    assert row.summary.local_address == "127.0.0.1:13306"  # type: ignore[attr-defined]
-    copy_button = next(
-        button for button in row.findChildren(QPushButton) if button.text() == "주소 복사"
-    )
-    copy_button.click()
-    assert QApplication.clipboard().text() == "127.0.0.1:13306"
+    assert window.findChild(QLabel, "active_tunnel_summary") is None
+    assert window.findChild(QWidget, "dashboard_active_tunnels") is None
 
 
 def test_dashboard_matches_mockup_card_content_and_routes() -> None:
     window, _profiles, _operations = _window(auto_start=False)
 
     expected = {
-        "ec2": ("외부 터미널", "인스턴스 선택", 1),
-        "rds": ("앱 내부 세션 관리", "터널 관리", 2),
-        "secrets": ("민감정보 마스킹", "시크릿 조회", 3),
-        "s3": ("탐색 및 업로드", "S3 열기", 4),
+        "ec2": ("EC2 인스턴스에 SSM으로 접속하는 기능입니다.", "EC2 접속하기", 1),
+        "rds": ("SSM 포트포워딩을 통해 RDS에 연결하는 기능입니다.", "RDS 터널 열기", 2),
+        "secrets": ("Secrets를 조회하고 안전하게 관리하는 기능입니다.", "Secrets 열기", 3),
+        "s3": ("S3 버킷을 탐색하고 파일을 업로드하는 기능입니다.", "S3 파일 열기", 4),
     }
     cards = window.findChildren(QFrame, "feature_card")
 
@@ -502,7 +530,7 @@ def test_dashboard_matches_mockup_card_content_and_routes() -> None:
     for card in cards:
         route = str(card.property("feature"))
         subtitle, action, page = expected[route]
-        assert card.findChild(QWidget, "feature_subtitle").property("text") == subtitle
+        assert card.findChild(QWidget, "feature_description").property("text") == subtitle
         button = card.findChild(QPushButton, f"dashboard_{route}_button")
         assert button is not None
         assert button.text() == action
@@ -578,13 +606,10 @@ def test_shell_connects_auth_free_logs_page_and_records_allowlisted_gui_event() 
     window.pages.setCurrentIndex(5)
     window._notify("This user-facing text must never be serialized")
 
-    assert activity.record.call_args.kwargs == {
-        "feature": "gui",
-        "target": "logs",
-        "result": "notice",
-        "message_code": "gui.notice",
-        "correlation_id": None,
-    }
+    activity.record.assert_not_called()
+    activity.list_recent.return_value = []
+    window.pages.setCurrentIndex(0)
+    activity.list_recent.assert_called_once_with(5)
 
 
 def test_1024_by_720_shell_keeps_critical_regions_inside_viewport() -> None:
@@ -598,7 +623,7 @@ def test_1024_by_720_shell_keeps_critical_regions_inside_viewport() -> None:
     critical: tuple[QWidget | None, ...] = (
         window.findChild(QFrame, "authentication_header"),
         window.findChild(QFrame, "navigation"),
-        window.findChild(QWidget, "dashboard"),
+        window.dashboard_page,
         window.profile_button,
         window.refresh_button,
     )
@@ -657,10 +682,10 @@ def test_desktop_shell_uses_mockup_geometry_tokens_exactly() -> None:
     assert dashboard is not None and dashboard.layout() is not None
     margins = dashboard.layout().contentsMargins()
     assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (
-        34,
-        30,
-        34,
-        40,
+        24,
+        22,
+        24,
+        24,
     )
     window.close()
 

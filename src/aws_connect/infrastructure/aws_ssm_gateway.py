@@ -15,6 +15,7 @@ from aws_connect.application.ports import (
     StartedSsmSession,
 )
 from aws_connect.domain.aws_profile import PlainCredentials
+from aws_connect.infrastructure.aws_diagnostics import observed_client
 from aws_connect.infrastructure.aws_identity_gateway import translate_aws_error
 
 
@@ -115,6 +116,7 @@ class Boto3Ec2MetadataGateway:
                                 instance_id=str(item["InstanceId"]),
                                 state=state,
                                 name=_name_tag(item.get("Tags", [])),
+                                tags=_instance_tags(item.get("Tags", [])),
                                 private_ip_address=_optional_string(item.get("PrivateIpAddress")),
                                 platform_name=_optional_string(
                                     item.get("PlatformDetails") or item.get("Platform")
@@ -147,6 +149,7 @@ class Boto3Ec2MetadataGateway:
                         result[instance_id] = Ec2Metadata(
                             instance_id=instance_id,
                             name=_name_tag(item.get("Tags", [])),
+                            tags=_instance_tags(item.get("Tags", [])),
                             private_ip_address=_optional_string(item.get("PrivateIpAddress")),
                         )
         except (ClientError, BotoCoreError) as error:
@@ -179,12 +182,14 @@ class Boto3Ec2MetadataGateway:
 
 
 def _client(service: str, credentials: PlainCredentials, region: str) -> Any:
-    return boto3.client(
-        service,
-        region_name=region,
-        aws_access_key_id=credentials.access_key,
-        aws_secret_access_key=credentials.secret_key,
-        aws_session_token=credentials.session_token,
+    return observed_client(
+        boto3.client(
+            service,
+            region_name=region,
+            aws_access_key_id=credentials.access_key,
+            aws_secret_access_key=credentials.secret_key,
+            aws_session_token=credentials.session_token,
+        )
     )
 
 
@@ -197,3 +202,7 @@ def _name_tag(tags: list[dict[str, Any]]) -> str | None:
         (str(tag["Value"]) for tag in tags if tag.get("Key") == "Name" and tag.get("Value")),
         None,
     )
+
+
+def _instance_tags(tags: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
+    return tuple((str(tag["Key"]), str(tag.get("Value", ""))) for tag in tags if "Key" in tag)

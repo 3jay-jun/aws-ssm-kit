@@ -30,6 +30,8 @@ def test_writer_and_reader_remask_allowlisted_metadata(tmp_path: Path) -> None:
             "gui.notice",
             correlation_id="password=correlation-secret",
             operation_id="operation\nsecond-line",
+            profile_id=7,
+            region="us-east-1",
             aws_service="secretsmanager",
             aws_action="GetSecretValue",
             retryable=False,
@@ -48,6 +50,8 @@ def test_writer_and_reader_remask_allowlisted_metadata(tmp_path: Path) -> None:
     assert "***REDACTED***" in serialized
     assert "\n" not in entries[0].feature
     assert "\n" not in (entries[0].operation_id or "")
+    assert entries[0].profile_id == 7
+    assert entries[0].region == "us-east-1"
     assert entries[0].aws_service == "secretsmanager"
     assert entries[0].aws_action == "GetSecretValue"
     assert entries[0].retryable is False

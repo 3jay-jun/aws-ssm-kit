@@ -16,6 +16,7 @@ from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[impor
 from aws_connect.application.ports import S3Object
 from aws_connect.domain.aws_profile import PlainCredentials
 from aws_connect.domain.errors import ApplicationError, S3TransferError
+from aws_connect.infrastructure.aws_diagnostics import observed_client
 from aws_connect.infrastructure.aws_identity_gateway import translate_aws_error
 
 ClientFactory = Callable[[PlainCredentials, str], Any]
@@ -124,6 +125,50 @@ class Boto3S3Gateway:
             client.delete_object(Bucket=bucket, Key=key)
         except (ClientError, BotoCoreError) as error:
             raise translate_aws_error(error, service="s3", action="DeleteObject") from error
+
+    def rename_object(
+        self, credentials: PlainCredentials, region: str, bucket: str, key: str, target: str
+    ) -> None:
+        """Conditional server-side copy, then delete only the observed source revision."""
+        client = self._client_factory(credentials, region)
+        try:
+            source = client.head_object(Bucket=bucket, Key=key)
+        except (ClientError, BotoCoreError) as error:
+            raise translate_aws_error(error, service="s3", action="HeadObject") from error
+        if int(source["ContentLength"]) > 5 * 1024**3:
+            raise S3TransferError(
+                "s3.rename.too_large",
+                "5 GiB 초과 파일은 이름 변경을 지원하지 않습니다. 원본은 유지됩니다.",
+            )
+        try:
+            client.copy_object(
+                Bucket=bucket,
+                Key=target,
+                CopySource={"Bucket": bucket, "Key": key},
+                CopySourceIfMatch=source["ETag"],
+                IfNoneMatch="*",
+            )
+        except (ClientError, BotoCoreError) as error:
+            if isinstance(error, ClientError) and error.response.get("Error", {}).get("Code") in {
+                "PreconditionFailed",
+                "ConditionalRequestConflict",
+            }:
+                raise S3TransferError(
+                    "s3.rename.changed",
+                    "대상 파일이 생겼거나 원본이 변경되었습니다. "
+                    "목록을 새로고침하고 다시 확인하세요.",
+                ) from error
+            raise translate_aws_error(error, service="s3", action="CopyObject") from error
+        try:
+            client.delete_object(Bucket=bucket, Key=key, IfMatch=source["ETag"])
+        except (ClientError, BotoCoreError) as error:
+            raise S3TransferError(
+                "s3.rename.partial",
+                "새 이름으로 복사했지만 원본을 삭제하지 못했습니다. "
+                "목록을 새로고침해 두 파일을 확인하세요.",
+                aws_service="s3",
+                aws_action="DeleteObject",
+            ) from error
 
     def download_file(
         self,
@@ -301,10 +346,12 @@ def _datetime(value: object) -> datetime | None:
 
 
 def _client(credentials: PlainCredentials, region: str) -> Any:
-    return boto3.client(
-        "s3",
-        region_name=region,
-        aws_access_key_id=credentials.access_key,
-        aws_secret_access_key=credentials.secret_key,
-        aws_session_token=credentials.session_token,
+    return observed_client(
+        boto3.client(
+            "s3",
+            region_name=region,
+            aws_access_key_id=credentials.access_key,
+            aws_secret_access_key=credentials.secret_key,
+            aws_session_token=credentials.session_token,
+        )
     )

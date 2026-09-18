@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Portable Windows client for AWS SSM, RDS tunnels, Secrets Manager, and S3"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "boto3>=1.40,<2",
+  "boto3>=1.43.90,<2",
   "pyside6>=6.9,<7",
 ]
 

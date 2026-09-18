@@ -46,8 +46,7 @@ class TunnelSession:
             raise _configuration("rds.session.host.invalid")
         if not 1 <= self.remote_port <= 65535:
             raise _configuration("rds.session.remote_port.invalid")
-        if not 1 <= self.local_port <= 65535:
-            raise _configuration("rds.session.local_port.invalid")
+        validate_local_port(self.local_port)
         if self.profile_id <= 0:
             raise _configuration("rds.session.profile_id.invalid")
         if self.target_mode is TargetMode.FIXED:
@@ -77,6 +76,11 @@ class TunnelSession:
             )
             raise _configuration(code)
         return candidate
+
+
+def validate_local_port(port: int) -> None:
+    if not 1 <= port <= 65535:
+        raise _configuration("rds.session.local_port.invalid")
 
 
 def _valid_host(value: str) -> bool:

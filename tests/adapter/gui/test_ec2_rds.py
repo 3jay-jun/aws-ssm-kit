@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QFrame, QHeaderView, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QFrame, QHeaderView, QLabel, QPushButton, QWidget
 
 from aws_connect.application.ec2_service import Ec2Target, ExternalSessionHandle
 from aws_connect.application.operations import OperationResult, OperationState
@@ -22,6 +22,7 @@ from aws_connect.application.rds_tunnel_service import (
 from aws_connect.domain.errors import ApplicationError, ConfigurationError, PluginExecutionError
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 from aws_connect.presentation.gui.ec2_rds import Ec2Page, RdsPage
+from aws_connect.presentation.gui.styles import APP_STYLE
 from aws_connect.presentation.gui.window import MainWindow
 
 
@@ -150,6 +151,12 @@ class FakeSavedSessions:
         )
         return self.item
 
+    def rename(self, selector, name, profile=None):
+        from dataclasses import replace
+
+        self.item = replace(self.item, name=name)
+        return self.item
+
     def clone(self, selector, name, profile=None):
         self.cloned.append((selector, name, profile))
         return TunnelSession(
@@ -174,6 +181,9 @@ class FakeTunnels:
         self.stop_calls: list[str] = []
         self.stop_all_calls = 0
         self.active: list[TunnelConnectionResult] = []
+
+    def local_port_available(self, port: int) -> bool:
+        return True
 
     def start_managed(self, request):
         self.start_calls.append(request)
@@ -220,15 +230,15 @@ def test_ec2_page_filters_selects_and_uses_external_application_operation() -> N
     page = Ec2Page(ec2, ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
     assert page.table.rowCount() == 2
-    page.region.setText("us-east-1")
-    page.region.editingFinished.emit()
+    page.region.setCurrentText("us-east-1")
+    page.region.lineEdit().editingFinished.emit()
 
     page.filter.setText("10.0.0.20")
     assert page.table.rowCount() == 1
     page.table.selectRow(0)
     page.open_selected()
 
-    assert page.region.text() == "us-east-1"
+    assert page.region.currentText() == "us-east-1"
     assert page.status.currentData() == "all"
     assert ec2.list_calls[-1] == (1, "us-east-1")
     assert ec2.connect_calls[0] == (
@@ -236,11 +246,12 @@ def test_ec2_page_filters_selects_and_uses_external_application_operation() -> N
         1,
         "us-east-1",
     )
-    assert "PID 7001" in page.session_state.text()
+    assert "선택한 인스턴스: i-abcdef01234567890 · worker" in page.session_state.text()
 
 
-def test_ec2_table_uses_single_power_status_column_and_svg_favorites() -> None:
+def test_ec2_table_separates_power_ssm_and_actions() -> None:
     app = _app()
+    app.setStyleSheet(APP_STYLE)
     ec2 = FakeEc2()
     ec2.targets = [
         Ec2Target(
@@ -272,69 +283,43 @@ def test_ec2_table_uses_single_power_status_column_and_svg_favorites() -> None:
     page = Ec2Page(ec2, ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
 
-    assert page.table.columnCount() == 6
-    assert [page.status.itemText(index) for index in range(page.status.count())] == [
-        "전체",
-        "실행 중",
-        "중지됨",
+    assert page.table.columnCount() == 8
+    assert [page.table.horizontalHeaderItem(i).text() for i in range(8)] == [
+        "★",
+        "이름",
+        "Instance ID",
+        "Private IP",
+        "EC2 상태",
+        "SSM",
+        "최근 접속",
+        "작업",
     ]
-    assert page.table.horizontalHeaderItem(4).text() == "EC2 상태"
-    assert page.table.horizontalHeaderItem(5).text() == "Action"
+    assert page.region.isEditable()
+    assert page.filter.placeholderText() == "이름, Instance ID, Private IP로 검색"
+    assert not page.filter.actions()[0].icon().isNull()
     assert page.refresh_button.property("action_button") is True
-    assert all(
-        page.table.horizontalHeaderItem(column).text() != "SSM 상태"
-        for column in range(page.table.columnCount())
-    )
-    assert page.table.cellWidget(0, 0).icon().isNull() is False  # type: ignore[union-attr]
-    assert page.table.cellWidget(0, 5).text() == ""  # type: ignore[union-attr]
-    assert not page.table.cellWidget(0, 5).icon().isNull()  # type: ignore[union-attr]
-    assert page.table.cellWidget(0, 5).toolTip() == "터미널 열기"  # type: ignore[union-attr]
-    assert page.table.cellWidget(1, 5).text() == ""  # type: ignore[union-attr]
-    assert page.table.cellWidget(2, 5).toolTip() == "재부팅"  # type: ignore[union-attr]
-    stopped_status = page.table.cellWidget(1, 4).findChild(QLabel)  # type: ignore[union-attr]
-    assert stopped_status.text() == "● 중지됨"
-    assert stopped_status.property("status") == "danger"
-    assert page.table.rowHeight(0) == 54
-    header = page.table.horizontalHeader()
-    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
-    assert all(
-        header.sectionResizeMode(column) == QHeaderView.ResizeMode.ResizeToContents
-        for column in (0, 2, 3, 5)
-    )
-    assert page.table_card.objectName() == "content_card"
-
-    page.resize(760, 720)
+    assert not page.table.cellWidget(0, 0).findChild(QPushButton).icon().isNull()
+    action = page.table.cellWidget(0, 7).findChild(QPushButton, "ec2_row_action")
+    assert action.toolTip() == "터미널 열기"
+    assert action.isEnabled()
+    stopped = page.table.cellWidget(1, 7).findChild(QPushButton, "ec2_row_action")
+    assert stopped.toolTip() == "인스턴스 실행"
+    offline = page.table.cellWidget(2, 7).findChild(QPushButton, "ec2_row_action")
+    assert not offline.isEnabled()
+    assert page.table.cellWidget(0, 5).findChild(QLabel, "icon_text_label").text() == "준비됨"
+    assert page.table.cellWidget(2, 5).findChild(QLabel, "icon_text_label").text() == "지원 안됨"
+    assert page.table.rowHeight(0) == 58
+    assert page.table.horizontalHeader().sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
+    page.resize(1308, 860)
     page.show()
     app.processEvents()
-
-    compact_name_width = page.table.columnWidth(1)
-    content_widths = [page.table.columnWidth(column) for column in (0, 2, 3, 5)]
-    for column in (0, 2, 3, 5):
-        assert page.table.columnWidth(column) >= header.fontMetrics().horizontalAdvance(
-            page.table.horizontalHeaderItem(column).text()
-        )
-    for row in range(page.table.rowCount()):
-        for column in (2, 3):
-            assert page.table.columnWidth(column) >= page.table.fontMetrics().horizontalAdvance(
-                page.table.item(row, column).text()
-            )
-        action = page.table.cellWidget(row, 5)
-        assert isinstance(action, QPushButton)
-        assert action.width() >= action.sizeHint().width()
-        assert action.contentsRect().width() >= action.fontMetrics().horizontalAdvance(
-            action.text()
-        )
     assert page.table.horizontalScrollBar().maximum() == 0
-
-    page.resize(1080, 720)
-    app.processEvents()
-
-    assert page.table.columnWidth(1) > compact_name_width
-    assert [page.table.columnWidth(column) for column in (0, 2, 3, 5)] == content_widths
-    assert page.table.horizontalScrollBar().maximum() == 0
-
-    page.table.cellWidget(2, 5).click()  # type: ignore[union-attr]
-    assert ec2.power_calls == [("reboot", "i-abcdef01234567890", 1, "ap-northeast-2")]
+    assert action.width() >= 40
+    offline.click()
+    assert ec2.power_calls == []
+    stopped.click()
+    assert ec2.power_calls == [("start", "i-11111111111111111", 1, "ap-northeast-2")]
+    page.close()
 
 
 def test_ec2_error_recovers_without_closing_page() -> None:
@@ -384,7 +369,7 @@ def test_ec2_timer_reaps_all_profiles_but_displays_only_current_profile() -> Non
     page.refresh_session_states()
 
     assert ec2.reap_calls == 1
-    assert page.session_state.text() == "i-current (PID 7002)"
+    assert page.session_state.text() == "인스턴스를 선택하세요."
     assert errors == []
 
 
@@ -780,15 +765,9 @@ def test_main_window_close_cleans_gui_tunnels_and_feature_pages_fit_1024x720() -
     window.rds_page.set_profile(1)
     window.rds_page.session_list.setCurrentRow(0)
     window.rds_page.start()
-    assert window.dashboard_tunnels.count() == 1
-    dashboard_row = window.dashboard_tunnels.itemWidget(window.dashboard_tunnels.item(0))
-    assert dashboard_row is not None
-    stop_button = next(
-        button for button in dashboard_row.findChildren(QPushButton) if button.text() == "연결 종료"
-    )
-    stop_button.click()
+    assert window.findChild(QWidget, "dashboard_active_tunnels") is None
+    window.rds_page.stop_operation("rds-operation")
     assert tunnels.stop_calls == ["rds-operation"]
-    assert window.dashboard_tunnels.count() == 0
 
     window.close()
     app.processEvents()
@@ -883,3 +862,100 @@ def test_rds_deleting_empty_draft_does_not_delete_saved_session() -> None:
     assert saved.deleted == []
     assert page.session_list.count() == 1
     assert page._selected_id == saved.item.id
+
+
+def test_ec2_favorites_selection_and_history_combine_without_cross_profile_state() -> None:
+    from dataclasses import replace
+    from datetime import datetime
+
+    _app()
+    service = FakeEc2()
+    timestamp = datetime.now().astimezone().replace(hour=10, minute=24)
+    service.targets[0] = replace(service.targets[0], favorite=True, last_connected_at=timestamp)
+    page = Ec2Page(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+    page.table.selectRow(0)
+    assert "마지막 연결 성공 (오늘 10:24)" in page.session_state.text()
+    page.favorites_only.setChecked(True)
+    assert page.table.rowCount() == 1
+    assert "web-dev" in page.session_state.text()
+    page.filter.setText("10.0.0.20")
+    assert page.table.rowCount() == 0
+    assert page.session_state.text() == "인스턴스를 선택하세요."
+    page.filter.clear()
+    page.status.setCurrentIndex(2)
+    assert page.table.rowCount() == 0
+    page.status.setCurrentIndex(0)
+    page.table.selectRow(0)
+    service.targets[0] = replace(service.targets[0], favorite=False)
+    page.reload()
+    assert page.table.rowCount() == 0
+    page.favorites_only.setChecked(False)
+    page.table.selectRow(0)
+    page.set_profile(None)
+    assert page.session_state.text() == "인스턴스를 선택하세요."
+    assert page.table.rowCount() == 0
+
+
+def test_ec2_more_menu_copies_through_policy_and_opens_readonly_tags(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from PySide6.QtWidgets import QDialog, QMenu, QTableWidget
+
+    from aws_connect.presentation.gui import ec2_rds
+
+    app = _app()
+    copied: list[str] = []
+    monkeypatch.setattr(ec2_rds, "copy_temporarily", copied.append)
+    service = FakeEc2()
+    service.targets[0] = replace(service.targets[0], tags=(("Environment", "test"),))
+    page = Ec2Page(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+    page.show()
+    more = page.table.cellWidget(0, 7).findChild(QPushButton, "ec2_more")
+    more.click()
+    menu = more.findChild(QMenu)
+    assert [action.text() for action in menu.actions()] == [
+        "인스턴스 ID 복사",
+        "Private IP 복사",
+        "태그 보기",
+    ]
+    menu.actions()[0].trigger()
+    menu.actions()[1].trigger()
+    assert copied == [service.targets[0].instance_id, "10.0.0.10"]
+    menu.actions()[2].trigger()
+    app.processEvents()
+    dialog = page.findChild(QDialog, "ec2_tags_dialog")
+    assert dialog.isVisible() and not dialog.isModal()
+    table = dialog.findChild(QTableWidget)
+    assert table.editTriggers() == QTableWidget.EditTrigger.NoEditTriggers
+    assert table.item(0, 0).text() == "Environment"
+    assert table.item(0, 1).text() == "test"
+    dialog.close()
+    page.close()
+
+
+def test_ec2_stale_inventory_result_is_ignored_after_profile_switch() -> None:
+    _app()
+    service = FakeEc2()
+    runner = QueuedRunner()
+    page = Ec2Page(service, runner)  # type: ignore[arg-type]
+    page.set_profile(1)
+    page.set_profile(2)
+    runner.pending[1][1]([service.targets[1]])
+    runner.pending[0][1]([service.targets[0]])
+    assert page.table.item(0, 1).text() == "worker"
+
+
+def test_ec2_connection_time_uses_calendar_day_and_blank_history() -> None:
+    from datetime import datetime, timedelta
+
+    from aws_connect.presentation.gui.view_models import ec2_connection_time
+
+    now = datetime.now().astimezone().replace(hour=10, minute=24)
+    assert ec2_connection_time(None, now=now) == "-"
+    assert ec2_connection_time(now, now=now) == "오늘 10:24"
+    assert ec2_connection_time(now - timedelta(days=1), now=now) == "어제 10:24"
+    assert ec2_connection_time(now - timedelta(days=2), now=now) == (
+        now - timedelta(days=2)
+    ).strftime("%Y-%m-%d")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -13,6 +14,8 @@ from aws_connect.application.ports import RetrievedSecret
 from aws_connect.application.secrets_service import build_remote_secret_command
 from aws_connect.domain.aws_profile import PlainCredentials
 from aws_connect.domain.errors import SecretAccessError
+from aws_connect.domain.execution_log import ErrorCategory
+from aws_connect.infrastructure.aws_diagnostics import observed_client
 from aws_connect.infrastructure.aws_identity_gateway import translate_aws_error
 
 ClientFactory = Callable[[PlainCredentials, str], Any]
@@ -111,6 +114,8 @@ class Boto3RemoteSecretCommandGateway:
         raise SecretAccessError(
             "secret.relay.timeout",
             "Run Command did not complete within the bounded polling window",
+            error_category=ErrorCategory.TIMEOUT,
+            error_code="Timeout",
             retryable=True,
             aws_service="ssm",
             aws_action="GetCommandInvocation",
@@ -142,16 +147,23 @@ class Boto3RemoteSecretCommandGateway:
         diagnostic = " ".join(
             str(invocation.get(key, "")) for key in ("StandardErrorContent", "StatusDetails")
         ).casefold()
-        if "accessdenied" in diagnostic or "not authorized" in diagnostic:
+        if re.search(r"\baccessdenied(?:exception)?\b", diagnostic):
             raise SecretAccessError(
                 "secret.relay.instance_role.permission_denied",
                 "The EC2 instance role cannot call Secrets Manager GetSecretValue",
+                error_category=ErrorCategory.PERMISSION,
+                error_code="AccessDeniedException",
+                required_permission="secretsmanager:GetSecretValue",
                 aws_service="secretsmanager",
                 aws_action="GetSecretValue",
             )
         raise SecretAccessError(
             "secret.relay.command.failed",
             f"Run Command ended with status {status}",
+            error_category=ErrorCategory.TIMEOUT
+            if status in {"TimedOut", "DeliveryTimedOut"}
+            else ErrorCategory.RESOURCE,
+            error_code=status,
             retryable=status in {"TimedOut", "DeliveryTimedOut"},
             aws_service="ssm",
             aws_action="GetCommandInvocation",
@@ -159,10 +171,12 @@ class Boto3RemoteSecretCommandGateway:
 
 
 def _client(credentials: PlainCredentials, region: str) -> Any:
-    return boto3.client(
-        "ssm",
-        region_name=region,
-        aws_access_key_id=credentials.access_key,
-        aws_secret_access_key=credentials.secret_key,
-        aws_session_token=credentials.session_token,
+    return observed_client(
+        boto3.client(
+            "ssm",
+            region_name=region,
+            aws_access_key_id=credentials.access_key,
+            aws_secret_access_key=credentials.secret_key,
+            aws_session_token=credentials.session_token,
+        )
     )

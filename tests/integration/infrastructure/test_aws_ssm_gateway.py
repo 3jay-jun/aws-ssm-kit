@@ -205,6 +205,8 @@ def test_ec2_metadata_maps_name_and_permission(monkeypatch) -> None:
     gateway = Boto3Ec2MetadataGateway()
     with stubber:
         result = gateway.describe(credentials(), "ap-northeast-2", ["i-online", "i-no-name"])
+    assert result["i-online"].tags == (("Name", "web"),)
+    assert result["i-no-name"].tags == ()
     assert result["i-online"].name == "web"
     assert result["i-no-name"].name is None
 

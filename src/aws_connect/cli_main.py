@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol, cast
 
+from aws_connect.application.execution_context import execution_scope
 from aws_connect.application.operations import (
     OperationContext,
     OperationResult,
@@ -67,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(prog="aws-connect-cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    dashboard = subparsers.add_parser("dashboard", help="Read-only dashboard permission checks")
+    dashboard.add_argument("--profile", type=int, required=True)
+    _output(dashboard)
     doctor = subparsers.add_parser("doctor", help="Check the local application runtime")
     doctor.add_argument("--output", choices=("text", "json"), default="text")
     settings = subparsers.add_parser("settings", help="Manage shared local settings")
@@ -224,9 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
     s3_list = s3_commands.add_parser("list")
     s3_list.add_argument("--bucket", required=True)
     s3_list.add_argument("--prefix", default="")
+    s3_list.add_argument("--query", help="Search file names recursively below the prefix")
     s3_list.add_argument("--profile")
     s3_list.add_argument("--mfa-stdin", action="store_true")
     _output(s3_list)
+    rename = s3_commands.add_parser("rename")
+    rename.add_argument("--bucket", required=True)
+    rename.add_argument("--key", required=True)
+    rename.add_argument("--name", required=True)
+    rename.add_argument("--profile")
+    rename.add_argument("--mfa-stdin", action="store_true")
+    _output(rename)
     upload = s3_commands.add_parser("upload")
     upload.add_argument("sources", nargs="+")
     upload.add_argument("--bucket", required=True)
@@ -262,12 +274,13 @@ def main(
     app: ApplicationServices | None = services
     try:
         app = app or build_application_services()
-        payload = _execute(args, app)
-        _record_cli_event(app, args, "succeeded", "cli.command.succeeded")
+        with execution_scope():
+            payload = _execute(args, app)
+            _record_cli_event(app, args, "succeeded", "cli.command.succeeded")
         print(render(payload, output=output))
         return 0
     except ApplicationError as error:
-        if app is not None:
+        if app is not None and not error.execution_logged:
             _record_cli_event(
                 app,
                 args,
@@ -349,6 +362,14 @@ def _record_cli_event(
 
 
 def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, Any]:
+    if args.command == "dashboard":
+        from dataclasses import asdict
+
+        if app.dashboard is None:
+            raise RuntimeError("Dashboard service is not configured")
+        dashboard_result = asdict(app.dashboard.check_permissions(args.profile))
+        dashboard_result["checked_at"] = dashboard_result["checked_at"].isoformat()
+        return dashboard_result
     if args.command == "settings":
         if app.settings is None:
             raise RuntimeError("Settings service is not configured")
@@ -611,6 +632,15 @@ def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, An
                 return location_payload(saved_location)
             app.s3_locations.delete(selector, args.profile)
             return {"deleted": True}
+        if args.s3_command == "rename":
+            return {
+                "key": _run_authenticated(
+                    app,
+                    args.profile,
+                    lambda: s3.rename_object(args.bucket, args.key, args.name, args.profile),
+                    args.mfa_stdin,
+                )
+            }
         if args.s3_command == "list":
             return objects_payload(
                 args.bucket,
@@ -618,7 +648,12 @@ def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, An
                 _run_authenticated(
                     app,
                     args.profile,
-                    lambda: s3.list_objects(args.bucket, args.prefix, args.profile),
+                    lambda: s3.list_objects(
+                        args.bucket,
+                        args.prefix,
+                        args.profile,
+                        **({"query": args.query} if args.query is not None else {}),
+                    ),
                     args.mfa_stdin,
                 ),
             )

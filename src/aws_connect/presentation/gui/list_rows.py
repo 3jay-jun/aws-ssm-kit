@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QSizePolicy,
     QVBoxLayout,
+    QWidget,
 )
 
 
@@ -19,19 +20,24 @@ def set_compact_list_row(
     metadata: tuple[str, ...],
     *,
     connected: bool = False,
+    show_status: bool = False,
+    trailing: QWidget | None = None,
     status_alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignVCenter,
 ) -> None:
     """Attach a compact title and metadata without changing item identity."""
     row = QFrame()
     row.setObjectName("compact_list_row")
-    row.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    row.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, trailing is None)
+    if show_status:
+        row.setProperty("connected", connected)
     content = QHBoxLayout(row)
     content.setContentsMargins(10, 6, 10, 6)
     content.setSpacing(12)
-    if connected:
+    if connected or show_status:
         dot = QFrame()
         dot.setObjectName("status_dot")
-        dot.setAccessibleName("연결됨")
+        dot.setProperty("active", connected)
+        dot.setAccessibleName("연결됨" if connected else "중지됨")
         content.addWidget(dot, alignment=status_alignment)
     layout = QVBoxLayout()
     layout.setContentsMargins(0, 0, 0, 0)
@@ -41,10 +47,13 @@ def set_compact_list_row(
         if not text:
             continue
         label = QLabel(text)
+        label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setObjectName("compact_row_title" if index == 0 else "compact_row_metadata")
         label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(label)
+    if trailing is not None:
+        content.addWidget(trailing)
     description = "\n".join(text for text in (title, *metadata) if text)
     item.setToolTip(description)
     item.setData(Qt.ItemDataRole.AccessibleTextRole, description)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -20,11 +20,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from aws_connect import APPLICATION_NAME
@@ -39,6 +41,7 @@ from aws_connect.application.connection_lifecycle import (
     ProfileConnectionLifecycleService,
     ProfileConnections,
 )
+from aws_connect.application.dashboard_service import DashboardService
 from aws_connect.application.ec2_service import Ec2Service
 from aws_connect.application.operations import OperationResult, OperationState
 from aws_connect.application.profile_service import (
@@ -53,7 +56,8 @@ from aws_connect.application.s3_service import S3LocationService, S3Service
 from aws_connect.application.secrets_service import SecretsService
 from aws_connect.application.settings_service import DiagnosticLogService, SettingsService
 from aws_connect.domain.errors import ApplicationError, ConfigurationError
-from aws_connect.presentation.gui.ec2_rds import ActiveTunnelRow, Ec2Page, RdsPage
+from aws_connect.presentation.gui.dashboard import DashboardPage
+from aws_connect.presentation.gui.ec2_rds import Ec2Page, RdsPage
 from aws_connect.presentation.gui.errors import (
     GuiErrorPresentation,
     GuiErrorViewModel,
@@ -64,6 +68,7 @@ from aws_connect.presentation.gui.icons import (
     NAVIGATION_ICON_SIZE,
     gui_asset_path,
     gui_icon,
+    icon_text,
     set_button_icon,
 )
 from aws_connect.presentation.gui.list_rows import (
@@ -76,7 +81,6 @@ from aws_connect.presentation.gui.secrets import SecretsPage
 from aws_connect.presentation.gui.styles import APP_STYLE, NAVIGATION_WIDTH
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 from aws_connect.presentation.gui.view_models import (
-    ActiveTunnelSummaryViewModel,
     AuthenticationHeaderViewModel,
     build_authentication_header,
     checking_authentication_header,
@@ -155,7 +159,7 @@ class ProfileDialog(QDialog):
         header_copy.setSpacing(3)
         dialog_title = QLabel("AWS 프로필 관리")
         dialog_title.setObjectName("section_title")
-        dialog_subtitle = QLabel("저장된 인증정보를 관리하거나 다른 프로필로 연결합니다.")
+        dialog_subtitle = QLabel("저장된 AWS 프로필을 관리하고 사용할 프로필을 선택합니다.")
         dialog_subtitle.setObjectName("page_subtitle")
         header_copy.addWidget(dialog_title)
         header_copy.addWidget(dialog_subtitle)
@@ -173,7 +177,7 @@ class ProfileDialog(QDialog):
         left.setSpacing(4)
         self.profile_list = QListWidget()
         self.profile_list.setObjectName("profile_list")
-        self.new_button = QPushButton("새 프로필")
+        self.new_button = QPushButton("+ 새 프로필")
         self.new_button.setObjectName("profile_new_button")
         self.new_button.setProperty("variant", "primary")
         self.new_button.clicked.connect(self.new_profile)
@@ -202,10 +206,12 @@ class ProfileDialog(QDialog):
         self.secret_key.setObjectName("profile_secret_key_input")
         self.access_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.secret_key.setEchoMode(QLineEdit.EchoMode.Password)
+        for field in (self.access_key, self.secret_key):
+            self._add_credential_toggle(field)
         self._show_new_credential_placeholders()
         self.access_key.setAccessibleName("Access Key ID")
         self.secret_key.setAccessibleName("Secret Access Key")
-        self.mfa_enabled = QCheckBox("토큰 발급 시 2차 인증 사용")
+        self.mfa_enabled = QCheckBox("세션 토큰 발급 시 MFA 사용 (선택)")
         self.mfa_enabled.setObjectName("profile_mfa_enabled")
         self.mfa_enabled.setChecked(True)
         form = QGridLayout()
@@ -234,37 +240,35 @@ class ProfileDialog(QDialog):
         add_field("Secret Access Key", self.secret_key, 3, 0, 2)
         editor.addLayout(form)
         editor.addWidget(self.mfa_enabled)
-        notice = QLabel(
-            "Secret Access Key와 발급 토큰은 OS 사용자 범위로 암호화하여 SQLite에 저장합니다."
+        notice = icon_text(
+            "common-lock.svg",
+            "Secret Access Key와 세션 토큰은 현재 Windows 사용자 범위로 암호화해 "
+            "로컬 SQLite에 저장합니다.",
+            color="#2563eb",
         )
         notice.setObjectName("profile_notice")
-        notice.setWordWrap(True)
+        notice_label = notice.findChild(QLabel, "icon_text_label")
+        if notice_label is None:
+            raise RuntimeError("프로필 보안 안내를 초기화하지 못했습니다.")
+        notice_label.setWordWrap(True)
+        notice_layout = notice.layout()
+        if not isinstance(notice_layout, QHBoxLayout):
+            raise RuntimeError("프로필 보안 안내 레이아웃을 초기화하지 못했습니다.")
+        notice_layout.setStretch(1, 1)
+        notice_layout.setContentsMargins(14, 12, 14, 12)
         editor.addWidget(notice)
         editor.addStretch()
         actions = QHBoxLayout()
-        self.delete_button = QPushButton()
-        self.delete_button.setProperty("variant", "danger")
-        self.clone_button = QPushButton()
-        self.save_button = QPushButton()
-        self.connect_button = QPushButton()
+        self.save_button = QPushButton("저장")
+        self.connect_button = QPushButton("이 프로필로 연결")
         self.connect_button.setProperty("variant", "primary")
         for button, icon, label, color in (
-            (self.delete_button, "common-delete.svg", "삭제", "#ffffff"),
-            (self.clone_button, "common-copy.svg", "복제", None),
             (self.save_button, "common-save.svg", "저장", None),
             (self.connect_button, "common-start.svg", "이 프로필로 연결", "#ffffff"),
         ):
-            button.setProperty("action_button", True)
             set_button_icon(button, icon, tooltip=label, color=color)
-        self.delete_button.clicked.connect(self._request_delete)
-        self.clone_button.clicked.connect(self._request_clone)
         self.save_button.clicked.connect(self._request_save)
         self.connect_button.clicked.connect(self._request_connect)
-        list_actions = QHBoxLayout()
-        list_actions.addWidget(self.delete_button)
-        list_actions.addStretch()
-        list_actions.addWidget(self.clone_button)
-        left.addLayout(list_actions)
         actions.addStretch()
         actions.addWidget(self.save_button)
         actions.addWidget(self.connect_button)
@@ -286,9 +290,11 @@ class ProfileDialog(QDialog):
             set_compact_list_row(
                 self.profile_list,
                 item,
-                profile.name + (" · 현재 연결" if profile.is_default else ""),
-                (f"Account ID  {profile.account_id}", f"IAM  {profile.user_id}"),
+                profile.name + (" · 사용 중" if profile.is_default else ""),
+                (f"Account ID  {profile.account_id}", f"IAM 사용자  {profile.user_id}"),
                 connected=profile.is_default,
+                show_status=True,
+                trailing=self._profile_menu_button(item),
                 status_alignment=Qt.AlignmentFlag.AlignTop,
             )
             if profile.id == selected_id:
@@ -310,7 +316,14 @@ class ProfileDialog(QDialog):
             draft = QListWidgetItem()
             draft.setData(Qt.ItemDataRole.UserRole, None)
             self.profile_list.insertItem(0, draft)
-            set_compact_list_row(self.profile_list, draft, "새 프로필", ("저장되지 않음",))
+            set_compact_list_row(
+                self.profile_list,
+                draft,
+                "새 프로필",
+                ("저장되지 않음",),
+                show_status=True,
+                trailing=self._profile_menu_button(draft),
+            )
             update_list_row_separators(self.profile_list)
         self.profile_list.setCurrentItem(draft)
         self._show_new_editor()
@@ -328,8 +341,6 @@ class ProfileDialog(QDialog):
         self._show_new_credential_placeholders()
         self.region.setText("ap-northeast-2")
         self.mfa_enabled.setChecked(True)
-        self.delete_button.setEnabled(True)
-        self.clone_button.setEnabled(False)
         self.connect_button.setEnabled(False)
 
     def _select_item(
@@ -354,8 +365,6 @@ class ProfileDialog(QDialog):
         self.access_key.clear()
         self.secret_key.clear()
         self._show_saved_credential_placeholders()
-        self.delete_button.setEnabled(True)
-        self.clone_button.setEnabled(True)
         self.connect_button.setEnabled(True)
 
     def _request_save(self) -> None:
@@ -376,6 +385,56 @@ class ProfileDialog(QDialog):
                 profile_id=self._selected_id,
             )
         )
+
+    def _add_credential_toggle(self, field: QLineEdit) -> None:
+        action = field.addAction(
+            gui_icon("common-eye.svg"), QLineEdit.ActionPosition.TrailingPosition
+        )
+        action.setCheckable(True)
+        action.setText("입력값 표시")
+        action.setToolTip("새로 입력한 값 표시")
+
+        def toggle(visible: bool) -> None:
+            field.setEchoMode(QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password)
+            action.setText("입력값 숨기기" if visible else "입력값 표시")
+            action.setToolTip("새로 입력한 값 숨기기" if visible else "새로 입력한 값 표시")
+
+        def changed(value: str) -> None:
+            action.setEnabled(bool(value))
+            if not value:
+                action.setChecked(False)
+                field.setEchoMode(QLineEdit.EchoMode.Password)
+
+        action.toggled.connect(toggle)
+        field.textChanged.connect(changed)
+        changed(field.text())
+
+    def _profile_menu_button(self, item: QListWidgetItem) -> QPushButton:
+        button = QPushButton()
+        button.setObjectName("profile_row_more")
+        set_button_icon(button, "common-more.svg", tooltip="프로필 작업")
+        button.clicked.connect(lambda: self._show_profile_menu(item, button))
+        return button
+
+    def _show_profile_menu(self, item: QListWidgetItem, button: QPushButton) -> None:
+        self.profile_list.setCurrentItem(item)
+        menu = QMenu(button)
+        menu.setObjectName("profile_row_menu")
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        clone = menu.addAction(gui_icon("common-copy.svg"), "프로필 복제")
+        clone.setEnabled(self._selected_id is not None)
+        clone.triggered.connect(self._request_clone)
+        delete = QWidgetAction(menu)
+        delete.setText("프로필 삭제")
+        delete_button = QPushButton("프로필 삭제")
+        delete_button.setObjectName("profile_menu_delete")
+        set_button_icon(delete_button, "common-delete.svg", color="#d92d20")
+        delete.setDefaultWidget(delete_button)
+        delete.triggered.connect(self._request_delete)
+        delete_button.clicked.connect(delete.trigger)
+        delete_button.clicked.connect(menu.close)
+        menu.addAction(delete)
+        menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
 
     def _show_new_credential_placeholders(self) -> None:
         self.access_key.setPlaceholderText("Access Key ID 입력")
@@ -418,56 +477,6 @@ class ProfileDialog(QDialog):
         field.style().polish(field)
 
 
-class FeatureCard(QFrame):
-    activated = Signal(str)
-
-    def __init__(
-        self,
-        route: str,
-        icon_filename: str,
-        title: str,
-        subtitle: str,
-        description: str,
-        action: str,
-    ) -> None:
-        super().__init__()
-        self.setObjectName("feature_card")
-        self.setProperty("feature", route)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(0)
-        top = QHBoxLayout()
-        top.setSpacing(13)
-        icon = QLabel()
-        icon.setObjectName("feature_icon")
-        icon.setPixmap(gui_icon(icon_filename).pixmap(24, 24))
-        top.addWidget(icon)
-        heading_copy = QVBoxLayout()
-        heading_copy.setSpacing(3)
-        heading = QLabel(title)
-        heading.setObjectName("feature_heading")
-        heading_copy.addWidget(heading)
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setObjectName("feature_subtitle")
-        heading_copy.addWidget(subtitle_label)
-        top.addLayout(heading_copy)
-        top.addStretch()
-        button = QPushButton()
-        button.setObjectName(f"dashboard_{route}_button")
-        button.setProperty("variant", "secondary")
-        button.setProperty("icon_only", True)
-        set_button_icon(button, "dashboard-move.svg", tooltip=action)
-        button.clicked.connect(lambda: self.activated.emit(route))
-        top.addWidget(button, alignment=Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(top)
-        description_label = QLabel(description)
-        description_label.setObjectName("feature_description")
-        description_label.setWordWrap(True)
-        description_label.setContentsMargins(0, 14, 0, 18)
-        layout.addWidget(description_label)
-        layout.addStretch()
-
-
 class MainWindow(QMainWindow):
     """The Phase 4 application shell backed only by Application Services."""
 
@@ -488,6 +497,7 @@ class MainWindow(QMainWindow):
         rds_endpoints: RdsEndpointService | None = None,
         *,
         connection_lifecycle: ProfileConnectionLifecycleService,
+        dashboard: DashboardService | None = None,
         authenticated_operations: AuthenticatedOperationCoordinator | None = None,
         task_runner: GuiTaskRunner | None = None,
         mfa_code_provider: MfaCodeProvider | None = None,
@@ -497,6 +507,7 @@ class MainWindow(QMainWindow):
         auto_start: bool = True,
     ) -> None:
         super().__init__()
+        self._dashboard_service = dashboard
         self._profiles = profiles
         self._authentication = authentication
         self._operations = operations
@@ -531,6 +542,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 720)
         self.resize(1424, 894)
         self._build_ui()
+        self.pages.currentChanged.connect(
+            lambda index: self._load_dashboard_recent() if index == 0 else None
+        )
         self._apply_header(empty_authentication_header())
         if auto_start:
             QTimer.singleShot(0, self.reload_profiles)
@@ -588,7 +602,6 @@ class MainWindow(QMainWindow):
             )
             self.rds_page.error_raised.connect(self._show_error)
             self.rds_page.notice_raised.connect(self._notify)
-            self.rds_page.tunnels_changed.connect(self.update_active_tunnels)
             self.pages.addWidget(self.rds_page)
         else:
             self.pages.addWidget(self._placeholder("RDS 터널"))
@@ -791,92 +804,18 @@ class MainWindow(QMainWindow):
         return navigation
 
     def _build_dashboard(self) -> QWidget:
-        dashboard = QWidget()
-        dashboard.setObjectName("dashboard")
-        layout = QVBoxLayout(dashboard)
-        layout.setContentsMargins(34, 30, 34, 40)
-        layout.setSpacing(0)
-        heading = QLabel("연결 도구")
-        heading.setObjectName("page_title")
-        layout.addWidget(heading)
-        subtitle = QLabel("현재 인증정보로 실행할 AWS 작업을 선택하세요.")
-        subtitle.setObjectName("page_subtitle")
-        subtitle.setContentsMargins(0, 3, 0, 24)
-        layout.addWidget(subtitle)
-        cards = QGridLayout()
-        cards.setContentsMargins(0, 0, 0, 0)
-        cards.setHorizontalSpacing(16)
-        cards.setVerticalSpacing(16)
-        details = (
-            (
-                "ec2",
-                "tab-ec2.svg",
-                "EC2 접속",
-                "외부 터미널",
-                "온라인 인스턴스를 조회하고 선택한 서버에 Session Manager로 접속합니다.",
-                "인스턴스 선택",
-            ),
-            (
-                "rds",
-                "tab-rds.svg",
-                "RDS 터널",
-                "앱 내부 세션 관리",
-                "저장한 터널 세션을 선택해 로컬 포트포워딩을 시작하고 상태를 유지합니다.",
-                "터널 관리",
-            ),
-            (
-                "secrets",
-                "tab-secrets.svg",
-                "Secrets Manager",
-                "민감정보 마스킹",
-                "권한이 있는 Secret을 조회하고 JSON 값을 안전하게 확인하거나 복사합니다.",
-                "시크릿 조회",
-            ),
-            (
-                "s3",
-                "tab-s3.svg",
-                "S3 파일",
-                "탐색 및 업로드",
-                "Bucket과 Prefix를 탐색하고 로컬 파일을 선택하여 업로드합니다.",
-                "S3 열기",
-            ),
+        self.dashboard_page = DashboardPage(
+            self._dashboard_service, self._activity_logs, self._runner
         )
-        page_by_code = {"ec2": 1, "rds": 2, "secrets": 3, "s3": 4}
-        for index, detail in enumerate(details):
-            card = FeatureCard(*detail)
-            card.activated.connect(
-                lambda code, pages=page_by_code: self.pages.setCurrentIndex(pages[code])
-            )
-            cards.addWidget(card, index // 2, index % 2)
-        cards.setColumnStretch(0, 1)
-        cards.setColumnStretch(1, 1)
-        layout.addLayout(cards)
-        layout.addSpacing(18)
-        tunnel = QFrame()
-        tunnel.setObjectName("tunnel_summary")
-        tunnel_layout = QVBoxLayout(tunnel)
-        tunnel_layout.setContentsMargins(20, 14, 20, 14)
-        title_row = QHBoxLayout()
-        dot = QFrame()
-        dot.setObjectName("status_dot")
-        title_row.addWidget(dot)
-        tunnel_heading = QLabel("활성 RDS 터널")
-        tunnel_heading.setObjectName("active_tunnel_heading")
-        title_row.addWidget(tunnel_heading)
-        self.tunnel_summary = QLabel("실행 중인 터널이 없습니다.")
-        self.tunnel_summary.setObjectName("active_tunnel_summary")
-        title_row.addWidget(self.tunnel_summary)
-        title_row.addStretch()
-        tunnel_layout.addLayout(title_row)
-        self.dashboard_tunnels = QListWidget()
-        self.dashboard_tunnels.setObjectName("dashboard_active_tunnels")
-        self.dashboard_tunnels.setMaximumHeight(134)
-        self.dashboard_tunnels.setMinimumHeight(46)
-        self.dashboard_tunnels.hide()
-        tunnel_layout.addWidget(self.dashboard_tunnels)
-        layout.addWidget(tunnel)
-        layout.addStretch()
-        return dashboard
+        routes = {"ec2": 1, "rds": 2, "secrets": 3, "s3": 4, "logs": 5}
+        self.dashboard_page.activated.connect(
+            lambda route: self.pages.setCurrentIndex(routes[route])
+        )
+        self.dashboard_page.error_raised.connect(self._show_error)
+        return self.dashboard_page
+
+    def _load_dashboard_recent(self) -> None:
+        self.dashboard_page.refresh_recent()
 
     def reload_profiles(self, selected_id: int | None = None) -> None:
         self._runner.submit(
@@ -899,6 +838,7 @@ class MainWindow(QMainWindow):
             self.refresh_button.setEnabled(False)
             self._refresh_feature_data(None)
             return
+        self.dashboard_page.set_profile(selected.id)
         self._active_profile_id = selected.id
         self.refresh_button.setEnabled(True)
         self._apply_header(checking_authentication_header(selected))
@@ -1009,6 +949,7 @@ class MainWindow(QMainWindow):
 
     def _profile_selected(self, value: Any) -> None:
         profile = value
+        self.dashboard_page.set_profile(profile.id)
         self._active_profile_id = profile.id
         self.feature_data_revision += 1
         self.profile_dialog.close()
@@ -1101,6 +1042,8 @@ class MainWindow(QMainWindow):
         self._notify("토큰을 재발급했습니다.")
 
     def _refresh_feature_data(self, profile_id: int | None) -> None:
+        self.dashboard_page.set_profile(profile_id)
+        self._load_dashboard_recent()
         profile = next(
             (item for item in self._profile_summaries if item.id == profile_id),
             None,
@@ -1129,51 +1072,18 @@ class MainWindow(QMainWindow):
         self.iam_user.setText(view_model.user_id)
         self.token_expiry.setText(view_model.expiry_text)
 
-    def update_active_tunnels(self, tunnels: list[ActiveTunnelSummaryViewModel]) -> None:
-        """Refresh the dashboard projection without loading tunnel state in the view."""
-
-        if not tunnels:
-            self.tunnel_summary.setText("실행 중인 터널이 없습니다.")
-            self.dashboard_tunnels.clear()
-            self.dashboard_tunnels.hide()
-            return
-        self.tunnel_summary.setText(f"{len(tunnels)}개 실행 중")
-        self.dashboard_tunnels.clear()
-        for summary in tunnels:
-            item = QListWidgetItem()
-            row = ActiveTunnelRow(summary)
-            row.copied.connect(
-                lambda _address: self._notify(
-                    "로컬 주소를 복사했습니다. 30초 후 클립보드에서 제거합니다."
-                )
-            )
-            row.stop_requested.connect(self._stop_dashboard_tunnel)
-            row_height = max(54, row.sizeHint().height() + 8)
-            item.setSizeHint(QSize(row.sizeHint().width(), row_height))
-            self.dashboard_tunnels.addItem(item)
-            self.dashboard_tunnels.setItemWidget(item, row)
-        visible_rows = min(3, len(tunnels))
-        visible_height = sum(
-            self.dashboard_tunnels.sizeHintForRow(index) for index in range(visible_rows)
-        )
-        self.dashboard_tunnels.setFixedHeight(visible_height + 6)
-        self.dashboard_tunnels.show()
-
-    def _stop_dashboard_tunnel(self, operation_id: str) -> None:
-        if self.rds_page is not None:
-            self.rds_page.stop_operation(operation_id)
-
     def _show_error(self, error: ApplicationError) -> None:
         self.last_error = map_error(error)
-        self._record_activity(
-            result="failed",
-            message_code=error.message_code,
-            correlation_id=error.correlation_id,
-            aws_service=error.aws_service,
-            aws_action=error.aws_action,
-            retryable=error.retryable,
-            masked_detail=error.technical_cause,
-        )
+        if not error.execution_logged:
+            self._record_activity(
+                result="failed",
+                message_code=error.message_code,
+                correlation_id=error.correlation_id,
+                aws_service=error.aws_service,
+                aws_action=error.aws_action,
+                retryable=error.retryable,
+                masked_detail=error.technical_cause,
+            )
         self.refresh_button.setEnabled(self._active_profile_id is not None)
         if self.last_error.presentation is GuiErrorPresentation.FIELD:
             self._show_field_error(self.last_error)
@@ -1208,7 +1118,6 @@ class MainWindow(QMainWindow):
         self.error_dialog = dialog
 
     def _notify(self, message: str) -> None:
-        self._record_activity(result="notice", message_code="gui.notice")
         self._show_toast(message)
 
     def _show_toast(self, message: str) -> None:
@@ -1239,7 +1148,7 @@ class MainWindow(QMainWindow):
 
         def record() -> None:
             fields: dict[str, Any] = {
-                "feature": "gui",
+                "feature": target,
                 "target": target,
                 "result": result,
                 "message_code": message_code,

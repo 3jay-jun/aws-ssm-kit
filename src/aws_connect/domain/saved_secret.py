@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 from aws_connect.domain.errors import ConfigurationError
@@ -21,6 +22,8 @@ class SavedSecret:
     value: str = field(default="", repr=False)
     lookup_mode: SecretLookupMode = field(default=SecretLookupMode.DIRECT, repr=False)
     relay_instance_id: str | None = field(default=None, repr=False)
+
+    last_retrieved_at: datetime | None = None
 
     def __post_init__(self) -> None:
         identifier = self.identifier.strip()

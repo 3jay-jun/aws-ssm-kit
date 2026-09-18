@@ -18,6 +18,7 @@ from aws_connect.domain.errors import (
     MfaValidationError,
     TargetNotConnectedError,
 )
+from aws_connect.infrastructure.aws_diagnostics import observed_client
 
 
 class Boto3IdentityGateway:
@@ -69,16 +70,78 @@ class Boto3IdentityGateway:
 
     @staticmethod
     def _client(credentials: PlainCredentials, region: str) -> Any:
-        return boto3.client(
-            "sts",
-            region_name=region,
-            aws_access_key_id=credentials.access_key,
-            aws_secret_access_key=credentials.secret_key,
-            aws_session_token=credentials.session_token,
+        return observed_client(
+            boto3.client(
+                "sts",
+                region_name=region,
+                aws_access_key_id=credentials.access_key,
+                aws_secret_access_key=credentials.secret_key,
+                aws_session_token=credentials.session_token,
+            )
         )
 
 
 def translate_aws_error(
+    error: ClientError | BotoCoreError, *, service: str, action: str
+) -> ApplicationError:
+    from aws_connect.domain.execution_log import ErrorCategory
+    from aws_connect.infrastructure.masking import mask_text
+
+    translated = _classify_aws_error(error, service=service, action=action)
+    if isinstance(error, ClientError):
+        translated.error_code = mask_text(
+            str(error.response.get("Error", {}).get("Code", "Unknown"))
+        )[:160]
+        if isinstance(translated, AwsNetworkError) and translated.error_code not in {
+            "Throttling",
+            "ThrottlingException",
+            "TooManyRequestsException",
+            "SlowDown",
+            "ServiceUnavailable",
+            "ServiceUnavailableException",
+            "InternalError",
+            "InternalFailure",
+            "RequestTimeout",
+            "RequestTimeoutException",
+        }:
+            translated = ApplicationError(
+                "aws.request.failed",
+                translated.error_code or "Unknown",
+                aws_service=service,
+                aws_action=action,
+                error_code=translated.error_code,
+                error_category=ErrorCategory.RESOURCE,
+            )
+        request_id = error.response.get("ResponseMetadata", {}).get("RequestId")
+        translated.aws_request_id = mask_text(str(request_id))[:160] if request_id else None
+    else:
+        translated.error_code = type(error).__name__
+    if isinstance(translated, AwsPermissionError):
+        translated.error_category = ErrorCategory.PERMISSION
+        permission_action = (
+            {
+                "ListObjectsV2": "ListBucket",
+                "HeadObject": "GetObject",
+                "CreateMultipartUpload": "PutObject",
+                "UploadPart": "PutObject",
+                "CompleteMultipartUpload": "PutObject",
+                "ListBuckets": "ListAllMyBuckets",
+            }.get(action, action)
+            if service == "s3"
+            else action
+        )
+        translated.required_permission = f"{service}:{permission_action}"
+    elif isinstance(translated, AwsNetworkError):
+        translated.error_category = (
+            ErrorCategory.TIMEOUT
+            if type(error).__name__ in {"ReadTimeoutError", "ConnectTimeoutError"}
+            or translated.error_code in {"RequestTimeout", "RequestTimeoutException"}
+            else ErrorCategory.NETWORK
+        )
+    return translated
+
+
+def _classify_aws_error(
     error: ClientError | BotoCoreError, *, service: str, action: str
 ) -> ApplicationError:
     """Translate botocore failures once, using stable AWS error codes."""

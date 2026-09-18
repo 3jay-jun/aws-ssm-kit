@@ -44,6 +44,7 @@ def main() -> int:
         services.diagnostic_logs,
         services.rds_endpoints,
         authenticated_operations=services.authenticated_operations,
+        dashboard=services.dashboard,
         connection_lifecycle=lifecycle,
         auto_start=False,
     )

@@ -77,7 +77,7 @@ def test_direct_lookup_upserts_raw_value_and_direct_context() -> None:
     store = Mock()
     service._saved = store
 
-    service.get("db/dev", "dev")
+    result = service.get("db/dev", "dev")
 
     gateway.get_secret_value.assert_called_once()
     store.upsert_saved_secret.assert_called_once_with(
@@ -87,6 +87,7 @@ def test_direct_lookup_upserts_raw_value_and_direct_context() -> None:
             "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:test",
             value=raw_value,
             lookup_mode=SecretLookupMode.DIRECT,
+            last_retrieved_at=result.retrieved_at,
         )
     )
     store.create_saved_secret.assert_not_called()
@@ -352,6 +353,7 @@ def test_via_ec2_requires_consent_valid_id_and_selected_online_instance() -> Non
             value='{"host":"db.internal","port":3306}',
             lookup_mode=SecretLookupMode.VIA_EC2,
             relay_instance_id="i-online",
+            last_retrieved_at=result.retrieved_at,
         )
     )
 
@@ -417,3 +419,46 @@ def test_via_ec2_honors_cancellation_before_remote_command() -> None:
         )
 
     remote.get_secret_value.assert_not_called()
+
+
+def test_json_view_masks_nested_sensitive_keys_and_preserves_structure() -> None:
+    import json
+
+    service, _gateway = build_service(
+        '{"host":"db.internal","items":[{"token":"private","monkey":"hidden"}],'
+        '"password":{"nested":"hidden"},"empty":[]}'
+    )
+    result = service.get("db/dev", "dev")
+    masked = json.loads(result.json_text())
+    assert masked["host"] == "db.internal"
+    assert masked["items"][0] == {"token": "***REDACTED***", "monkey": "***REDACTED***"}
+    assert masked["password"]["nested"] == "***REDACTED***"
+    assert masked["empty"] == []
+    assert json.loads(result.json_text(reveal=True))["items"][0]["token"] == "private"
+
+
+def test_relay_connection_test_reuses_online_validation_without_secret_request() -> None:
+    service, gateway = build_service("plain")
+    managed = Mock()
+    managed.list_online.return_value = [ManagedInstance("i-test", "Online", None, "Linux")]
+    service._managed_instances = managed
+    assert service.test_relay_connection("i-test", "dev").instance_id == "i-test"
+    gateway.get_secret_value.assert_not_called()
+    managed.list_online.return_value = []
+    with pytest.raises(ConfigurationError, match="secret.relay.instance.not_online"):
+        service.test_relay_connection("i-test", "dev")
+
+
+def test_local_edit_preserves_last_retrieved_time_and_manual_creation_has_no_time() -> None:
+    from datetime import UTC, datetime
+
+    service, gateway = build_service("plain")
+    saved = Mock()
+    service._saved = saved
+    timestamp = datetime(2026, 9, 17, tzinfo=UTC)
+    saved.get_saved_secret.return_value = SavedSecret(1, 7, "db/dev", last_retrieved_at=timestamp)
+    service.update_saved(1, "db/dev", "dev", value="edited")
+    assert saved.update_saved_secret.call_args.args[0].last_retrieved_at == timestamp
+    service.remember("db/manual", "dev", value="manual")
+    assert saved.upsert_saved_secret.call_args.args[0].last_retrieved_at is None
+    gateway.get_secret_value.assert_not_called()

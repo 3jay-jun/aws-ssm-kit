@@ -133,3 +133,32 @@ ALTER TABLE saved_secrets
         ALTER TABLE saved_secrets
         ADD COLUMN relay_instance_id TEXT;
 ```
+
+## Migration 9
+
+```sql
+ALTER TABLE saved_secrets ADD COLUMN last_retrieved_at TEXT;
+```
+
+## Migration 10
+
+```sql
+CREATE TABLE execution_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            level TEXT NOT NULL CHECK(level IN ('DEBUG','INFO','WARNING','ERROR')),
+            result TEXT NOT NULL CHECK(result IN ('SUCCESS','WARNING','FAILURE','CANCELLED')),
+            phase TEXT NOT NULL CHECK(phase IN ('STARTED','PROGRESS','COMPLETED')),
+            feature TEXT NOT NULL, action TEXT NOT NULL,
+            target TEXT NOT NULL, message TEXT NOT NULL,
+            correlation_id TEXT, operation_id TEXT, aws_service TEXT, aws_action TEXT,
+            aws_request_id TEXT, error_category TEXT, error_code TEXT, required_permission TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX execution_logs_by_time ON execution_logs(occurred_at DESC, id DESC);
+        CREATE INDEX execution_logs_by_feature ON execution_logs(feature, occurred_at DESC);
+        CREATE INDEX execution_logs_by_level ON execution_logs(level, occurred_at DESC);
+        CREATE INDEX execution_logs_by_result ON execution_logs(result, occurred_at DESC);
+        CREATE INDEX execution_logs_by_correlation ON execution_logs(correlation_id);
+        CREATE INDEX execution_logs_by_operation ON execution_logs(operation_id);
+```

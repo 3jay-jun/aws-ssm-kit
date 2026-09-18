@@ -36,3 +36,10 @@ presentation/gui ─┘       │
 - Security and reliability: `docs/SECURITY.md`, `docs/RELIABILITY.md`
 - Standard checks: `docs/PLANS.md` and `./scripts/check.ps1`
 
+
+## Structured execution history
+
+Application use cases record through `ExecutionLogService` (the compatible `ActivityLogService` API).
+`ExecutionLogRepository` is implemented by the existing SQLite store, migration 10.
+A shared sanitizer runs before SQLite/file serialization and after database reads.
+GUI logs and dashboard recent work query SQLite; rotating Python logs remain diagnostic artifacts.

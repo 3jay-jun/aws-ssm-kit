@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from aws_connect.domain.execution_log import ErrorCategory
+
 
 @dataclass(eq=False)
 class ApplicationError(Exception):
@@ -14,6 +16,11 @@ class ApplicationError(Exception):
     aws_service: str | None = None
     aws_action: str | None = None
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
+    aws_request_id: str | None = None
+    error_code: str | None = None
+    error_category: ErrorCategory | None = None
+    required_permission: str | None = None
+    execution_logged: bool = field(default=False, repr=False)
 
     def __str__(self) -> str:
         return self.message_code

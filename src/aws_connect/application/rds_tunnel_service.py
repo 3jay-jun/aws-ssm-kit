@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from threading import Lock
 
+from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
+from aws_connect.application.execution_logging import logged_operation
 from aws_connect.application.operations import OperationContext, OperationState
 from aws_connect.application.ports import (
     Clock,
@@ -27,7 +29,7 @@ from aws_connect.domain.errors import (
     PortAlreadyInUseError,
     TargetNotConnectedError,
 )
-from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
+from aws_connect.domain.tunnel_session import TargetMode, TunnelSession, validate_local_port
 
 PORT_FORWARD_DOCUMENT = "AWS-StartPortForwardingSessionToRemoteHost"
 
@@ -111,6 +113,24 @@ class TunnelSessionService:
         current = self.show(request.tunnel_id, request.profile)
         return self._store.update_tunnel(self._from_request(request, current))
 
+    def rename(
+        self, selector: str | int, name: str, profile: str | int | None = None
+    ) -> TunnelSession:
+        """Change only the name through the existing validated update path."""
+        source = self.show(selector, profile)
+        return self.update(
+            SaveTunnelSessionRequest(
+                source.profile_id,
+                name,
+                source.host,
+                source.remote_port,
+                source.local_port,
+                source.target_mode,
+                source.target_instance_id,
+                source.require_id(),
+            )
+        )
+
     def clone(
         self,
         selector: str | int,
@@ -180,6 +200,7 @@ class RdsTunnelService:
         ports: LocalPortChecker,
         clock: Clock,
         managed_runner: ManagedSsmSessionRunner | None = None,
+        activity_logs: ActivityLogService | None = None,
     ) -> None:
         self._profiles = profiles
         self._sessions = sessions
@@ -190,9 +211,16 @@ class RdsTunnelService:
         self._ports = ports
         self._clock = clock
         self._managed_runner = managed_runner
+        self._activity_logs = activity_logs
         self._managed: dict[str, _ManagedTunnel] = {}
         self._managed_lock = Lock()
 
+    def local_port_available(self, port: int) -> bool:
+        """Advisory local probe; start still checks again to protect against races."""
+        validate_local_port(port)
+        return self._ports.is_available(port)
+
+    @logged_operation("rds", "start", completion=False)
     def start(
         self,
         request: StartTunnelRequest,
@@ -212,6 +240,16 @@ class RdsTunnelService:
             context=context,
         )
         self._store.touch_tunnel(tunnel.require_id(), self._clock.now())
+        record_success(
+            self._activity_logs,
+            "rds",
+            "start",
+            target=tunnel.name,
+            profile_id=profile.require_id(),
+            region=profile.region,
+            operation_id=context.operation_id,
+            metadata={"local_port": tunnel.local_port, "remote_port": tunnel.remote_port},
+        )
         return TunnelConnectionResult(
             self._saved.show(tunnel.require_id(), profile.require_id()),
             target,
@@ -219,6 +257,7 @@ class RdsTunnelService:
             result.plugin_exit_code,
         )
 
+    @logged_operation("rds", "start_managed", completion=False)
     def start_managed(
         self,
         request: StartTunnelRequest,
@@ -246,6 +285,16 @@ class RdsTunnelService:
                 tunnel, target, managed.process_id, managed.session_id
             )
         self._store.touch_tunnel(tunnel.require_id(), self._clock.now())
+        record_success(
+            self._activity_logs,
+            "rds",
+            "start",
+            target=tunnel.name,
+            profile_id=profile.require_id(),
+            region=profile.region,
+            operation_id=context.operation_id,
+            metadata={"local_port": tunnel.local_port, "remote_port": tunnel.remote_port},
+        )
         return TunnelConnectionResult(
             self._saved.show(tunnel.require_id(), profile.require_id()),
             target,
@@ -288,6 +337,7 @@ class RdsTunnelService:
                     self._managed.pop(operation_id, None)
         return active
 
+    @logged_operation("rds", "stop", completion=False)
     def stop(self, operation_id: str, *, context: OperationContext | None = None) -> TunnelHandle:
         if self._managed_runner is None:
             raise _configuration("rds.tunnel.managed_runner.unavailable")
@@ -307,6 +357,14 @@ class RdsTunnelService:
         if managed.error is not None:
             raise managed.error
         context.report("stopped", "rds.tunnel.stopped", completed=1, total=1, target=tunnel.name)
+        record_success(
+            self._activity_logs,
+            "rds",
+            "stop",
+            target=tunnel.name,
+            profile_id=tunnel.profile_id,
+            operation_id=operation_id,
+        )
         return self._handle(tunnel, managed, TunnelOwner.GUI)
 
     def stop_all(self, profile_id: int | None = None) -> list[TunnelHandle]:
@@ -335,7 +393,7 @@ class RdsTunnelService:
         tunnel = self._saved.show(request.tunnel, profile.require_id())
 
         # Local failure must be detected before credential validation or any AWS call.
-        if not self._ports.is_available(tunnel.local_port):
+        if not self.local_port_available(tunnel.local_port):
             raise PortAlreadyInUseError(
                 message_code="rds.tunnel.local_port_in_use",
                 technical_cause=f"Local port {tunnel.local_port} is already in use",

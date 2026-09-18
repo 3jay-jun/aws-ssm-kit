@@ -148,9 +148,9 @@ def test_s3_page_browses_direct_location_and_updates_progress(tmp_path: Path) ->
     page.prepare_upload()
 
     assert page.bucket.text() == "test-upload-bucket"
-    assert page.objects.item(0, 0).text() == "report.txt"
-    assert page.objects.item(0, 1).text() == "text/plain"
-    assert page.objects.columnCount() == 4
+    assert page.objects.item(0, 1).text() == "report.txt"
+    assert page.objects.item(0, 2).text() == "파일"
+    assert page.objects.columnCount() == 6
     assert page.progress.value() == 100
     assert page.upload_status.text() == "업로드 중: s3://test-upload-bucket/incoming/report.txt"
     s3.prepare_upload.assert_called_once()
@@ -164,11 +164,11 @@ def test_s3_page_matches_mockup_header_toolbar_card_and_drop_order() -> None:
     card = page.findChild(QFrame, "s3_browser_card")
 
     assert page.findChild(QLabel, "page_title").text() == "S3 파일"
-    assert page.findChild(QFrame, "s3_toolbar") is not None
+    assert page.findChild(QFrame, "s3_toolbar") is None
     assert card is not None
-    assert card.layout().indexOf(page.breadcrumb) < card.layout().indexOf(page.objects)
-    assert card.layout().indexOf(page.objects) < card.layout().indexOf(page.drop_zone)
-    assert page.upload.text() == ""
+    assert page.findChild(QFrame, "s3_queue_card") is not None
+    assert page.prefix.isHidden()
+    assert page.upload.text() == "업로드"
     assert page.upload.toolTip() == page.upload.accessibleName() == "업로드"
     assert page.findChild(type(page.upload), "s3_file_choose") is None
     assert page.findChild(type(page.upload), "s3_bucket_catalog_load") is None
@@ -192,6 +192,7 @@ def test_bucket_catalog_success_selects_and_permission_denial_falls_back() -> No
     assert page.bucket.isHidden()
     assert page.bucket_catalog.currentText() == "zeta-bucket"
     page.bucket_catalog.setCurrentText("alpha-bucket")
+    page.bucket_catalog.activated.emit(0)
     page.list_objects()
     s3.list_objects.assert_called_with("alpha-bucket", "", 7)
 
@@ -205,8 +206,8 @@ def test_bucket_catalog_success_selects_and_permission_denial_falls_back() -> No
     )
     page.load_buckets()
 
-    assert page.bucket_catalog.isHidden()
-    assert not page.bucket.isHidden()
+    assert page.bucket_catalog.isEditable()
+    assert page.bucket.isHidden()
     assert "직접 입력" in notices[-1]
 
 
@@ -227,13 +228,13 @@ def test_breadcrumb_is_clickable_and_table_projects_folder_and_mime_without_head
 
     page.list_objects()
 
-    assert page.objects.horizontalHeaderItem(0).text() == "이름"
-    assert page.objects.horizontalHeaderItem(1).text() == "유형"
-    assert page.objects.item(0, 0).text() == "archive"
-    assert page.objects.item(0, 1).text() == "폴더"
-    assert page.objects.item(0, 2).text() == ""
-    assert page.objects.item(1, 0).text() == "data.json"
-    assert page.objects.item(1, 1).text() == "application/json"
+    assert page.objects.horizontalHeaderItem(1).text() == "이름"
+    assert page.objects.horizontalHeaderItem(2).text() == "유형"
+    assert page.objects.item(0, 1).text() == "archive"
+    assert page.objects.item(0, 2).text() == "폴더"
+    assert page.objects.item(0, 3).text() == "-"
+    assert page.objects.item(1, 1).text() == "data.json"
+    assert page.objects.item(1, 2).text() == "파일"
     assert not hasattr(s3, "head_object") or not s3.head_object.called
     segment = page.breadcrumb.findChildren(QToolButton)[1]
     segment.click()
@@ -374,18 +375,18 @@ def test_upload_sources_accumulate_remove_clear_and_switch_single_action(tmp_pat
 
     assert page._selected_files == [source.resolve(), folder.resolve()]
     assert page.upload_sources.count() == 2
-    assert page.file_summary.text() == "업로드 파일 · 2개"
-    assert page.upload.text() == ""
+    assert page.file_summary.text() == "업로드 파일 (2개)"
+    assert page.upload.text() == "업로드"
     assert page.upload.toolTip() == page.upload.accessibleName() == "업로드"
     assert page.upload.property("variant") == "primary"
     assert page.upload.isEnabled()
 
-    page.upload_sources.setCurrentRow(0)
+    page.upload_sources.selectRow(0)
     page.remove_selected_sources()
     assert page._selected_files == [folder.resolve()]
     page._upload_in_progress = True
     page._sync_upload_action()
-    assert page.upload.text() == ""
+    assert page.upload.text() == "업로드 취소"
     assert page.upload.toolTip() == page.upload.accessibleName() == "업로드 취소"
     assert page.upload.property("variant") == "danger"
     page._upload_in_progress = False
@@ -574,16 +575,13 @@ def test_upload_cards_preview_and_blank_area_opens_picker(tmp_path: Path) -> Non
     image = QImage(20, 20, QImage.Format.Format_RGB32)
     image.fill(Qt.GlobalColor.red)
     image.save(str(source))
-    cards.add_source(source, "image/png", lambda *_: None)
-    card = cards.itemWidget(cards.item(0))
-    assert card.findChild(QLabel, "upload_source_name").text().endswith("…")
-    assert (
-        card.findChild(QLabel, "upload_source_icon").pixmap().toImage().pixelColor(1, 1).red()
-        == 255
-    )
-    metadata = [label.text() for label in card.findChildren(QLabel, "upload_source_metadata")]
-    assert any("B" in value for value in metadata)
-    assert cards.item(0).sizeHint().height() > cards.item(0).sizeHint().width()
+    from aws_connect.presentation.gui.upload_sources import UploadQueueEntry
+
+    cards.add_entry(UploadQueueEntry(source), "image/png", lambda *_: None, lambda *_: None)
+    assert cards.item(0, 2).text() == source.name
+    assert cards.cellWidget(0, 1).pixmap().toImage().pixelColor(1, 1).red() == 255
+    assert "B" in cards.item(0, 3).text()
+    assert cards.columnCount() == 9
     cards.close()
 
 

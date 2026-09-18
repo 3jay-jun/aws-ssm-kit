@@ -137,7 +137,7 @@ def test_versioned_settings_migration_persists_and_deletes_values(tmp_path) -> N
     database = tmp_path / "state.db"
     store = SqliteProfileStore(database)
 
-    assert store.current_schema_version() == store.expected_schema_version == 8
+    assert store.current_schema_version() == store.expected_schema_version == 10
     assert store.get_setting("log.level") is None
     store.put_setting("log.level", "WARNING")
     store.put_setting("log.level", "ERROR")
@@ -281,7 +281,7 @@ def test_saved_secret_v7_migration_applies_snapshot_defaults(tmp_path) -> None:
     store = SqliteProfileStore(database)
     migrated = store.get_saved_secret_by_identifier(int(profile_id or 0), "db/legacy")
 
-    assert store.current_schema_version() == store.expected_schema_version == 8
+    assert store.current_schema_version() == store.expected_schema_version == 10
     assert migrated is not None
     assert migrated.value == ""
     assert migrated.lookup_mode is SecretLookupMode.DIRECT
@@ -390,3 +390,25 @@ def test_database_directory_file_and_existing_sidecars_are_restricted(tmp_path: 
     expected = [call(database.parent), call(database), *(call(path) for path in sidecars)]
     assert file_access.restrict.call_args_list[:5] == expected
     assert file_access.restrict.call_args_list.count(call(database)) == 2
+
+
+def test_saved_secret_retrieval_timestamp_persists_without_local_edit_refresh(tmp_path) -> None:
+    from dataclasses import replace
+
+    store = SqliteProfileStore(tmp_path / "history.db")
+    owner = store.create(profile("history"))
+    instant = datetime(2026, 9, 17, 10, 24, tzinfo=UTC)
+    item = store.upsert_saved_secret(
+        SavedSecret(
+            None, owner.require_id(), "db/history", value="lookup", last_retrieved_at=instant
+        )
+    )
+    assert item.last_retrieved_at == instant
+    edited = store.update_saved_secret(replace(item, value="edited"))
+    assert edited.last_retrieved_at == instant
+    manual = store.upsert_saved_secret(
+        SavedSecret(None, owner.require_id(), "db/history", value="manual")
+    )
+    assert manual.last_retrieved_at == instant
+    reopened = SqliteProfileStore(tmp_path / "history.db")
+    assert reopened.get_saved_secret(item.require_id()).last_retrieved_at == instant

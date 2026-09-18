@@ -7,7 +7,10 @@ from typing import Any
 
 from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -17,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -24,8 +28,10 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from aws_connect.application.authenticated_operation import AuthenticatedOperationCoordinator
@@ -49,14 +55,17 @@ from aws_connect.domain.errors import ApplicationError, AwsPermissionError
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner
 from aws_connect.presentation.gui.clipboard import copy_temporarily
-from aws_connect.presentation.gui.icons import gui_icon, set_button_icon
+from aws_connect.presentation.gui.icons import gui_icon, icon_text, set_button_icon
 from aws_connect.presentation.gui.list_rows import (
     set_compact_list_row,
     update_list_row_separators,
 )
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
-from aws_connect.presentation.gui.view_models import ActiveTunnelSummaryViewModel
+from aws_connect.presentation.gui.view_models import (
+    ActiveTunnelSummaryViewModel,
+    ec2_connection_time,
+)
 
 MfaCodeProvider = Callable[[QWidget, str], str | None]
 DeleteConfirmation = Callable[[QWidget, int], bool]
@@ -128,6 +137,7 @@ class Ec2Page(QWidget):
         self._targets: list[Ec2Target] = []
         self._target_by_id: dict[str, Ec2Target] = {}
         self._action_busy = False
+        self._load_revision = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(34, 30, 34, 40)
         layout.setSpacing(16)
@@ -145,41 +155,56 @@ class Ec2Page(QWidget):
         self.refresh_button = QPushButton()
         self.refresh_button.setObjectName("ec2_refresh")
         self.refresh_button.setProperty("action_button", True)
-        set_button_icon(self.refresh_button, "common-refresh.svg", tooltip="목록 새로고침")
+        set_button_icon(self.refresh_button, "common-refresh.svg", size=22, tooltip="목록 새로고침")
         self.refresh_button.clicked.connect(self.reload)
         heading.addWidget(self.refresh_button)
         layout.addLayout(heading)
         layout.addSpacing(8)
         filters = QHBoxLayout()
-        filters.setSpacing(10)
-        self.region = QLineEdit(self._region)
+        filters.setSpacing(14)
+        self.region = QComboBox()
+        self.region.setEditable(True)
+        self.region.addItem(self._region)
+        self.region.setMinimumWidth(160)
+        self.region.setMaximumWidth(194)
         self.region.setObjectName("ec2_region")
-        self.region.setPlaceholderText("ap-northeast-2")
         self.region.setAccessibleName("EC2 Region")
         self.status = QComboBox()
         self.status.setObjectName("ec2_status_filter")
         self.status.setAccessibleName("인스턴스 상태")
+        self.status.setMinimumWidth(130)
+        self.status.setMaximumWidth(178)
         self.status.addItem("전체", "all")
         self.status.addItem("실행 중", "running")
         self.status.addItem("중지됨", "stopped")
         self.filter = QLineEdit()
         self.filter.setObjectName("ec2_filter")
-        self.filter.setPlaceholderText("이름, Instance ID, Private IP")
+        self.filter.setPlaceholderText("이름, Instance ID, Private IP로 검색")
+        self.filter.addAction(
+            gui_icon("common-search.svg"), QLineEdit.ActionPosition.LeadingPosition
+        )
+        self.favorites_only = QCheckBox("즐겨찾기만")
+        self.favorites_only.setObjectName("ec2_favorites_only")
+        self.favorites_only.toggled.connect(self._render_targets)
         self.filter.textChanged.connect(self._render_targets)
         self.status.currentIndexChanged.connect(self._render_targets)
-        self.region.editingFinished.connect(self.reload)
+        self.region.activated.connect(self.reload)
+        region_editor = self.region.lineEdit()
+        if region_editor is not None:
+            region_editor.editingFinished.connect(self._reload_changed_region)
         filters.addWidget(_field("Region", self.region))
         filters.addWidget(_field("상태", self.status))
         filters.addWidget(_field("검색", self.filter), 1)
+        filters.addWidget(self.favorites_only, alignment=Qt.AlignmentFlag.AlignBottom)
         layout.addLayout(filters)
         self.table_card = QFrame()
         self.table_card.setObjectName("content_card")
         card_layout = QVBoxLayout(self.table_card)
         card_layout.setContentsMargins(20, 20, 20, 20)
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 8)
         self.table.setObjectName("ec2_targets")
         self.table.setHorizontalHeaderLabels(
-            ["★", "이름", "Instance ID", "Private IP", "EC2 상태", "Action"]
+            ["★", "이름", "Instance ID", "Private IP", "EC2 상태", "SSM", "최근 접속", "작업"]
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -190,16 +215,38 @@ class Ec2Page(QWidget):
         self.table.verticalHeader().setMinimumSectionSize(54)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setResizeContentsPrecision(-1)
+        self.table.horizontalHeader().setMinimumSectionSize(48)
+        self.table.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(4, 112)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(5, 128)
         self.table.setShowGrid(False)
         use_first_column_selection_bar(self.table)
         card_layout.addWidget(self.table)
         layout.addWidget(self.table_card, 1)
-        self.session_state = QLabel("외부 세션 없음")
+        self.summary_bar = QFrame()
+        self.summary_bar.setObjectName("ec2_selection_summary")
+        summary_layout = QHBoxLayout(self.summary_bar)
+        summary_layout.setContentsMargins(16, 10, 16, 10)
+        summary_layout.setSpacing(12)
+        self.summary_icon = QLabel()
+        self.summary_icon.setPixmap(
+            gui_icon("common-circle-check.svg", color="#00a166", size=22).pixmap(22, 22)
+        )
+        summary_layout.addWidget(self.summary_icon)
+        self.session_state = QLabel("인스턴스를 선택하세요.")
+        self.session_state.setTextFormat(Qt.TextFormat.PlainText)
+        self.session_state.setWordWrap(True)
+        self.session_state.setMinimumWidth(0)
+        self.session_state.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.session_state.setObjectName("ec2_session_state")
-        layout.addWidget(self.session_state)
+        summary_layout.addWidget(self.session_state, 1)
+        layout.addWidget(self.summary_bar)
+        self.summary_icon.hide()
         # Kept as a non-rendered compatibility action; visible actions live in each table row.
         self.open_button = QPushButton("터미널 열기")
         self.open_button.setObjectName("ec2_open")
@@ -214,30 +261,53 @@ class Ec2Page(QWidget):
         selected_region = region or self._region
         if self._profile_id == profile_id and self._region == selected_region:
             return
+        self._load_revision += 1
         self._profile_id = profile_id
         self._region = selected_region
-        self.region.setText(selected_region)
+        self.region.setCurrentText(selected_region)
         self._targets = []
         self._render_targets()
         if profile_id is not None:
             self.reload()
 
+    def _reload_changed_region(self) -> None:
+        if self.region.currentText().strip() != self._region:
+            self.reload()
+
     def reload(self) -> None:
         if self._profile_id is None:
             return
+        self._load_revision += 1
+        revision = self._load_revision
         profile_id = self._profile_id
-        region = self.region.text().strip()
+        region = self.region.currentText().strip()
+        if self.region.findText(region) < 0:
+            self.region.addItem(region)
+        if region != self._region:
+            self._region = region
+            self._targets = []
+            self._render_targets()
         self.refresh_button.setEnabled(False)
+
+        def loaded(value: Any) -> None:
+            if revision == self._load_revision:
+                self._targets_loaded(value)
+
+        def failed(error: ApplicationError) -> None:
+            if revision == self._load_revision:
+                self._failed(error)
+
+        def cancelled() -> None:
+            if revision == self._load_revision:
+                self._cancelled()
 
         def action() -> list[Ec2Target]:
             return self._service.list_targets_in_region(profile_id, region)
 
         if self._authenticated is None:
-            self._runner.submit(action, self._targets_loaded, self._failed)
+            self._runner.submit(action, loaded, failed)
         else:
-            self._authenticated.submit(
-                profile_id, action, self._targets_loaded, self._failed, self._cancelled
-            )
+            self._authenticated.submit(profile_id, action, loaded, failed, cancelled)
 
     def _targets_loaded(self, value: Any) -> None:
         self._action_busy = False
@@ -246,26 +316,37 @@ class Ec2Page(QWidget):
         self._render_targets()
 
     def _render_targets(self) -> None:
+        selected = self._selected_target()
+        blocker = QSignalBlocker(self.table)
         visible = filter_ec2_targets(
             self._targets,
             Ec2TargetFilter(
                 keyword=self.filter.text(),
                 ping_status="all",
                 instance_state=str(self.status.currentData()),
+                favorites_only=self.favorites_only.isChecked(),
             ),
         )
         self._target_by_id = {target.instance_id: target for target in visible}
+        self.table.clearContents()
         self.table.setRowCount(len(visible))
+        self.table.clearSelection()
+        self.table.setCurrentCell(-1, -1)
         for row, target in enumerate(visible):
             values = {
                 0: "",
                 1: target.name or "—",
                 2: target.instance_id,
                 3: target.private_ip_address or "—",
+                4: "",
+                5: "",
+                6: ec2_connection_time(target.last_connected_at),
+                7: "",
             }
             for column, value in values.items():
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, target.instance_id)
+                item.setToolTip(value)
                 self.table.setItem(row, column, item)
             self.table.setCellWidget(
                 row,
@@ -277,11 +358,24 @@ class Ec2Page(QWidget):
                     )
                 ),
             )
+            self.table.setCellWidget(
+                row,
+                5,
+                _centered_cell(
+                    _status_label(
+                        "준비됨" if target.ssm_ready else "지원 안됨",
+                        "success" if target.ssm_ready else "danger",
+                        icon="common-circle-check.svg" if target.ssm_ready else "common-ban.svg",
+                    )
+                ),
+            )
             favorite = QPushButton()
             favorite.setObjectName("ec2_favorite")
             favorite.setProperty("icon_only", True)
-            favorite.setIcon(
-                gui_icon("star-solid-full.svg" if target.favorite else "star-regular-full.svg")
+            set_button_icon(
+                favorite,
+                "star-solid-full.svg" if target.favorite else "star-regular-full.svg",
+                color="#2563eb" if target.favorite else "#172033",
             )
             favorite.setIconSize(QSize(18, 18))
             favorite.setFixedSize(30, 30)
@@ -293,7 +387,7 @@ class Ec2Page(QWidget):
             favorite.clicked.connect(
                 lambda _checked=False, value=target: self.toggle_favorite(value)
             )
-            self.table.setCellWidget(row, 0, favorite)
+            self.table.setCellWidget(row, 0, _centered_cell(favorite))
             action = QPushButton(_target_action_text(target))
             action.setObjectName("ec2_row_action")
             if target.instance_state == "stopped":
@@ -306,9 +400,9 @@ class Ec2Page(QWidget):
                 action.setText("")
                 set_button_icon(
                     action,
-                    "common-refresh.svg",
+                    "ec2-terminal.svg",
                     tooltip=_target_action_text(target),
-                    color="#ffffff",
+                    color="#94a3b8",
                 )
             action.setProperty("action_button", True)
             action.setProperty("variant", _target_action_role(target))
@@ -316,28 +410,109 @@ class Ec2Page(QWidget):
             action.clicked.connect(
                 lambda _checked=False, value=target: self.run_target_action(value)
             )
-            action.ensurePolished()
-            action_item = QTableWidgetItem()
-            # Include the shared table cell padding so the rounded button is not clipped.
-            action_item.setSizeHint(QSize(action.sizeHint().width() + 24, 54))
-            self.table.setItem(row, 5, action_item)
-            self.table.setCellWidget(row, 5, action)
-            self.table.setRowHeight(row, 54)
+            actions = QWidget()
+            action_layout = QHBoxLayout(actions)
+            action_layout.setContentsMargins(8, 4, 8, 4)
+            action_layout.setSpacing(10)
+            action_layout.addWidget(action)
+            more = QPushButton()
+            set_button_icon(more, "common-more.svg", tooltip="더보기")
+            more.setObjectName("ec2_more")
+            more.setProperty("action_button", True)
+            more.setToolTip("더보기")
+            more.setAccessibleName(f"{target.name or target.instance_id} 더보기")
+            more.clicked.connect(
+                lambda _checked=False, value=target, button=more: self._show_target_menu(
+                    value, button
+                )
+            )
+            action_layout.addWidget(more)
+            action_layout.addStretch()
+            action_item = self.table.item(row, 7)
+            if action_item is not None:
+                action_item.setSizeHint(QSize(132, 58))
+            self.table.setCellWidget(row, 7, actions)
+            self.table.setRowHeight(row, 58)
+        if selected is not None:
+            self._select_target(selected.instance_id)
+        del blocker
         self._sync_actions()
 
+    def _selected_target(self) -> Ec2Target | None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self.table.item(rows[0].row(), 0)
+        return self._target_by_id.get(str(item.data(Qt.ItemDataRole.UserRole))) if item else None
+
     def _sync_actions(self) -> None:
+        target = self._selected_target()
         self.open_button.setEnabled(
-            self.table.currentRow() >= 0 and self._profile_id is not None and not self._action_busy
+            target is not None
+            and target.ssm_ready
+            and target.instance_state in {None, "running"}
+            and self._profile_id is not None
+            and not self._action_busy
+        )
+        self.summary_icon.setVisible(target is not None and target.last_connected_at is not None)
+        if target is None:
+            self.session_state.setText("인스턴스를 선택하세요.")
+            return
+        history = (
+            f"마지막 연결 성공 ({ec2_connection_time(target.last_connected_at)})"
+            if target.last_connected_at is not None
+            else "연결 이력 없음"
+        )
+        self.session_state.setText(
+            f"선택한 인스턴스: {target.instance_id} · {target.name or '-'} · {history}"
         )
 
+    def _show_target_menu(self, target: Ec2Target, button: QPushButton) -> None:
+        self._select_target(target.instance_id)
+        menu = QMenu(button)
+        menu.setObjectName("ec2_target_menu")
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        copy_id = menu.addAction(gui_icon("common-copy.svg"), "인스턴스 ID 복사")
+        copy_id.triggered.connect(lambda: copy_temporarily(target.instance_id))
+        copy_ip = menu.addAction(gui_icon("common-copy.svg"), "Private IP 복사")
+        copy_ip.setEnabled(bool(target.private_ip_address))
+        copy_ip.triggered.connect(lambda: copy_temporarily(target.private_ip_address or ""))
+        tags = menu.addAction(gui_icon("common-tag.svg"), "태그 보기")
+        tags.triggered.connect(lambda: self._show_tags(target))
+        menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _show_tags(self, target: Ec2Target) -> None:
+        dialog = QDialog(self)
+        dialog.setObjectName("ec2_tags_dialog")
+        dialog.setWindowTitle("태그 보기")
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.resize(560, 360)
+        layout = QVBoxLayout(dialog)
+        heading = QLabel(target.instance_id)
+        heading.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(heading)
+        table = QTableWidget(len(target.tags), 2)
+        table.setHorizontalHeaderLabels(["키", "값"])
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.verticalHeader().hide()
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        for row, (key, value) in enumerate(target.tags):
+            table.setItem(row, 0, QTableWidgetItem(key))
+            table.setItem(row, 1, QTableWidgetItem(value))
+        layout.addWidget(table)
+        if not target.tags:
+            layout.addWidget(QLabel("표시할 태그가 없습니다."))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.close)
+        layout.addWidget(buttons)
+        dialog.show()
+
     def run_target_action(self, target: Ec2Target) -> None:
-        if self._action_busy or self._profile_id is None:
+        if self._action_busy or self._profile_id is None or not _target_action_enabled(target):
             return
         self._select_target(target.instance_id)
         if target.instance_state == "stopped":
             self._run_power_action(target, "start")
-        elif target.instance_state == "running" and target.ping_status != "Online":
-            self._run_power_action(target, "reboot")
         else:
             self.open_selected()
 
@@ -345,7 +520,7 @@ class Ec2Page(QWidget):
         if self._action_busy or self._profile_id is None:
             return
         profile_id = self._profile_id
-        region = self.region.text().strip()
+        region = self.region.currentText().strip()
         self._action_busy = True
         self._render_targets()
         self._runner.submit(
@@ -360,24 +535,31 @@ class Ec2Page(QWidget):
         if self._profile_id is None:
             return
         profile_id = self._profile_id
-        region = self.region.text().strip()
+        region = self.region.currentText().strip()
         self._action_busy = True
         self._render_targets()
-        self.session_state.setText(
-            "인스턴스 시작 요청 중…" if action == "start" else "재부팅 요청 중…"
-        )
+        self.notice_raised.emit("인스턴스 시작 요청 중…")
         operation = (
             self._service.start_instance if action == "start" else self._service.reboot_instance
         )
-        self._runner.submit(
-            lambda: operation(target.instance_id, profile_id, region=region),
-            lambda _value: self._power_requested(action),
-            self._failed,
-        )
+
+        def request() -> object:
+            return operation(target.instance_id, profile_id, region=region)
+
+        if self._authenticated is None:
+            self._runner.submit(request, lambda _value: self._power_requested(action), self._failed)
+        else:
+            self._authenticated.submit(
+                profile_id,
+                request,
+                lambda _value: self._power_requested(action),
+                self._failed,
+                self._cancelled,
+            )
 
     def _power_requested(self, action: str) -> None:
         self._action_busy = False
-        self.session_state.setText(
+        self.notice_raised.emit(
             "시작 요청이 접수되었습니다. 상태를 새로고침하세요."
             if action == "start"
             else "재부팅 요청이 접수되었습니다. 상태를 새로고침하세요."
@@ -392,6 +574,14 @@ class Ec2Page(QWidget):
                 return
 
     def open_selected(self) -> None:
+        target = self._selected_target()
+        if (
+            self._action_busy
+            or target is None
+            or not target.ssm_ready
+            or target.instance_state not in {None, "running"}
+        ):
+            return
         row = self.table.currentRow()
         if row < 0 or self._profile_id is None:
             return
@@ -400,11 +590,11 @@ class Ec2Page(QWidget):
             return
         instance_id = str(selected.data(Qt.ItemDataRole.UserRole))
         profile_id = self._profile_id
-        region = self.region.text().strip()
+        region = self.region.currentText().strip()
         self.open_button.setEnabled(False)
         self._action_busy = True
         self._render_targets()
-        self.session_state.setText("외부 터미널 시작 중…")
+        self.notice_raised.emit("외부 터미널 시작 중…")
 
         def action(context: OperationContext | None = None) -> object:
             return self._service.connect_external(
@@ -426,14 +616,9 @@ class Ec2Page(QWidget):
             )
 
     def _external_started(self, value: Any) -> None:
-        handle = value
-        self.session_state.setText(
-            f"{handle.instance_id} · PID {handle.process_id} · {handle.state.value}"
-        )
         self.notice_raised.emit("EC2 세션을 외부 Windows Terminal에서 열었습니다.")
         self._action_busy = False
-        self._render_targets()
-        self.open_button.setEnabled(True)
+        self.reload()
         self._poll_timer.start()
 
     def refresh_session_states(self) -> None:
@@ -447,18 +632,10 @@ class Ec2Page(QWidget):
         all_handles = list(value)
         handles = [item for item in all_handles if item.profile_id == self._profile_id]
         any_running = any(item.state is OperationState.RUNNING for item in all_handles)
-        running = [handle for handle in handles if handle.state is OperationState.RUNNING]
-        if running:
-            self.session_state.setText(
-                " · ".join(f"{item.instance_id} (PID {item.process_id})" for item in running)
-            )
-        elif handles:
-            latest = handles[-1]
-            self.session_state.setText(f"{latest.instance_id} · {latest.state.value}")
-            if latest.error is not None:
-                self.error_raised.emit(latest.error)
-        else:
-            self.session_state.setText("외부 세션 없음")
+        for handle in handles:
+            if handle.error is not None:
+                self.error_raised.emit(handle.error)
+        self._sync_actions()
         if not any_running:
             self._poll_timer.stop()
 
@@ -466,14 +643,14 @@ class Ec2Page(QWidget):
         self._action_busy = False
         self._render_targets()
         self.refresh_button.setEnabled(self._profile_id is not None)
-        self.open_button.setEnabled(self.table.currentRow() >= 0)
-        self.session_state.setText("작업 실패 · 다시 시도할 수 있습니다.")
+        self._sync_actions()
         self.error_raised.emit(error)
 
     def _cancelled(self) -> None:
         self.refresh_button.setEnabled(self._profile_id is not None)
-        self.open_button.setEnabled(self.table.currentRow() >= 0)
-        self.session_state.setText("MFA 인증 취소")
+        self._action_busy = False
+        self._render_targets()
+        self.notice_raised.emit("MFA 인증 취소")
 
 
 class RdsPage(QWidget):
@@ -495,6 +672,7 @@ class RdsPage(QWidget):
         authenticated: AuthenticatedOperationCoordinator | None = None,
         discard_confirmation: DiscardConfirmation | None = None,
         endpoints: RdsEndpointService | None = None,
+        rename_name_provider: CloneNameProvider | None = None,
     ) -> None:
         super().__init__()
         self.setObjectName("rds_page")
@@ -511,6 +689,7 @@ class RdsPage(QWidget):
             if authenticated is not None
             else None
         )
+        self._rename_name_provider = rename_name_provider or _ask_rename_name
         self._endpoints = endpoints
         self._profile_id: int | None = None
         self._saved: dict[int, TunnelSession] = {}
@@ -520,7 +699,14 @@ class RdsPage(QWidget):
         self._relays_ready = False
         self._connection_busy = False
         self._editor_baseline: tuple[object, ...] | None = None
+        self._port_available: bool | None = None
+        self._port_revision = 0
+        self._port_timer = QTimer(self)
+        self._port_timer.setSingleShot(True)
+        self._port_timer.setInterval(250)
+        self._port_timer.timeout.connect(self._check_local_port)
         self._build_ui()
+        self.local_port.valueChanged.connect(self._schedule_port_check)
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(2000)
         self._poll_timer.timeout.connect(self.refresh_active)
@@ -534,13 +720,13 @@ class RdsPage(QWidget):
         title_block.setSpacing(4)
         title = QLabel("RDS 터널")
         title.setObjectName("page_title")
-        subtitle = QLabel("PuTTY 세션처럼 연결 정보를 저장하고 다시 사용할 수 있습니다.")
+        subtitle = QLabel("터널 연결 정보를 저장하고 필요할 때 다시 사용할 수 있습니다.")
         subtitle.setObjectName("page_subtitle")
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
         heading.addLayout(title_block)
         heading.addStretch()
-        self.new_button = QPushButton("새 세션")
+        self.new_button = QPushButton("+ 새 터널")
         self.new_button.setObjectName("rds_new")
         self.new_button.setProperty("variant", "primary")
         self.new_button.clicked.connect(lambda: self.new_session())
@@ -556,7 +742,7 @@ class RdsPage(QWidget):
         left.setSpacing(8)
         self.search = QLineEdit()
         self.search.setObjectName("rds_search")
-        self.search.setPlaceholderText("세션명 또는 RDS Host")
+        self.search.setPlaceholderText("이름 또는 RDS Host 검색")
         self.search.setAccessibleName("저장 세션 검색")
         self.search.addAction(
             gui_icon("common-search.svg"), QLineEdit.ActionPosition.LeadingPosition
@@ -581,6 +767,8 @@ class RdsPage(QWidget):
         self.editor_status_dot.setObjectName("status_dot")
         self.editor_title = QLabel("새 세션")
         self.editor_title.setObjectName("rds_editor_title")
+        self.editor_title.setTextFormat(Qt.TextFormat.PlainText)
+        self.editor_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.editor_subtitle = QLabel("연결 정보를 입력하고 저장하세요.")
         self.editor_subtitle.setObjectName("page_subtitle")
         editor_title_block = QVBoxLayout()
@@ -588,8 +776,13 @@ class RdsPage(QWidget):
         editor_title_block.addWidget(self.editor_title)
         editor_title_block.addWidget(self.editor_subtitle)
         editor_heading.addWidget(self.editor_status_dot)
-        editor_heading.addLayout(editor_title_block)
-        editor_heading.addStretch()
+        editor_heading.addLayout(editor_title_block, 1)
+        self.rename_button = QPushButton()
+        self.rename_button.setObjectName("rds_rename")
+        self.rename_button.setProperty("action_button", True)
+        set_button_icon(self.rename_button, "common-edit.svg", tooltip="터널 이름 변경")
+        self.rename_button.clicked.connect(self.rename_selected)
+        editor_heading.addWidget(self.rename_button)
         editor.addLayout(editor_heading)
         details_widget = QWidget()
         details_widget.setObjectName("rds_editor_details")
@@ -625,10 +818,24 @@ class RdsPage(QWidget):
         self.local_port.setValue(13306)
         self.relay = QComboBox()
         self.relay.setObjectName("rds_relay")
+        self.relay.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.relay.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.relay.currentIndexChanged.connect(self._sync_editor_actions)
         self.name_field = _field("세션명", self.name)
         form.addWidget(self.name_field, 0, 0, 1, 2)
-        form.addWidget(_field("중계 EC2", self.relay), 1, 0, 1, 2)
+        form.addWidget(
+            _field(
+                "SSM 중계 EC2",
+                self.relay,
+                help_text="RDS에 접근하여 SSM 포트포워딩을 실행할 EC2입니다.",
+            ),
+            1,
+            0,
+            1,
+            2,
+        )
         host_controls = QWidget()
         host_controls.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         host_layout = QVBoxLayout(host_controls)
@@ -636,9 +843,38 @@ class RdsPage(QWidget):
         host_layout.setSpacing(6)
         host_layout.addWidget(self.host_catalog)
         host_layout.addWidget(self.host)
-        form.addWidget(_field("RDS Host", host_controls), 2, 0, 1, 2)
-        form.addWidget(_field("Remote Port", self.remote_port), 3, 0)
-        form.addWidget(_field("Local Port", self.local_port), 3, 1)
+        form.addWidget(
+            _field(
+                "RDS 엔드포인트",
+                host_controls,
+                help_text="중계 EC2에서 연결할 RDS의 호스트 주소입니다.",
+            ),
+            2,
+            0,
+            1,
+            2,
+        )
+        form.addWidget(_field("RDS Port", self.remote_port), 3, 0)
+        port_controls = QWidget()
+        port_layout = QHBoxLayout(port_controls)
+        port_layout.setContentsMargins(0, 0, 0, 0)
+        port_layout.setSpacing(10)
+        self.port_status = QLabel()
+        self.port_status.setObjectName("rds_port_status")
+        self.port_status.setFixedWidth(24)
+        port_layout.addWidget(self.local_port, 1)
+        port_layout.addWidget(self.port_status)
+        form.addWidget(
+            _field(
+                "로컬 포트",
+                port_controls,
+                help_text="로컬 PC의 127.0.0.1에서 열릴 포트입니다. 빈 포트를 입력하세요.",
+            ),
+            3,
+            1,
+        )
+        form.setColumnStretch(0, 1)
+        form.setColumnStretch(1, 1)
         details.addLayout(form)
         self.relay_status = QLabel("중계 EC2 목록을 불러오기 전에는 저장할 수 없습니다.")
         self.relay_status.setObjectName("rds_relay_status")
@@ -647,24 +883,73 @@ class RdsPage(QWidget):
         details.addSpacing(16)
         self.tunnel_state = QLabel("중지됨")
         self.tunnel_state.setObjectName("rds_tunnel_state")
-        self.tunnel_state.setWordWrap(False)
-        self.copy_address_button = QPushButton()
+        self.tunnel_state.setWordWrap(True)
+        self.tunnel_state.setTextFormat(Qt.TextFormat.PlainText)
+        self.tunnel_state.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.copy_address_button = QToolButton()
+        self.copy_address_button.setText("접속 정보 복사")
+        self.copy_address_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.copy_address_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.copy_address_button.setObjectName("rds_copy_address")
         set_button_icon(
             self.copy_address_button,
             "common-clipboard.svg",
-            tooltip="로컬 주소 복사",
-            accessible_name="실행 중인 RDS 터널 로컬 주소 복사",
+            tooltip="접속 정보 복사",
+            accessible_name="접속 정보 복사",
         )
         self.copy_address_button.setEnabled(False)
         self.copy_address_button.clicked.connect(self.copy_selected_address)
+        copy_menu = QMenu(self.copy_address_button)
+        for label, copy_format in (
+            ("Host: 127.0.0.1", "host"),
+            ("Port", "port"),
+            ("127.0.0.1:포트", "address"),
+            ("전체 매핑 문자열", "mapping"),
+        ):
+            action = copy_menu.addAction(label)
+            action.triggered.connect(
+                lambda _checked=False, value=copy_format: self.copy_connection_info(value)
+            )
+        self.copy_address_button.setMenu(copy_menu)
         self.notice = QFrame()
-        self.notice.setObjectName("notice")
-        self.notice.setFixedHeight(42)
-        notice_layout = QVBoxLayout(self.notice)
+        self.notice.setObjectName("rds_connection_card")
+        self.notice.setMinimumHeight(46)
+        notice_layout = QHBoxLayout(self.notice)
         notice_layout.setContentsMargins(12, 6, 12, 6)
-        notice_layout.addWidget(self.tunnel_state)
+        notice_layout.setSpacing(10)
+        self.connection_icon = QLabel()
+        self.connection_icon.setObjectName("rds_connection_icon")
+        self.connection_icon.setPixmap(
+            gui_icon("link-solid-full.svg", color="#2563eb", size=20).pixmap(20, 20)
+        )
+        self.connection_label = QLabel("연결됨")
+        self.connection_label.setObjectName("rds_connection_label")
+        notice_layout.addWidget(self.connection_icon)
+        notice_layout.addWidget(self.connection_label)
+        notice_layout.addWidget(self.tunnel_state, 1)
+        self.connection_icon.hide()
+        self.connection_label.hide()
         details.addWidget(self.notice)
+        self.running_notice = icon_text(
+            "common-info.svg",
+            "터널이 실행 중인 동안에는 연결 정보를 수정할 수 없습니다. "
+            "변경하려면 터널을 먼저 중지해주세요.",
+            color="#00a166",
+        )
+        self.running_notice.setObjectName("rds_running_notice")
+        info_label = self.running_notice.findChild(QLabel, "icon_text_label")
+        assert info_label is not None
+        info_label.setWordWrap(True)
+        info_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        info_layout = self.running_notice.layout()
+        assert isinstance(info_layout, QHBoxLayout)
+        info_layout.setContentsMargins(14, 12, 14, 12)
+        info_layout.setStretch(1, 1)
+        details.addSpacing(12)
+        details.addWidget(self.running_notice)
+        self.running_notice.hide()
+        self.copy_notice = QLabel()
+        self.copy_notice.setObjectName("rds_copy_notice")
         details_scroll = QScrollArea()
         details_scroll.setObjectName("rds_editor_details_scroll")
         details_scroll.setWidgetResizable(True)
@@ -692,7 +977,6 @@ class RdsPage(QWidget):
         self.start_button = self.connection_button
         self.stop_button = self.connection_button
         for button in (
-            self.copy_address_button,
             self.clone_button,
             self.delete_button,
             self.save_button,
@@ -703,14 +987,14 @@ class RdsPage(QWidget):
         self.clone_button.clicked.connect(self.clone_selected)
         self.save_button.clicked.connect(self.save)
         self.connection_button.clicked.connect(self.toggle_connection)
-        list_actions = QHBoxLayout()
-        list_actions.addWidget(self.delete_button)
-        list_actions.addStretch()
-        list_actions.addWidget(self.clone_button)
-        left.addLayout(list_actions)
+        self.delete_button.setParent(self)
+        self.clone_button.setParent(self)
+        self.delete_button.hide()
+        self.clone_button.hide()
         self.editor_actions = actions
         self._layout_editor_actions()
         details.addWidget(self.editor_actions_container)
+        details.addWidget(self.copy_notice)
         details.addStretch()
         self._actions_outside_scroll = False
         content.addWidget(self.editor_card, 1)
@@ -727,6 +1011,9 @@ class RdsPage(QWidget):
         if self._profile_id == profile_id:
             return
         self._profile_id = profile_id
+        self._port_revision += 1
+        self._saved.clear()
+        self._active.clear()
         self._relays_ready = False
         self.relay.clear()
         self.relay_status.setText("중계 EC2 목록을 불러오는 중입니다…")
@@ -809,7 +1096,14 @@ class RdsPage(QWidget):
                 draft = QListWidgetItem()
                 draft.setData(Qt.ItemDataRole.UserRole, None)
                 self.session_list.addItem(draft)
-                set_compact_list_row(self.session_list, draft, "새 세션", ("저장되지 않음",))
+                set_compact_list_row(
+                    self.session_list,
+                    draft,
+                    "새 세션",
+                    ("저장되지 않음",),
+                    show_status=True,
+                    trailing=self._session_menu_button(None),
+                )
                 if self._selected_id is None:
                     self.session_list.setCurrentItem(draft)
             for session in self._saved.values():
@@ -825,6 +1119,8 @@ class RdsPage(QWidget):
                     session.name,
                     (f"localhost:{session.local_port} · {'연결됨' if is_active else '중지됨'}",),
                     connected=is_active,
+                    show_status=True,
+                    trailing=self._session_menu_button(session.require_id()),
                 )
                 if session.id == self._selected_id:
                     self.session_list.setCurrentItem(item)
@@ -889,6 +1185,7 @@ class RdsPage(QWidget):
         self.local_port.setValue(13306)
         self._render_sessions()
         self._editor_baseline = self._editor_values()
+        self._check_local_port()
         self._sync_editor_actions()
 
     def prefill_endpoint(self, host: str, remote_port: int) -> None:
@@ -923,7 +1220,126 @@ class RdsPage(QWidget):
             if index >= 0:
                 self.relay.setCurrentIndex(index)
         self._editor_baseline = self._editor_values()
+        self._check_local_port()
         self._sync_editor_actions()
+
+    def _session_menu_button(self, session_id: int | None) -> QPushButton:
+        button = QPushButton()
+        button.setObjectName("rds_session_more")
+        button.setProperty("action_button", True)
+        set_button_icon(button, "common-more.svg", tooltip="터널 더보기")
+        button.clicked.connect(lambda: self._show_session_menu(session_id, button))
+        return button
+
+    def _show_session_menu(self, session_id: int | None, button: QPushButton) -> None:
+        for row in range(self.session_list.count()):
+            item = self.session_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == session_id:
+                self.session_list.setCurrentItem(item)
+                break
+        menu = QMenu(button)
+        menu.setObjectName("rds_session_menu")
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        for text, icon, action in (
+            ("터널 이름 변경", "common-edit.svg", self.rename_selected),
+            ("세션 복제", "common-copy.svg", self.clone_selected),
+        ):
+            entry = menu.addAction(gui_icon(icon), text)
+            entry.setEnabled(session_id is not None and not self._connection_busy)
+            entry.triggered.connect(action)
+        delete = QWidgetAction(menu)
+        delete.setText("세션 삭제")
+        delete_button = QPushButton("세션 삭제")
+        delete_button.setObjectName("rds_menu_delete")
+        set_button_icon(delete_button, "common-delete.svg", color="#d92d20")
+        delete.setDefaultWidget(delete_button)
+        delete.setEnabled(self._selected_operation_id() is None and not self._connection_busy)
+        delete.triggered.connect(self.delete_selected)
+        delete_button.clicked.connect(delete.trigger)
+        delete_button.clicked.connect(menu.close)
+        menu.addAction(delete)
+        menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def rename_selected(self) -> None:
+        if self._selected_id is None or self._profile_id is None or self._connection_busy:
+            return
+        session_id, profile_id = self._selected_id, self._profile_id
+        source = self._saved[session_id]
+        name, confirmed = self._rename_name_provider(self, source.name)
+        if not confirmed:
+            return
+
+        def renamed(session: TunnelSession) -> None:
+            if self._profile_id != profile_id:
+                return
+            self._saved[session_id] = session
+            if self._selected_id == session_id:
+                self.name.setText(session.name)
+                self.editor_title.setText(session.name)
+                if self._editor_baseline is not None:
+                    self._editor_baseline = (session.name, *self._editor_baseline[1:])
+            self._render_sessions()
+            self.notice_raised.emit("세션 이름을 변경했습니다.")
+
+        self._runner.submit(
+            lambda: self._sessions.rename(session_id, name.strip(), profile_id),
+            renamed,
+            self._failed,
+        )
+
+    def _schedule_port_check(self) -> None:
+        self._port_revision += 1
+        self._port_available = None
+        self._sync_editor_actions()
+        self._port_timer.start()
+
+    def _check_local_port(self) -> None:
+        self._port_timer.stop()
+        self._port_revision += 1
+        revision = self._port_revision
+        self._port_available = None
+        if self._profile_id is None or self._selected_operation_id() is not None:
+            self._sync_editor_actions()
+            return
+        port = self.local_port.value()
+        self._sync_editor_actions()
+
+        def loaded(available: bool) -> None:
+            if revision == self._port_revision and self.local_port.value() == port:
+                self._port_available = available
+                self._sync_editor_actions()
+
+        def failed(error: ApplicationError) -> None:
+            if revision == self._port_revision:
+                self._port_available = False
+                self._failed(error)
+
+        self._runner.submit(lambda: self._tunnels.local_port_available(port), loaded, failed)
+
+    def _render_port_status(self, running: bool) -> None:
+        available = running or self._port_available
+        if available is None:
+            self.port_status.clear()
+            self.port_status.setToolTip("로컬 포트 확인 중…")
+            return
+        self.port_status.setPixmap(
+            gui_icon(
+                "common-circle-check.svg" if available else "common-circle-exclamation.svg",
+                color="#00a166" if available else "#d92d20",
+                size=24,
+            ).pixmap(24, 24)
+        )
+        message = (
+            "현재 터널이 사용 중인 포트입니다."
+            if running
+            else (
+                "사용 가능한 포트입니다."
+                if available
+                else "이미 사용 중이거나 사용할 수 없는 포트입니다."
+            )
+        )
+        self.port_status.setToolTip(message)
+        self.port_status.setAccessibleName(message)
 
     def clone_selected(self) -> None:
         """Confirm a new name, then create a separate saved-session record."""
@@ -963,6 +1379,8 @@ class RdsPage(QWidget):
         )
 
     def save(self) -> None:
+        if self._selected_operation_id() is not None or self._connection_busy:
+            return
         request = self._save_request()
         if request is None:
             return
@@ -1001,6 +1419,8 @@ class RdsPage(QWidget):
             return
         if self._selected_id is None or self._profile_id is None:
             return
+        if self._selected_operation_id() is not None or self._connection_busy:
+            return
         if not self._delete_confirmation(self, self._selected_id):
             return
         selected = self._selected_id
@@ -1021,6 +1441,7 @@ class RdsPage(QWidget):
             or (tunnel_id is None and self._selected_id is None)
             or self._profile_id is None
             or not self._relay_available()
+            or self._port_available is not True
         ):
             return
         selected_id = tunnel_id if tunnel_id is not None else self._selected_id
@@ -1084,6 +1505,7 @@ class RdsPage(QWidget):
         )
 
     def _active_loaded(self, value: Any) -> None:
+        was_running = self._selected_operation_id() is not None
         observed = list(value)
         terminal = [item for item in observed if item.handle.state is not OperationState.RUNNING]
         active = [item for item in observed if item.handle.state is OperationState.RUNNING]
@@ -1129,36 +1551,39 @@ class RdsPage(QWidget):
             self._poll_timer.stop()
             self.tunnel_state.setText("중지됨")
             self.copy_address_button.setEnabled(False)
+        if was_running and self._selected_operation_id() is None:
+            self._check_local_port()
         self._sync_editor_actions()
 
     def _active_selection_changed(
-        self,
-        current: QListWidgetItem | None,
-        _previous: QListWidgetItem | None,
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
     ) -> None:
-        if current is None:
-            self.copy_address_button.setEnabled(False)
-            return
-        operation_id = str(current.data(Qt.ItemDataRole.UserRole))
-        active = self._active.get(operation_id)
-        if active is None:
-            self.copy_address_button.setEnabled(False)
-            return
-        address = f"127.0.0.1:{active.tunnel.local_port}"
-        self.copy_address_button.setProperty("local_address", address)
-        self.copy_address_button.setEnabled(True)
-        self.tunnel_state.setText(
-            f"연결됨 · {address} → {active.tunnel.host}:{active.tunnel.remote_port}"
+        self._sync_editor_actions()
+
+    def _connection_summary(self) -> ActiveTunnelSummaryViewModel | None:
+        operation_id = self._selected_operation_id()
+        active = self._active.get(operation_id) if operation_id is not None else None
+        session = active.tunnel if active is not None else self._saved.get(self._selected_id or -1)
+        if session is None:
+            return None
+        return ActiveTunnelSummaryViewModel(
+            session.name, session.local_port, session.host, session.remote_port, operation_id
         )
 
     def copy_selected_address(self) -> None:
-        address = self.copy_address_button.property("local_address")
-        if isinstance(address, str) and address:
-            copy_temporarily(address)
-            self._address_copied(address)
+        self.copy_connection_info("host_port")
+
+    def copy_connection_info(self, copy_format: str) -> None:
+        summary = self._connection_summary()
+        if summary is None:
+            return
+        text = summary.connection_copy_text(copy_format)
+        copy_temporarily(text)
+        self._address_copied(text)
 
     def _address_copied(self, _address: str) -> None:
-        self.notice_raised.emit("로컬 주소를 복사했습니다. 30초 후 클립보드에서 제거합니다.")
+        self.copy_notice.setText("접속 정보가 복사되었습니다.")
+        self.notice_raised.emit("접속 정보가 복사되었습니다.")
 
     def stop_selected(self) -> None:
         operation_id = self._selected_operation_id()
@@ -1171,6 +1596,8 @@ class RdsPage(QWidget):
 
         operation_id = self._selected_operation_id()
         if operation_id is None:
+            if self._port_available is not True or self._connection_busy:
+                return
             if self._is_editor_dirty():
                 request = self._save_request()
                 if request is not None:
@@ -1287,7 +1714,33 @@ class RdsPage(QWidget):
             selected and relay_available and not self._connection_busy
         )
         self.editor_status_dot.setProperty("active", operation_id is not None)
-        self.editor_status_dot.setVisible(operation_id is not None)
+        running = operation_id is not None
+        editable = not running and not self._connection_busy
+        for control in (self.name, self.host, self.host_catalog, self.remote_port, self.local_port):
+            control.setEnabled(editable)
+        self.relay.setEnabled(editable and relay_available)
+        self.save_button.setEnabled(self._profile_id is not None and relay_available and editable)
+        self.delete_button.setEnabled((selected or self._draft_visible) and editable)
+        self.rename_button.setEnabled(selected and not self._connection_busy)
+        self.connection_button.setEnabled(
+            not self._connection_busy
+            and (running or (selected and relay_available and self._port_available is True))
+        )
+        self.running_notice.setVisible(running)
+        self.connection_icon.setVisible(running)
+        self.connection_label.setVisible(running)
+        self.editor_status_dot.show()
+        self.editor_status_dot.style().unpolish(self.editor_status_dot)
+        self.editor_status_dot.style().polish(self.editor_status_dot)
+        summary = self._connection_summary()
+        self.copy_address_button.setEnabled(summary is not None)
+        if not self._connection_busy:
+            self.tunnel_state.setText(
+                f"· {summary.connection_copy_text('mapping')}"
+                if running and summary is not None
+                else "중지됨 · 연결되지 않았습니다."
+            )
+        self._render_port_status(running)
         if selected:
             self.editor_subtitle.setText(
                 "현재 터널이 실행 중입니다."
@@ -1327,6 +1780,10 @@ class RdsPage(QWidget):
         return self._editor_baseline is not None and self._editor_values() != self._editor_baseline
 
 
+def _ask_rename_name(parent: QWidget, source_name: str) -> tuple[str, bool]:
+    return QInputDialog.getText(parent, "터널 이름 변경", "새 터널 이름", text=source_name)
+
+
 def _ask_clone_name(parent: QWidget, source_name: str) -> tuple[str, bool]:
     return QInputDialog.getText(
         parent,
@@ -1349,7 +1806,7 @@ def _confirm_discard(parent: QWidget) -> bool:
     )
 
 
-def _field(label: str, control: QWidget) -> QWidget:
+def _field(label: str, control: QWidget, *, help_text: str | None = None) -> QWidget:
     container = QWidget()
     container.setObjectName("field")
     layout = QVBoxLayout(container)
@@ -1357,12 +1814,31 @@ def _field(label: str, control: QWidget) -> QWidget:
     layout.setSpacing(6)
     caption = QLabel(label)
     caption.setObjectName("field_label")
-    layout.addWidget(caption)
+    if help_text is None:
+        layout.addWidget(caption)
+    else:
+        caption_row = QHBoxLayout()
+        caption_row.addWidget(caption)
+        help_icon = QToolButton()
+        help_icon.setObjectName("field_help")
+        set_button_icon(help_icon, "common-info.svg", tooltip=help_text, color="#7b88a5", size=16)
+        caption_row.addWidget(help_icon)
+        caption_row.addStretch()
+        layout.addLayout(caption_row)
     layout.addWidget(control)
     return container
 
 
-def _status_label(text: str, status: str) -> QLabel:
+def _status_label(text: str, status: str, *, icon: str | None = None) -> QWidget:
+    if icon is not None:
+        badge = icon_text(icon, text, color="#00a166" if status == "success" else "#d92d20")
+        badge_layout = badge.layout()
+        if badge_layout is not None:
+            badge_layout.setContentsMargins(6, 0, 6, 0)
+            badge_layout.setSpacing(4)
+        badge.setProperty("status", status)
+        badge.setFixedHeight(28)
+        return badge
     label = QLabel(text)
     label.setProperty("status", status)
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1388,20 +1864,16 @@ def _instance_state_label(state: str | None) -> str:
 def _target_action_text(target: Ec2Target) -> str:
     if target.instance_state == "stopped":
         return "인스턴스 실행"
-    if target.instance_state == "running" and target.ping_status != "Online":
-        return "재부팅"
-    return "터미널 열기 ↗"
+    if not target.ssm_ready:
+        return "SSM 연결을 지원하지 않거나 현재 사용할 수 없습니다."
+    return "터미널 열기"
 
 
 def _target_action_role(target: Ec2Target) -> str:
-    if target.instance_state == "running" and target.ping_status != "Online":
-        return "danger"
-    if target.ping_status == "Online":
-        return "primary"
-    return "default"
+    return "primary" if target.ssm_ready and target.instance_state != "stopped" else "default"
 
 
 def _target_action_enabled(target: Ec2Target) -> bool:
-    if not target.power_actions_available and target.ping_status != "Online":
-        return False
-    return target.instance_state in {None, "running", "stopped"}
+    if target.instance_state == "stopped":
+        return target.power_actions_available
+    return target.ssm_ready and target.instance_state in {None, "running"}

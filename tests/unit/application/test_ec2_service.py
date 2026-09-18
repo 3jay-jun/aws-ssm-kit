@@ -513,3 +513,76 @@ def test_power_actions_reject_invalid_state(method: str, state: str, code: str) 
 
     power.start_instance.assert_not_called()
     power.reboot_instance.assert_not_called()
+
+
+def test_favorites_filter_combines_keyword_power_and_ssm() -> None:
+    targets = [
+        Ec2Target("i-a", "web", "10.0.0.1", "Linux", "Online", favorite=True),
+        Ec2Target("i-b", "web", "10.0.0.2", "Linux", "Online"),
+        Ec2Target("i-c", "web", "10.0.0.3", "Linux", "Offline", "stopped", True),
+    ]
+    assert (
+        filter_ec2_targets(targets, Ec2TargetFilter("10.0", "all", "running", True)) == targets[:1]
+    )
+    assert (
+        filter_ec2_targets(targets, Ec2TargetFilter("i-c", "all", "stopped", True)) == targets[2:]
+    )
+    assert filter_ec2_targets(targets, Ec2TargetFilter("absent", "all", "all", True)) == []
+
+
+def test_targets_include_tags_and_scoped_connection_history() -> None:
+    from datetime import UTC, datetime
+
+    service, managed, metadata, _plugin = build_service()
+    timestamp = datetime(2026, 9, 17, tzinfo=UTC)
+    metadata.describe.return_value["i-online"] = Ec2Metadata(
+        "i-online", "web", "10.0.1.1", (("Environment", "test"),)
+    )
+    activity = Mock()
+    activity.recent_ec2_connections.return_value = {"i-online": timestamp}
+    service._activity_logs = activity
+    targets = service.list_targets_in_region("dev", "us-east-1")
+    target = next(item for item in targets if item.instance_id == "i-online")
+    assert target.tags == (("Environment", "test"),)
+    assert target.last_connected_at == timestamp
+    assert target.ssm_ready
+    activity.recent_ec2_connections.assert_called_once_with(1, "us-east-1")
+    service._inventory = Mock()
+    service._inventory.list_inventory.return_value = [
+        Ec2Instance("i-online", "running", "web", "10.0.1.1", "Linux", target.tags)
+    ]
+    managed.list_managed.return_value = managed.list_online.return_value
+    assert service.list_targets_in_region("dev", "us-east-1")[0].tags == target.tags
+
+
+def test_external_shell_records_success_only_after_launch_and_excludes_secret_commands() -> None:
+    service, _managed, _metadata, _plugin = build_service()
+    activity = Mock()
+    service._activity_logs = activity
+    runner = Mock()
+    service._managed_runner = runner
+    runner.start.side_effect = PluginExecutionError("plugin.launch.failed", "test")
+    with pytest.raises(PluginExecutionError):
+        service.connect_external("i-online")
+    assert not any(
+        call.kwargs.get("message_code") == "ec2.connection.succeeded"
+        for call in activity.record.call_args_list
+    )
+    runner.start.side_effect = None
+    runner.start.return_value = ManagedSsmSession("op", 9000, "session", OperationState.RUNNING)
+    service.connect_external("i-online", region="us-east-1")
+    activity.record.assert_any_call(
+        feature="ec2",
+        target="i-online",
+        result="succeeded",
+        message_code="ec2.connection.succeeded",
+        operation="connect",
+        profile_id=1,
+        region="us-east-1",
+    )
+    activity.record.reset_mock()
+    service.connect_external("i-online", document_name="AWS-StartInteractiveCommand", parameters={})
+    assert not any(
+        call.kwargs.get("message_code") == "ec2.connection.succeeded"
+        for call in activity.record.call_args_list
+    )

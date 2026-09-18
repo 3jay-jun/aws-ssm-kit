@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from aws_connect.domain.app_settings import AppSettings
 from aws_connect.domain.aws_profile import AwsProfile, PlainCredentials, SessionCredentials
+from aws_connect.domain.execution_log import ExecutionLogEvent, ExecutionLogFilter
 from aws_connect.domain.s3_location import S3Location
 from aws_connect.domain.saved_secret import SavedSecret
 from aws_connect.domain.tunnel_session import TunnelSession
@@ -43,6 +44,17 @@ class ProfileStore(Protocol):
     def get_session(self, profile_id: int) -> SessionCredentials | None: ...
     def put_session(self, session: SessionCredentials) -> None: ...
     def delete_session(self, profile_id: int) -> None: ...
+
+
+class ExecutionLogRepository(Protocol):
+    def append_execution_log(self, event: ExecutionLogEvent) -> None: ...
+    def query_execution_logs(
+        self, query: ExecutionLogFilter, limit: int
+    ) -> list[ExecutionLogEvent]: ...
+
+
+class ExecutionLogSanitizer(Protocol):
+    def sanitize(self, event: ExecutionLogEvent) -> ExecutionLogEvent: ...
 
 
 class TunnelSessionStore(Protocol):
@@ -89,6 +101,7 @@ class Ec2Metadata:
     instance_id: str
     name: str | None
     private_ip_address: str | None
+    tags: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -146,6 +159,7 @@ class Ec2Instance:
     name: str | None
     private_ip_address: str | None
     platform_name: str | None
+    tags: tuple[tuple[str, str], ...] = ()
 
 
 class Ec2InventoryGateway(Protocol):
@@ -306,6 +320,10 @@ class S3Object:
 
 
 class S3Gateway(Protocol):
+    def rename_object(
+        self, credentials: PlainCredentials, region: str, bucket: str, key: str, target: str
+    ) -> None: ...
+
     def list_buckets(self, credentials: PlainCredentials, region: str) -> list[str]: ...
 
     def list_objects(

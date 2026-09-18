@@ -462,18 +462,20 @@ def test_saved_click_restores_via_ec2_and_marks_missing_relay_unavailable() -> N
     assert not page.get_button.isEnabled()
 
 
-def test_removed_secret_count_summary_and_relay_guidance_are_absent() -> None:
+def test_secret_count_and_conditional_relay_guidance() -> None:
     _app()
     service = FakeSecrets()
     page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
     page.get_secret()
 
-    visible_copy = " ".join(label.text() for label in page.findChildren(QLabel))
-    assert "조회 가능한 Secret" not in visible_copy
-    assert "SQLite 저장 항목" not in visible_copy
-    assert "Secret 값" not in visible_copy
-    assert "경유 조회는 SSM Run Command" not in visible_copy
+    assert page.saved_count.text() == "1"
+    assert page.relay_panel.isHidden()
+    assert page.relay_consent.isHidden()
+    assert page.relay_notice.isHidden()
+    page.lookup_mode.setCurrentIndex(1)
+    assert not page.relay_notice.isHidden()
+    assert not page.relay_panel.isHidden()
 
 
 def test_main_window_wires_secret_endpoint_to_unsaved_rds_editor() -> None:
@@ -543,7 +545,8 @@ def test_copy_all_uses_exact_raw_value_and_shared_clipboard_policy(monkeypatch) 
     page.copy_all_button.click()
     assert copied == [service.result.raw_secret_string()]
     assert page.fields.item(2, 1).text() != RAW
-    assert page.summary.isHidden()
+    assert not page.summary.isHidden()
+    assert "Secret ID" in page.summary.text()
 
 
 def test_short_arn_keeps_full_lookup_identity_and_compact_rows() -> None:
@@ -600,3 +603,125 @@ def test_shared_secret_dialog_has_readonly_sequence_and_preserves_arn(monkeypatc
 
     monkeypatch.setattr(QDialog, "exec", cancel)
     assert _prompt_saved_secret(parent, None) is None
+
+
+def test_relay_test_failure_blocks_lookup_and_retry_recovers() -> None:
+    from aws_connect.domain.errors import ConfigurationError
+
+    _app()
+    service = FakeSecrets()
+    service.test_relay_connection = Mock(
+        side_effect=ConfigurationError("secret.relay.instance.not_online", "Relay is offline")
+    )
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    errors = []
+    page.error_raised.connect(errors.append)
+    page.set_profile(1)
+    page.lookup_mode.setCurrentIndex(1)
+    page.relay_consent.setChecked(True)
+    assert page.get_button.isEnabled()
+    page.test_relay_button.click()
+    assert errors[0].message_code == "secret.relay.instance.not_online"
+    assert not page.get_button.isEnabled()
+    page.get_secret()
+    assert service.get_count == 0
+    service.test_relay_connection.side_effect = None
+    service.test_relay_connection.return_value = SecretRelayTarget("i-online", "Linux")
+    page.test_relay_button.click()
+    assert page.get_button.isEnabled()
+    page.lookup_mode.setCurrentIndex(0)
+    assert page.relay_notice.isHidden() and page.relay_panel.isHidden()
+    page.lookup_mode.setCurrentIndex(1)
+    assert not page.relay_consent.isChecked()
+    assert not page.get_button.isEnabled()
+
+
+def test_raw_and_field_reveal_hide_and_copy_formats_share_policy(monkeypatch) -> None:
+    import json
+
+    _app()
+    service = FakeSecrets()
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    copied: list[str] = []
+    monkeypatch.setattr("aws_connect.presentation.gui.secrets.copy_temporarily", copied.append)
+    page.set_profile(1)
+    page.get_secret()
+    assert page.tabs.currentIndex() == 0
+    assert page.fields.editTriggers() == page.fields.EditTrigger.NoEditTriggers
+    assert page.raw_view.isReadOnly()
+    assert RAW not in page.raw_view.toPlainText()
+    assert "***REDACTED***" in page.raw_view.toPlainText()
+    page._reveal_row(2)
+    assert page.fields.item(2, 1).text() == RAW
+    assert RAW not in page.raw_view.toPlainText()
+    page.reveal_raw_button.click()
+    assert RAW in page.raw_view.toPlainText()
+    page.hide_values_button.click()
+    assert RAW not in page.raw_view.toPlainText()
+    assert page.fields.item(2, 1).text() == "***REDACTED***"
+    page.reveal_raw()
+    page._hide_raw(page._result_generation)
+    assert RAW not in page.raw_view.toPlainText()
+    page.copy_field(2)
+    assert copied[-1] == RAW
+    page.copy_format("json")
+    assert json.loads(copied[-1])["password"] == RAW
+    page.copy_format("key_value")
+    assert f"password: {RAW}" in copied[-1]
+    page.copy_all()
+    assert copied[-1] == service.result.raw_secret_string()
+    assert not page.hide_values_button.isEnabled()
+    page.reveal_raw()
+    page.set_profile(None)
+    assert page.raw_view.toPlainText() == ""
+    assert not page.hide_values_button.isEnabled()
+
+
+def test_saved_menu_copies_identifiers_and_deletes_only_local_snapshot(monkeypatch) -> None:
+    from PySide6.QtWidgets import QMenu
+
+    app = _app()
+    service = FakeSecrets()
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    copied: list[str] = []
+    monkeypatch.setattr("aws_connect.presentation.gui.secrets.copy_temporarily", copied.append)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_: QMessageBox.StandardButton.Yes)
+    page.set_profile(1)
+    page.get_secret()
+    assert page.saved_count.text() == "1"
+    assert page.register_saved_button.text() == "+ 수동 생성"
+    assert page.delete_saved_button.isHidden()
+    page.show()
+    button = page.catalog.itemWidget(page.catalog.item(0)).findChild(QPushButton)
+    button.click()
+    menu = button.findChild(QMenu)
+    assert [action.text() for action in menu.actions()] == [
+        "Secret ID 복사",
+        "이름 복사",
+        "저장된 Secret 삭제",
+    ]
+    menu.actions()[0].trigger()
+    menu.actions()[1].trigger()
+    assert copied == ["arn:test", "arn:test"]
+    menu.actions()[2].trigger()
+    assert service.saved == []
+    assert page.saved_count.text() == "0"
+    assert page._result is None
+    page.close()
+    app.processEvents()
+
+
+def test_stale_lookup_cannot_reveal_previous_profiles_secret() -> None:
+    _app()
+    service = FakeSecrets()
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.set_profile(1)
+    queued = Mock()
+    page._runner = queued
+    page.get_secret()
+    callback = queued.submit.call_args.args[1]
+    page.set_profile(None)
+    callback(service.result)
+    assert page._result is None
+    assert page.raw_view.toPlainText() == ""
+    assert page.fields.rowCount() == 0

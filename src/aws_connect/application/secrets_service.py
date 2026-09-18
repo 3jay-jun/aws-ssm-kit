@@ -6,11 +6,14 @@ import builtins
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
+from aws_connect.application.execution_logging import logged_operation
 from aws_connect.application.operations import OperationContext
 from aws_connect.application.ports import (
     Ec2MetadataGateway,
@@ -78,6 +81,27 @@ class SecretResult:
     version_id: str | None = None
     version_stages: tuple[str, ...] = ()
     _raw_secret_string: str = ""
+    retrieved_at: datetime | None = None
+
+    def json_text(self, *, reveal: bool = False) -> str:
+        """Read-only JSON projection; explicit reveal is required for sensitive leaves."""
+        if self.kind is SecretKind.TEXT:
+            document: object = self._raw_secret_string if reveal else REDACTED
+        else:
+            document = json.loads(self._raw_secret_string)
+            if not reveal:
+                document = _masked_document(document, not isinstance(document, (dict, list)))
+        return json.dumps(document, ensure_ascii=False, indent=2)
+
+    def copy_text(self, format_name: str = "raw") -> str:
+        """Explicit copy formats contain only the retrieved Secret, never authentication data."""
+        if format_name == "json":
+            return self.json_text(reveal=True)
+        if format_name == "key_value":
+            return "\n".join(
+                f"{field.path}: {_value_text(field.reveal())}" for field in self.fields
+            )
+        return self.raw_secret_string()
 
     def field(self, path: str) -> SecretField:
         try:
@@ -129,6 +153,7 @@ class SecretsService:
         remote_gateway: RemoteSecretCommandGateway | None = None,
         metadata: Ec2MetadataGateway | None = None,
         saved: SavedSecretStore | None = None,
+        activity_logs: ActivityLogService | None = None,
     ) -> None:
         self._profiles = profiles
         self._sessions = sessions
@@ -137,7 +162,9 @@ class SecretsService:
         self._remote_gateway = remote_gateway
         self._metadata = metadata
         self._saved = saved
+        self._activity_logs = activity_logs
 
+    @logged_operation("secrets", "get", completion=False, target_parameter="secret_id")
     def get(
         self,
         secret_id: str,
@@ -196,11 +223,13 @@ class SecretsService:
             retrieved.version_id,
             retrieved.version_stages,
         )
+        result = replace(result, retrieved_at=datetime.now(UTC))
         if self._saved is not None:
             self.remember(
                 result.secret_id,
                 selected.require_id(),
                 value=retrieved.secret_string,
+                last_retrieved_at=result.retrieved_at,
                 lookup_mode=mode,
                 relay_instance_id=(
                     instance_id.strip()
@@ -208,6 +237,14 @@ class SecretsService:
                     else None
                 ),
             )
+        record_success(
+            self._activity_logs,
+            "secrets",
+            "get",
+            target=identifier,
+            profile_id=selected.require_id(),
+            region=selected.region,
+        )
         return result
 
     def list_saved(self, profile: str | int | None = None) -> list[SavedSecret]:
@@ -222,6 +259,7 @@ class SecretsService:
         value: str | None = None,
         lookup_mode: SecretLookupMode | None = None,
         relay_instance_id: str | None = None,
+        last_retrieved_at: datetime | None = None,
     ) -> SavedSecret:
         selected = self._profiles.resolve(profile)
         profile_id = selected.require_id()
@@ -236,6 +274,7 @@ class SecretsService:
             value="" if value is None else value,
             lookup_mode=lookup_mode or SecretLookupMode.DIRECT,
             relay_instance_id=relay_instance_id,
+            last_retrieved_at=last_retrieved_at,
         )
         if has_lookup_snapshot:
             return store.upsert_saved_secret(candidate)
@@ -273,6 +312,7 @@ class SecretsService:
                 value=existing.value if value is None else value,
                 lookup_mode=existing.lookup_mode,
                 relay_instance_id=existing.relay_instance_id,
+                last_retrieved_at=existing.last_retrieved_at,
             )
         )
 
@@ -285,7 +325,10 @@ class SecretsService:
         existing = self._require_saved_store().get_saved_secret(saved_secret_id)
         if existing is None or existing.profile_id != selected.require_id():
             raise ConfigurationError("secret.saved.not_found", "Saved Secret was not found")
-        return existing, _parse(existing.identifier, existing.value, None, ())
+        return existing, replace(
+            _parse(existing.identifier, existing.value, None, ()),
+            retrieved_at=existing.last_retrieved_at,
+        )
 
     def delete_saved(self, saved_secret_id: int, profile: str | int | None = None) -> None:
         selected = self._profiles.resolve(profile)
@@ -301,12 +344,21 @@ class SecretsService:
             )
         return self._saved
 
+    @logged_operation("secrets", "list", completion=False)
     def list(self, profile: str | int | None = None) -> list[ListedSecret]:
         """Return optional catalog metadata; direct lookup never depends on this permission."""
 
         selected = self._profiles.resolve(profile)
         credentials = self._sessions.require_credentials(selected.require_id())
-        return self._gateway.list_secrets(credentials, selected.region)
+        result = self._gateway.list_secrets(credentials, selected.region)
+        record_success(
+            self._activity_logs,
+            "secrets",
+            "list",
+            profile_id=selected.require_id(),
+            region=selected.region,
+        )
+        return result
 
     def save_top_level_field(
         self,
@@ -379,6 +431,17 @@ class SecretsService:
             )
             for item in managed
         ]
+
+    @logged_operation(
+        "secrets", "test_relay_connection", completion=True, target_parameter="instance_id"
+    )
+    def test_relay_connection(
+        self, instance_id: str, profile: str | int | None = None
+    ) -> SecretRelayTarget:
+        """Refresh SSM Online/platform eligibility without fetching any Secret value."""
+        selected = self._profiles.resolve(profile)
+        credentials = self._sessions.require_credentials(selected.require_id())
+        return self._require_online_relay(credentials, selected.region, instance_id.strip())
 
     def _require_online_relay(
         self, credentials: PlainCredentials, region: str, instance_id: str
@@ -503,3 +566,18 @@ def _flatten(value: Any, path: str, inherited_sensitive: bool, result: list[Secr
             )
         return
     result.append(SecretField(path or "$", value, inherited_sensitive))
+
+
+def _masked_document(value: Any, sensitive: bool = False) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _masked_document(item, sensitive or is_sensitive_name(str(key)))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_masked_document(item, sensitive) for item in value]
+    return REDACTED if sensitive else value
+
+
+def _value_text(value: object) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)

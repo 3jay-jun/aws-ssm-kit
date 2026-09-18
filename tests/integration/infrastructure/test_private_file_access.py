@@ -78,6 +78,7 @@ def test_runtime_sqlite_sidecars_inherit_only_the_current_user_ace(tmp_path: Pat
     owner_sid = _single_trustee(_dacl_sddl(rollback_root))
     rollback = sqlite3.connect(rollback_database)
     try:
+        rollback.execute("PRAGMA journal_mode=DELETE")
         rollback.execute("CREATE TABLE sample(value TEXT NOT NULL)")
         rollback.commit()
         rollback.execute("BEGIN IMMEDIATE")

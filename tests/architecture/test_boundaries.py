@@ -42,7 +42,7 @@ def test_gui_does_not_import_aws_sqlite_or_cli_adapters() -> None:
     assert found == []
 
 
-def test_s3_scope_excludes_head_and_recursive_delete_apis() -> None:
+def test_s3_scope_allows_head_only_for_rename_and_excludes_batch_delete() -> None:
     root = Path(__file__).resolve().parents[2]
     sources = "\n".join(
         (root / relative).read_text(encoding="utf-8")
@@ -53,6 +53,18 @@ def test_s3_scope_excludes_head_and_recursive_delete_apis() -> None:
     ).lower()
 
     assert "list_buckets" in sources
-    assert "head_object" not in sources
+    # Listing/preflight must not issue a per-row HEAD. A rename explicitly reads
+    # one source's size/ETag so copy and delete can guard the observed revision.
+    import ast
+
+    gateway = ast.parse(
+        (root / "src/aws_connect/infrastructure/aws_s3_gateway.py").read_text(encoding="utf-8")
+    )
+    for method in ast.walk(gateway):
+        if isinstance(method, ast.FunctionDef) and method.name != "rename_object":
+            assert not any(
+                isinstance(node, ast.Attribute) and node.attr == "head_object"
+                for node in ast.walk(method)
+            )
     assert "delete_object" in sources
     assert "delete_objects" not in sources

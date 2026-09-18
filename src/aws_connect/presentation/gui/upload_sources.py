@@ -22,18 +22,19 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFileSystemModel,
-    QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
+    QProgressBar,
     QPushButton,
-    QVBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
     QWidget,
 )
 
 from aws_connect.domain.errors import ApplicationError
-from aws_connect.presentation.gui.icons import gui_icon
+from aws_connect.presentation.gui.icons import gui_icon, set_button_icon
+from aws_connect.presentation.gui.table_selection import add_check_all_header
 from aws_connect.presentation.gui.tasks import GuiTaskRunner, TaskHandle
 
 
@@ -50,12 +51,6 @@ def _read_preview(source: Path, mime_type: str) -> _Preview:
         info = source.stat()
     except OSError:
         return _Preview("파일 정보를 읽을 수 없습니다.", "", QImage())
-    size = float(info.st_size)
-    unit = "B"
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            break
-        size /= 1024
     image = QImage()
     if mime_type.startswith("image/") and info.st_size <= 20 * 1024 * 1024:
         reader = QImageReader(str(source))
@@ -68,17 +63,32 @@ def _read_preview(source: Path, mime_type: str) -> _Preview:
             image = reader.read()
     return _Preview(
         datetime.fromtimestamp(info.st_mtime).strftime("%Y-%m-%d %H:%M"),
-        "폴더"
-        if source.is_dir()
-        else f"{size:.0f} {unit}"
-        if unit == "B"
-        else f"{size:.1f} {unit}",
+        "폴더" if source.is_dir() else format_size(info.st_size),
         image,
     )
 
 
-class UploadSourcesList(QListWidget):
-    """Square cards; blank viewport clicks select files, item clicks select cards."""
+def format_size(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return "0 B"
+
+
+@dataclass
+class UploadQueueEntry:
+    source: Path
+    target: str = ""
+    size: int = 0
+    state: str = "대기"
+    percent: int = 0
+    started: str = "-"
+
+
+class UploadSourcesList(QTableWidget):
+    """Queue presentation; all transfer and retry work belongs to the page/service."""
 
     def __init__(
         self,
@@ -87,34 +97,53 @@ class UploadSourcesList(QListWidget):
         on_choose: Callable[[], None],
         runner: GuiTaskRunner,
     ) -> None:
-        super().__init__()
-        self._on_drag = on_drag
-        self._on_drop = on_drop
-        self._on_choose = on_choose
+        super().__init__(0, 9)
+        self._on_drag, self._on_drop, self._on_choose = on_drag, on_drop, on_choose
         self._runner = runner
         self._generation = 0
         self._previews: list[TaskHandle] = []
         self.setObjectName("s3_upload_sources")
+        self.setWordWrap(False)
+        self.setHorizontalHeaderLabels(
+            ["", "미리보기", "파일명", "크기", "대상 경로", "상태", "진행률", "시작 시간", "작업"]
+        )
         self.setAcceptDrops(True)
-        self.setFlow(QListWidget.Flow.LeftToRight)
-        self.setWrapping(False)
-        self.setSpacing(8)
-        self.setFixedHeight(184)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self.setAccessibleName("업로드 파일: 빈 배경을 클릭해 파일 또는 폴더 추가")
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.verticalHeader().hide()
+        self.verticalHeader().setDefaultSectionSize(42)
+        self.horizontalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for col, width in enumerate((32, 64, 180, 75, 175, 70, 120, 160, 86)):
+            self.setColumnWidth(col, width)
+        self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.setMinimumHeight(214)
+        add_check_all_header(self)
+        self.setAccessibleName("업로드 큐: 빈 배경을 클릭하거나 파일과 폴더를 끌어다 놓으세요")
 
     def clear(self) -> None:
         self._generation += 1
         for task in self._previews:
             task.cancel()
         self._previews.clear()
-        super().clear()
+        self.setRowCount(0)
+
+    def count(self) -> int:
+        return self.rowCount()
+
+    def _cell(self, row: int, column: int) -> QTableWidgetItem:
+        item = self.item(row, column)
+        if item is None:
+            raise RuntimeError("업로드 큐 셀이 초기화되지 않았습니다.")
+        return item
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self.itemAt(event.position().toPoint()) is None
+            and self.indexAt(event.position().toPoint()).row() < 0
         ):
             self._on_choose()
             event.accept()
@@ -123,7 +152,7 @@ class UploadSourcesList(QListWidget):
 
     def paintEvent(self, event: Any) -> None:  # noqa: N802
         super().paintEvent(event)
-        if self.count() == 0:
+        if not self.rowCount():
             painter = QPainter(self.viewport())
             painter.setPen(Qt.GlobalColor.gray)
             painter.drawText(
@@ -142,86 +171,109 @@ class UploadSourcesList(QListWidget):
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         self._on_drop(event)
 
-    def add_source(self, source: Path, mime_type: str, remove: Callable[[Path], None]) -> None:
-        icon_name = (
-            "file-folder.svg"
-            if mime_type == "폴더"
-            else "file-image.svg"
-            if mime_type.startswith("image/")
-            else "file-video.svg"
-            if mime_type.startswith("video/")
-            else "file-default.svg"
-        )
-        card = QFrame()
-        card.setObjectName("upload_source_card")
-        card.setToolTip(str(source))
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 6, 10, 8)
-        layout.setSpacing(3)
-        top = QHBoxLayout()
-        top.addStretch()
-        button = QPushButton("×")
-        button.setObjectName("upload_source_remove")
-        button.setToolTip(f"{source.name} 제거")
-        button.setAccessibleName(f"{source.name} 업로드 대상에서 제거")
-        button.clicked.connect(lambda: remove(source))
-        top.addWidget(button)
-        layout.addLayout(top)
+    def add_entry(
+        self,
+        entry: UploadQueueEntry,
+        mime_type: str,
+        remove: Callable[[Path], None],
+        retry: Callable[[Path], None],
+    ) -> None:
+        row = self.rowCount()
+        self.insertRow(row)
+        check = QTableWidgetItem()
+        check.setCheckState(Qt.CheckState.Unchecked)
+        check.setData(Qt.ItemDataRole.UserRole, entry.source)
+        self.setItem(row, 0, check)
         icon = QLabel()
-        icon.setObjectName("upload_source_icon")
-        icon.setFixedHeight(62)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setPixmap(gui_icon(icon_name).pixmap(QSize(48, 48)))
-        layout.addWidget(icon)
-        name = QLabel()
-        name.setObjectName("upload_source_name")
-        name.setTextFormat(Qt.TextFormat.PlainText)
-        name.setText(
-            name.fontMetrics().elidedText(
-                source.name or str(source), Qt.TextElideMode.ElideRight, 128
+        icon.setPixmap(
+            gui_icon("file-folder.svg" if mime_type == "폴더" else "file-default.svg").pixmap(
+                30, 30
             )
         )
-        name.setFixedWidth(128)
-        layout.addWidget(name)
-        modified = QLabel("정보 확인 중…")
-        size = QLabel("")
-        for label in (modified, size):
-            label.setObjectName("upload_source_metadata")
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            layout.addWidget(label)
-        for label in (icon, name, modified, size):
-            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, source)
-        item.setData(Qt.ItemDataRole.AccessibleTextRole, str(source))
-        item.setToolTip(str(source))
-        item.setSizeHint(QSize(152, 160))
-        self.addItem(item)
-        self.setItemWidget(item, card)
+        self.setCellWidget(row, 1, icon)
+        for col, text in (
+            (2, entry.source.name),
+            (3, "…"),
+            (4, entry.target or "현재 경로"),
+            (5, entry.state),
+            (7, entry.started),
+        ):
+            item = QTableWidgetItem(text)
+            item.setToolTip(str(entry.source) if col == 2 else text)
+            self.setItem(row, col, item)
+        progress = QProgressBar()
+        progress.setRange(0, 100)
+        progress.setValue(entry.percent)
+        self.setCellWidget(row, 6, progress)
+        actions = QWidget()
+        layout = QHBoxLayout(actions)
+        layout.setContentsMargins(4, 5, 4, 5)
+        layout.setSpacing(4)
+        again = QPushButton()
+        again.setObjectName("upload_retry")
+        again.setProperty("action_button", True)
+        set_button_icon(again, "common-refresh.svg", color="#0055ff", tooltip="실패 항목 재시도")
+        again.clicked.connect(lambda: retry(entry.source))
+        again.setVisible(entry.state == "실패")
+        layout.addWidget(again)
+        button = QPushButton()
+        button.setObjectName("upload_source_remove")
+        button.setProperty("action_button", True)
+        button.setProperty("variant", "danger")
+        set_button_icon(
+            button, "common-delete.svg", color="#ffffff", tooltip="큐에서 제거 (S3 파일은 유지)"
+        )
+        button.clicked.connect(lambda: remove(entry.source))
+        layout.addWidget(button)
+        self.setCellWidget(row, 8, actions)
         generation = self._generation
 
         def loaded(value: _Preview) -> None:
-            if self._generation != generation:
+            if generation != self._generation:
                 return
-            modified.setText(value.modified)
-            size.setText(value.size)
+            self._cell(row, 3).setText(value.size)
+            self._cell(row, 3).setToolTip(value.modified)
             if not value.image.isNull():
                 icon.setPixmap(
                     QPixmap.fromImage(value.image).scaled(
-                        104,
-                        62,
+                        44,
+                        34,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation,
                     )
                 )
 
         def failed(_error: ApplicationError) -> None:
-            if self._generation == generation:
-                modified.setText("미리보기를 읽을 수 없습니다.")
+            if generation == self._generation:
+                self._cell(row, 3).setText("읽기 실패")
 
         self._previews.append(
-            self._runner.submit(lambda: _read_preview(source, mime_type), loaded, failed)
+            self._runner.submit(lambda: _read_preview(entry.source, mime_type), loaded, failed)
         )
+
+    def update_entry(self, row: int, entry: UploadQueueEntry, busy: bool) -> None:
+        self._cell(row, 4).setText(
+            entry.target.removeprefix("s3://").partition("/")[2] if entry.target else "현재 경로"
+        )
+        self._cell(row, 4).setToolTip(entry.target)
+        self._cell(row, 5).setText(entry.state)
+        state_icons = {
+            "성공": ("common-circle-check.svg", "#009e55"),
+            "실패": ("common-circle-xmark.svg", "#ff2638"),
+            "대기": ("clock-solid-full.svg", "#7182a5"),
+        }
+        icon, color = state_icons.get(entry.state, ("clock-solid-full.svg", "#0055ff"))
+        self._cell(row, 5).setIcon(gui_icon(icon, color=color))
+        self._cell(row, 7).setText(entry.started)
+        bar = self.cellWidget(row, 6)
+        if isinstance(bar, QProgressBar):
+            bar.setValue(entry.percent)
+        actions = self.cellWidget(row, 8)
+        actions.setEnabled(not busy)
+        retry = actions.findChild(QPushButton, "upload_retry")
+        if retry is not None:
+            retry.setVisible(entry.state == "실패")
 
 
 class UploadSourceDialog(QFileDialog):
