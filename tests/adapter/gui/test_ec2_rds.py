@@ -7,7 +7,8 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QFrame, QHeaderView, QLabel, QPushButton, QWidget
+from PySide6.QtTest import QSignalSpy
+from PySide6.QtWidgets import QApplication, QFrame, QHeaderView, QLabel, QMenu, QPushButton, QWidget
 
 from aws_connect.application.ec2_service import Ec2Target, ExternalSessionHandle
 from aws_connect.application.operations import OperationResult, OperationState
@@ -411,6 +412,8 @@ def test_rds_crud_start_stop_and_dashboard_projection_share_application_dtos() -
     )
     assert page.connection_button.accessibleName() == "연결 종료"
     page.copy_address_button.click()
+    assert app.clipboard().text() == "Host: 127.0.0.1\nPort: 13306"
+    page.copy_address_button.menu().actions()[2].trigger()
     assert app.clipboard().text() == "127.0.0.1:13306"
 
     page.connection_button.click()
@@ -495,6 +498,10 @@ def test_rds_connection_saves_current_editor_values_before_starting() -> None:
     page.host.setText("edited.example.internal")
     page.local_port.setValue(15432)
 
+    # Changing the port disables connection until the debounced check completes.
+    assert not page.connection_button.isEnabled()
+    assert QSignalSpy(page._port_timer.timeout).wait(2000)
+    assert page.connection_button.isEnabled()
     page.connection_button.click()
 
     assert saved.saved[-1].host == "edited.example.internal"
@@ -552,9 +559,20 @@ def test_rds_mockup_split_cards_and_actions_are_single_row() -> None:
     assert page.editor_card.objectName() == "editor_card"
     assert page.findChildren(QPushButton).count(page.connection_button) == 1
     assert page.save_button.geometry().top() == page.connection_button.geometry().top()
-    assert page.delete_button.parentWidget() is page.session_card
-    assert page.clone_button.parentWidget() is page.session_card
-    assert page.delete_button.geometry().left() < page.clone_button.geometry().left()
+    assert page.delete_button.isHidden()
+    assert page.clone_button.isHidden()
+    more = page.session_list.findChild(QPushButton, "rds_session_more")
+    assert more is not None
+    more.click()
+    menu = more.findChild(QMenu, "rds_session_menu")
+    assert menu is not None
+    assert [action.text() for action in menu.actions()] == [
+        "터널 이름 변경",
+        "세션 복제",
+        "세션 삭제",
+    ]
+    assert all(action.isEnabled() for action in menu.actions())
+    menu.close()
     assert page.active_list.isHidden()
     assert not hasattr(page, "target_mode")
     assert page.host.width() == page.name.width()
@@ -808,7 +826,8 @@ def test_rds_endpoint_catalog_selects_host_and_port_without_expanding_editor() -
     assert page.host.text() == "orders-with-a-very-long-database-hostname.cluster.internal"
     assert page.remote_port.value() == 5432
     assert page.host_catalog.width() <= page.editor_card.contentsRect().width()
-    assert page.notice.height() == 42
+    assert page.notice.height() >= page.notice.minimumSizeHint().height()
+    assert page.notice.width() <= page.editor_card.contentsRect().width()
     endpoints.list.assert_called_once_with(1)
 
 

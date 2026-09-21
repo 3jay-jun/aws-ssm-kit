@@ -40,3 +40,23 @@ def test_logging_filter_accepts_records_without_arguments() -> None:
     assert MaskingFilter().filter(record)
     assert record.msg == "safe"
     assert record.args == ()
+
+
+def test_logging_filter_redacts_stack_info_before_formatting() -> None:
+    record = logging.LogRecord(
+        "test",
+        logging.INFO,
+        "",
+        0,
+        "safe",
+        (),
+        None,
+        sinfo="Stack: password=stack-password literal-to-hide",
+    )
+
+    assert MaskingFilter(["literal-to-hide"]).filter(record)
+    rendered = logging.Formatter().format(record)
+    assert "Stack:" in rendered
+    assert REDACTED in rendered
+    assert "stack-password" not in rendered
+    assert "literal-to-hide" not in rendered

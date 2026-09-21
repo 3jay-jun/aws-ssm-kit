@@ -1,5 +1,53 @@
 # aws-ssm-kit 실행 계획
 
+## 2026-09-21 Actions GUI test failure / Windows access violation
+
+- 목표: 첨부 CI 로그의 RDS 4 failures 및 S3 picker native crash를 해결하고 기존
+  check/test 게이트를 유지한다. AWS 호출, workflow 우회, 테스트 skip은 범위 밖.
+- 검색: UploadSourceDialog/QApplication/RdsPage/port_timer. 기존 GUI 테스트는
+  QApplication을 공유하지만 assertion 실패 시 남은 QWidget/자식 timer 정리가 없다.
+- 재현: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_ec2_rds.py tests/adapter/gui/test_s3.py --no-cov -q -o cache_dir=.test-cache-ci-gui --basetemp=.test-ci-gui`
+  → RDS 4 failures 후 test_s3.py:604 QTest.qWait에서 Windows access violation.
+  test_s3.py 단독은 18 passed. 공통 GUI fixture에서 deleteLater/DeferredDelete 정리 후
+  같은 두 모듈은 4 failed, 40 passed, native crash 없음(.test-ci-isolated.log).
+- 수용 기준: Qt 객체를 테스트별 정리, RDS 실제 저장/포트검사/연결 계약 검증,
+  GUI 및 전체 pytest 완료, check.ps1 결과 기록. 기존 RDS UI를 재설계하지 않는다.
+- 결정: tests/adapter/gui/conftest.py에서 application 수명 및 widget 정리를 공유한다.
+  테스트별 별도 subprocess 격리는 충돌을 숨기고 CI 비용이 증가하므로 채택하지 않는다.
+- Qt 삭제 정책 근거: https://doc.qt.io/qt-6/qobject.html#deleteLater
+- 구현: 공통 GUI fixture 적용, 현재 Host/Port 복사 및 행별 메뉴 계약으로 RDS 테스트
+  갱신. 로컬 포트 변경 후 QSignalSpy로 실제 debounce 완료를 기다려 저장→연결 검증.
+  DESIGN의 오래된 하단 버튼 설명을 현재 구현과 동기화했다. 기능 변경 없음.
+- 후속 CI 차단도 확인/해결: RDS 초기화 assert 2건을 명시적 RuntimeError로 교체.
+  authentication_service/masking 필수 분기 커버리지 미달은 기존 history/build_services를
+  재사용한 MFA 취소 2경로 및 stack_info 마스킹 테스트 3건으로 해결(기준 변경 없음).
+  vendor manifest의 공개 SHA256만 secret scan 오탐: 실제 binary checksum 일치 확인 후
+  해당 한 줄에 JSON sha256_note로 allowlist 사유 추가. binary/hash/승인 상태 그대로.
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui --no-cov -q -o cache_dir=.test-cache-ci-gui-all --basetemp=.test-ci-gui-all`
+  → 117 passed. 초기 전체 pytest → 525 passed, 1 skipped, 커버리지 87.60%.
+- 최종 `.venv/Scripts/python.exe -m pytest -q -o cache_dir=.test-cache-ci-full-final --basetemp=.test-ci-full-final`
+  → 528 passed, 1 skipped, 30.61s, 커버리지 87.62% (.test-ci-full-final.log).
+  skip은 기존 Windows symlink 권한 조건이며 신규 skip/xfail 없음.
+  `.venv/Scripts/python.exe tools/verify_critical_coverage.py coverage.xml`
+  → critical 5 files branch 100% passed.
+- `.venv/Scripts/python.exe -m ruff check src tests tools`, `-m ruff format --check src tests tools`
+  → passed / 160 formatted. `-m mypy` → 87 files passed.
+  `tools/architecture_check.py` → passed; `.venv/Scripts/lint-imports.exe` → 2 kept.
+  `.venv/Scripts/python.exe -m bandit -q -r src` → exit 0.
+  `.venv/Scripts/python.exe -m pip_audit --cache-dir .pip-audit-cache-ci` → network sandbox
+  실패 후 승인된 네트워크 실행 exit 0, 알려진 취약점 없음(로컬 프로젝트 자체는 PyPI 미등록).
+- `.venv/Scripts/detect-secrets.exe scan`에 check.ps1과 동일한 `git ls-files -- ':!ref/**' ':!uv.lock'`
+  목록 및 신규 conftest.py 전달 → findings 0. PowerShell ConvertFrom-Json/Get-FileHash로
+  vendor JSON 및 production binary SHA256 일치 통과. Python 보조 JSON 검사는 기존 BOM을
+  기본 UTF-8로 읽어 실패했으므로 실제 build와 같은 PowerShell 판독으로 재검증했다.
+  변경 문서 local_markdown_links 검사 및 변경 파일 `git diff --check` → passed.
+- `./scripts/check.ps1` → 기존 .vendor-license-source/graft 문서 링크 오류 exit 1
+  (.test-ci-check.log). 이 로컬 문제는 QA-001로 유지; 원격 CI 로그의 문서 검사는 통과.
+  전체 check 성공으로 주장하지 않음. 첫 native crash 재현 프로세스는 Ctrl+C로 종료했다.
+- 부수효과: Qt 테스트의 자원 해제 시점만 달라짐. 앱의 AWS 호출/포트/DB/의존성,
+  workflow/build/smoke 게이트 변화 없음. 실제 AWS/원격 Actions는 실행하지 않았다.
+- 다음 단계: 수정사항 push 후 Actions 재실행으로 원격 check 및 production artifact 확인.
+
 ## 2026-09-21 GitHub Actions main production artifact
 
 - 범위/수용 기준: PR의 check/test 및 TEST-ONLY smoke 유지. main과 v* tag는 기존

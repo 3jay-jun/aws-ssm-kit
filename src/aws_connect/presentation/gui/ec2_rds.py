@@ -1030,11 +1030,13 @@ class RdsPage(QWidget):
         )
         self.running_notice.setObjectName("rds_running_notice")
         info_label = self.running_notice.findChild(QLabel, "icon_text_label")
-        assert info_label is not None
+        if info_label is None:
+            raise RuntimeError("RDS 터널 실행 안내를 초기화하지 못했습니다.")
         info_label.setWordWrap(True)
         info_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         info_layout = self.running_notice.layout()
-        assert isinstance(info_layout, QHBoxLayout)
+        if not isinstance(info_layout, QHBoxLayout):
+            raise RuntimeError("RDS 터널 실행 안내 레이아웃을 초기화하지 못했습니다.")
         info_layout.setContentsMargins(14, 12, 14, 12)
         info_layout.setStretch(1, 1)
         details.addSpacing(12)

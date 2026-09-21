@@ -260,6 +260,40 @@ def test_successful_sts_response_request_id_reaches_sqlite(history, monkeypatch)
     assert row.correlation_id == "user-request"
 
 
+@pytest.mark.parametrize("explicit_cancel", [False, True])
+def test_mfa_cancellation_is_logged_once_without_issuing_credentials(
+    history: tuple[ExecutionLogService, SqliteProfileStore, Path],
+    tmp_path: Path,
+    explicit_cancel: bool,
+) -> None:
+    from tests.unit.application.test_profile_authentication import build_services
+
+    from aws_connect.application.authentication_service import OperationCoordinator
+    from aws_connect.application.operations import OperationState
+
+    service, _, _ = history
+    store, clock, gateway, _, authentication, profile = build_services(tmp_path / "auth")
+    authentication._activity_logs = service
+    coordinator = OperationCoordinator(authentication, clock)
+    challenge = coordinator.start_refresh(profile.id)
+    assert challenge.state is OperationState.MFA_REQUIRED
+
+    if explicit_cancel:
+        coordinator.cancel(challenge.operation_id)
+    else:
+        assert coordinator.resume(challenge.operation_id, None).state is OperationState.CANCELLED
+    coordinator.cancel(challenge.operation_id)
+    assert coordinator.resume(challenge.operation_id, "123456").state is OperationState.FAILED
+
+    cancelled = [row for row in service.list() if row.result is ExecutionResult.CANCELLED]
+    assert len(cancelled) == 1
+    assert cancelled[0].operation_id == challenge.operation_id
+    assert cancelled[0].correlation_id
+    assert cancelled[0].result is ExecutionResult.CANCELLED
+    assert gateway.refresh_calls == 0
+    assert store.get_session(profile.id) is None
+
+
 def test_mfa_resume_keeps_the_original_user_correlation(history, tmp_path):
     from tests.unit.application.test_authenticated_operation import build
 

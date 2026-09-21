@@ -3,7 +3,7 @@
     "artifact":  "session-manager-plugin.exe",
     "version":  "1.2.835.0",
     "source_url":  "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/windows/SessionManagerPlugin.zip",
-    "sha256":  "540f4f58c76142657f00a10510e1c87d9ef358fffd3d402ce1c07b1b9b182704",
+    "sha256":  "540f4f58c76142657f00a10510e1c87d9ef358fffd3d402ce1c07b1b9b182704", "sha256_note": "Public binary checksum. # pragma: allowlist secret",
     "signer":  "Amazon Web Services, Inc.",
     "license_file":  "LICENSE",
     "notice_file":  "NOTICE",
