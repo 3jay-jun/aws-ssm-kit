@@ -132,6 +132,9 @@ def record_failure(
     error: ApplicationError,
     *,
     target: str = "-",
+    profile_id: int | None = None,
+    region: str | None = None,
+    metadata: dict[str, str | int] | None = None,
 ) -> None:
     identity = current_execution.get()
     if identity is not None:
@@ -168,5 +171,8 @@ def record_failure(
         required_permission=error.required_permission,
         retryable=error.retryable,
         target=target,
+        profile_id=profile_id,
+        region=region,
+        metadata_json=json.dumps(metadata or {}),
     )
     error.execution_logged = True

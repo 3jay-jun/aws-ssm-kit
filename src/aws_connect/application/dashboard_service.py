@@ -3,7 +3,7 @@
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import StrEnum
 
 from aws_connect.application.activity_log_service import ActivityLogService
@@ -23,6 +23,7 @@ from aws_connect.domain.execution_log import (
     ExecutionLogFilter,
     ExecutionResult,
 )
+from aws_connect.domain.sensitive_data import REDACTED
 
 
 class PermissionState(StrEnum):
@@ -134,13 +135,23 @@ def _historical_state(
     events: Sequence[ExecutionLogEvent],
 ) -> PermissionState:
     # Latest result per action/resource: a network failure invalidates older certainty.
-    latest: dict[tuple[str, str], PermissionState] = {}
+    latest: dict[tuple[str, str, str], PermissionState] = {}
     for event in events:
-        if event.aws_service != definition.service or event.aws_action not in definition.actions:
+        action = event.aws_action
+        # Successful compound APIs prove PutObject; their failures may instead be
+        # caused by source GetObject or KMS and must not imply a PutObject denial.
+        if (
+            event.aws_service == "s3"
+            and event.result is ExecutionResult.SUCCESS
+            and action in ("CopyObject", "CompleteMultipartUpload")
+        ):
+            action = "PutObject"
+        if event.aws_service != definition.service or action not in definition.actions:
             continue
         if definition.feature is not None and event.feature != definition.feature:
             continue
-        key = (event.aws_action, event.target)
+        metadata = json.loads(event.metadata_json)
+        key = (action, str(metadata.get("bucket", "")), event.target)
         if key in latest:
             continue
         latest[key] = (
@@ -150,7 +161,7 @@ def _historical_state(
             if event.result is ExecutionResult.SUCCESS
             else PermissionState.UNKNOWN
         )
-    if {action for action, _ in latest} != set(definition.actions):
+    if {action for action, _, _ in latest} != set(definition.actions):
         return PermissionState.UNKNOWN
     states = set(latest.values())
     return next(iter(states)) if len(states) == 1 else PermissionState.UNKNOWN
@@ -179,10 +190,7 @@ class DashboardService:
 
     def check_permissions(self, profile_id: int) -> DashboardPermissions:
         profile = self._profiles.resolve(profile_id)
-        now = self._clock.now()
-        events = self._activity_logs.list(
-            ExecutionLogFilter(since=now - timedelta(days=1), completed_only=True), 10000
-        )
+        events = self._activity_logs.list(ExecutionLogFilter(completed_only=True), 10000)
         scoped = []
         for event in events:
             metadata = json.loads(event.metadata_json)
@@ -219,6 +227,29 @@ class DashboardService:
                 ),
                 ("s3", "ListBuckets", lambda: self._s3.list_buckets(credentials, profile.region)),
             )
+            # Recheck the location actually browsed through the S3 application
+            # service. Account-wide bucket enumeration is a separate permission.
+            location = next(
+                (
+                    json.loads(event.metadata_json)
+                    for event in scoped
+                    if event.feature == "s3"
+                    and event.action == "list"
+                    and json.loads(event.metadata_json).get("bucket")
+                    and "prefix" in json.loads(event.metadata_json)
+                ),
+                None,
+            )
+            if location is not None:
+                bucket, prefix = str(location["bucket"]), str(location.get("prefix", ""))
+            if location is not None and len(prefix) < 256 and REDACTED not in bucket + prefix:
+                probes += (
+                    (
+                        "s3",
+                        "ListObjectsV2",
+                        lambda: self._s3.list_objects(credentials, profile.region, bucket, prefix),
+                    ),
+                )
             for service, action, probe in probes:
                 try:
                     probe()
@@ -238,6 +269,11 @@ class DashboardService:
                         "현재 프로필·리전의 목록 조회가 성공했습니다.",
                     )
                 observations[(service, action)] = observation
+                if service == "s3" and action == "ListObjectsV2":
+                    observations[(service, action)] = (
+                        observation[0],
+                        f"S3 탭의 s3://{bucket}/{prefix} 조회 기준. " + observation[1],
+                    )
         features = []
         for feature, definitions in PERMISSIONS.items():
             rows = []
@@ -246,7 +282,7 @@ class DashboardService:
                 explanation = (
                     "인증 상태를 확인한 뒤 다시 시도하세요."
                     if authentication_unavailable
-                    else "동일 프로필·리전의 최근 24시간 실행 기준입니다. 대상별 권한은 다릅니다."
+                    else "동일 프로필·리전의 저장된 실제 작업 결과입니다. 대상별 권한은 다릅니다."
                     if state is not PermissionState.UNKNOWN
                     else "근거가 없거나 결과가 다릅니다. 변경·접속을 실행하여 확인하지 않습니다."
                 )

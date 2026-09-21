@@ -36,7 +36,7 @@ the executable must report the declared version, and release inputs must have a 
 Authenticode signature matching the approved signer. A missing, malformed, unapproved,
 unsigned, or mismatched input fails closed before PyInstaller starts.
 
-CI uses `scripts/create-test-vendor.ps1` to compile a harmless version-reporting stub.
+PR CI uses `scripts/create-test-vendor.ps1` to compile a harmless version-reporting stub.
 That manifest is marked `test_only`; it is accepted only with `-AllowTestVendor`, produces
 a `TEST-ONLY` ZIP, and cannot satisfy the release input checks. No synthetic artifact may
 be renamed or published as an AWS Session Manager Plugin distribution.
@@ -75,11 +75,26 @@ on a clean supported Windows VM with no Python, AWS CLI, gossm, or machine-wide 
 Extract beneath a Korean/space path, make the application folder read/execute-only, run `doctor`,
 start GUI/CLI, and register/connect the first approved non-production profile within ten minutes.
 
-## GitHub Release
+## GitHub Actions packages and releases
+
+- Pull requests run `.github/workflows/check.yml`: check/test and the existing
+  explicitly marked TEST-ONLY packaging smoke job. These packages are test evidence only.
+- Pushes to `main` run `.github/workflows/release.yml`: check/test, production build with
+  `./vendor/session-manager-plugin`, package smoke, then upload the ZIP and `.sha256` as
+  an Actions artifact. No GitHub Release is created for `main`.
+- `v*` tag pushes run the same production pipeline and publish the existing GitHub Release.
+
+Download the latest successful `main` build from **Actions > release > latest successful
+main push run > Artifacts**. Select
+`aws-connect-<version>-windows-x64-main-<run_number>-<run_attempt>` (retained for 30 days).
+The artifact contains `aws-connect-<version>-windows-x64.zip` and
+`aws-connect-<version>-windows-x64.zip.sha256`; run identifiers affect only the artifact
+name, not the filenames produced by `build-package.ps1`. Failed checks or package smoke
+prevent upload/publication. Production builds never opt into TEST-ONLY vendor inputs.
 
 The approved `vendor/session-manager-plugin` input is versioned with Git LFS. A `vX.Y.Z` tag
 whose version exactly matches `pyproject.toml` triggers `.github/workflows/release.yml`. The
 workflow runs the complete check gate, builds and smoke-tests the production ZIP, and publishes
 the ZIP plus its SHA-256 sidecar to the matching GitHub Release. It never downloads or substitutes
-a Session Manager Plugin; the exact reviewed LFS object in the tagged commit is the only accepted
-release input.
+a Session Manager Plugin; the exact reviewed LFS object in the triggering commit is the only
+accepted production input, for both main builds and tagged releases.

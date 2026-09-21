@@ -1,5 +1,30 @@
 # aws-ssm-kit 실행 계획
 
+## 2026-09-21 GitHub Actions main production artifact
+
+- 범위/수용 기준: PR의 check/test 및 TEST-ONLY smoke 유지. main과 v* tag는 기존
+  release workflow의 check → production build → smoke를 공유한다. main은 ZIP/sha256
+  Artifact만, tag는 기존 GitHub Release만 게시하며 ZIP 파일명은 변경하지 않는다.
+- 검색: release/vendor/package, 기존 두 workflow와 build-package/test-package 확인.
+  production vendor는 Git LFS 추적 중이며 release checkout의 lfs=true를 그대로 사용.
+- 결정: release.yml에 main trigger와 조건부 게시 단계를 추가하고 check.yml은 PR 전용.
+  신규 workflow/빌드 함수 추가보다 중복과 변경량이 적다. scripts는 수정하지 않는다.
+  Artifact 이름은 version/run_number/run_attempt, 보존 기간은 30일.
+- 부수효과: main마다 Windows production 빌드와 Artifact 저장 공간 사용. 애플리케이션
+  프로세스/포트/DB/의존성 변경 없음. 실제 AWS API 및 GitHub 게시 작업은 수행하지 않는다.
+- 검증: `.venv/Scripts/python.exe -` inline PyYAML BaseLoader 검사 → PR/main/tag 이벤트,
+  check/build/smoke 순서, LFS, production vendor, ZIP/sidecar 경로, 게시 조건 모두 통과.
+  workflow run 문자열의 GitHub 표현식 치환 후 PowerShell Parser::ParseInput → 모두 통과.
+  최초 원문 파싱은 GitHub 표현식을 PowerShell로 해석해 실패했으며 치환 후 재검증했다.
+  실제 version step을 scriptblock으로 실행 → main/일치 tag 허용, 불일치 tag 거부 통과.
+- `.venv/Scripts/detect-secrets.exe scan .github/workflows/check.yml .github/workflows/release.yml packaging/README.md docs/exec-plans/active/001-aws-connect.md`
+  → findings 0. `git diff --check -- .github/workflows/check.yml .github/workflows/release.yml packaging/README.md docs/exec-plans/active/001-aws-connect.md` → exit 0.
+- `./scripts/check.ps1` → documentation exit 1, 기존 .vendor-license-source/graft 문서 링크
+  오류(QA-001). 전체 게이트 통과 아님. 패키징 scripts는 변경하지 않았으며 production
+  재빌드/smoke 및 원격 Actions 실행은 이번 세션에서 수행하지 않았다.
+- 다음 단계: 변경사항 push 후 Actions의 release/main 실행과 Artifact 다운로드 확인.
+  기존 문서 게이트는 QA-001 후속 작업으로 유지하며 실패 시 패키지를 게시하지 않는다.
+
 ## 2026-09-18 S3 최종 UI — 구현 완료, 기존 전체 게이트 차단 사항 유지
 
 - 사용자 제공 두 PNG를 S3 화면/검색 모달의 최신 시각 기준으로 적용한다.
@@ -2179,3 +2204,226 @@ Phase 0에서 다음 항목을 확정해야 한다.
 - DESIGN 및 HTML mockup 상세 계약 업데이트. 런타임 영향: GUI 레이아웃/스크롤만 변경,
   신규 프로세스/네트워크/포트/DB schema/의존성 없음. 실제 AWS 호출 없음.
 - 다음 단계: 사용자 실제 화면 확인. EXE 사용 시 재빌드 필요. 기존 QA-001은 계속 별도 추적.
+
+
+### 2026-09-18 대시보드 상태 카드 및 S3 삭제 권한 오판 방지
+
+- Phase 9 사용자 수용 기준: 공통 헤더/사이드바 유지, 대시보드 제목/설명, 1행 4개 카드,
+  권한 상태 새로 확인/시각/명시적 전체 상태, 각 기존 페이지 이동, 최근 완료 이력 5건 표.
+  활성 RDS 터널 요약 제거. 기존 위젯 내부 상태나 별도 최근 작업 저장소 사용 금지.
+- SSOT 검색: FeatureCard/_build_dashboard/ExecutionLogService/record_success/logged_operation/
+  AwsPermissionError 및 기존 Gateway 포트. graft map 명령은 미설치; 저장된 그래프 사용.
+- 대안: 기존 포트 기반 조회 서비스 확장 선택. IAM simulator 별도 연동은 추가 권한 필요,
+  실제 리소스 조건과 차이가 있어 제외. 신규 외부 라이브러리/패턴/DB 추가 없음.
+- DashboardService typed DTO와 순수 판정 함수. 안전한 조회 4종(DescribeInstances,
+  DescribeInstanceInformation, ListSecrets, ListBuckets)만 사용자 버튼에서 실행.
+  나머지는 같은 프로필/리전의 최근 24시간 완료 이력에서 정확한 service/action별로 판정.
+  미확인/네트워크/Agent/리소스 오류는 UNKNOWN. 다른 버킷/대상에서 상반된 결과도 UNKNOWN.
+  생성/수정/삭제/접속/Secret 원문 조회를 권한 검사 목적으로 수행하지 않는다.
+- AWS 문서 확인: 포트포워딩은 StartSession + session document이며 독립 IAM API가 아님.
+  표시명 StartPortForwardingSession은 RDS StartSession 관측으로 연결.
+  S3 표시명 ListObjects는 실제 ListObjectsV2 조회 사용.
+  https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-specify-session-document.html
+  https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html
+- bootstrap에서 기존 Gateway 인스턴스 재사용/DI. CLI dashboard --profile ID를 먼저 연결,
+  Application/CLI 초기 테스트 5 passed 후 GUI 연결. 현재 프로필 전환/중복 요청 generation
+  검사로 이전 프로필 응답을 무효화. 상세 툴팁에 관측 범위/확인 필요 이유 표시.
+- DashboardPage는 4개 FeatureCard와 최근 로그 표만 관리. 로그 표는 list_recent(5)를 재사용,
+  공통 status_badge를 icons.py로 추출하여 실행 로그와 색/아이콘/텍스트 SSOT 유지.
+  기존 RDS 요약/이동 화면 위젯 참조 제거. RDS 페이지 조작은 그대로 유지.
+- 사용자 추가 제보: 삭제 성공 경험이 있는데 S3 삭제 권한 없음 표시. 로컬 실제 DB를
+  read-only로 조회하되 service/action/result 집계와 scope 유무만 조회(자격증명/리소스명 제외).
+  현재 DB 280건에서 DeleteObject 기록 없음. S3 feature의 권한 오류 1건은 실제
+  DescribeInstanceInformation 오류였다. 삭제 성공 사실 부인이나 다른 프로필 귀속 추정 금지.
+- S3 delete_object의 기존 generic completion은 profile/region이 없어 증거에서 누락될 수 있음.
+  기존 record_success/record_failure를 확장해 profile/region/bucket 및 실제 DeleteObject
+  기록. 좁은 gateway 실패 경계에서 scope 기록, execution_logged로 중복 실패 방지.
+  명시 service/action과 다른 이전 AWS 호출의 Request ID를 붙이지 않도록 일치 조건 추가.
+- 통합 회귀: 실제 S3 Application 성공→SQLite→Dashboard ALLOWED, 다른 API의 권한 오류→
+  UNKNOWN, 같은 key/다른 bucket에서 상반된 삭제 결과→UNKNOWN. 실제 삭제 API는 fake.
+- `.venv/Scripts/python.exe -m pytest tests/integration/infrastructure/test_execution_logs.py tests/unit/application/test_dashboard_service.py tests/unit/application/test_s3_service.py tests/unit/application/test_activity_log_service.py tests/adapter/gui/test_dashboard.py tests/adapter/gui/test_logs.py tests/adapter/gui/test_shell.py --no-cov -q -o cache_dir=.test-cache-dashboard-final --basetemp=.test-dashboard-final`
+  → 107 passed, 1 skipped (22.05s).
+- `.venv/Scripts/python.exe -m pytest tests/adapter/cli tests/adapter/gui/test_ec2_rds.py tests/adapter/gui/test_icons.py tests/architecture --no-cov -q -o cache_dir=.test-cache-dashboard-regression --basetemp=.test-dashboard-regression`
+  → 74 passed, 4 failed. 4개는 기존 RDS CRUD/editor/mockup/endpoint 테스트의 미정리 기대
+  (이전 RDS/로그 계획에서 이미 기록된 4개); 이번 dashboard 제거와 관련된 stop route 검사는 통과.
+- ruff check src tests tools / ruff format --check src tests tools → 통과(157 files);
+  mypy src → 85 files 통과; tools/architecture_check.py → 통과; lint-imports → 2 contracts kept.
+  변경 서비스/GUI Bandit 통과. .qa-dashboard/secrets.json의 detect-secrets 결과 기록.
+- ./scripts/check.ps1 → 기존 .vendor-license-source 외부 문서 링크 오류로 documentation 실패
+  (.qa-dashboard/check.log, QA-001). 전체 게이트 통과로 간주하지 않음.
+- Qt fake 렌더: .qa-dashboard/render.py를 stdin으로 실행, 1424×894 및 1024×720 확인.
+  한 행 4개 카드 유지, 작은 창은 가로/세로 스크롤. 테스트 데이터는 QA용이며 제품 DB에 넣지 않음.
+- ARCHITECTURE/DESIGN/product spec/HTML mockup 갱신. 런타임 영향: 사용자가 권한 확인 시
+  기존 worker에서 읽기 전용 AWS 목록 요청 4종(기존 gateway pagination 포함), 10,000건 이내
+  로그 메모리 조회. 새 프로세스/포트/DB migration 없음; 생성/수정/삭제 검사용 호출 없음.
+- 다음 단계: 새 소스 앱 재시작/EXE 재빌드 후 사용자 실제 프로필에서 권한 상태 새로 확인.
+  과거 삭제 로그가 없으면 확인 필요로 표시하며, 다음 실제 삭제 결과부터 scope 있는 근거 사용.
+
+- 최종 GUI 마무리 검증: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_dashboard.py tests/adapter/gui/test_shell.py tests/adapter/gui/test_logs.py --no-cov -q -o cache_dir=.test-cache-dashboard-finish --basetemp=.test-dashboard-finish`
+  → 34 passed (4.14s). 최종 1424×894 렌더 가로/세로 scroll maximum=0/0;
+  1024×720은 240/201로 모든 카드/최근 표 접근. detect-secrets results {} 확인.
+
+
+### 2026-09-18 공통 체크박스 및 탭 geometry/typography 통일
+
+- 사용자 수용 기준: MFA 체크박스(파란 배경/흰 체크)를 전 화면에 적용, 모든 탭 여백/제목/
+  본문·소제목 규격 통일. 비즈니스 로직/화면 기능 변경 없음.
+- SSOT 검색: QCheckBox::indicator/ItemIsUserCheckable/page_title/page_subtitle/setContentsMargins.
+  기존 profile MFA 16px, EC2 22px, Secrets 18px 및 기본 표 indicator 분기 발견.
+  탭 여백 24~34px, 제목 25/28px 혼재 확인. graft map 미설치로 저장된 graph 문서 사용.
+- 공통 QSS indicator를 QCheckBox/QAbstractItemView/QMenu에 적용, 기존 흰 common-check.svg
+  재사용. 기능별 크기/색 override 제거. 기존 선택·토글·전체 선택 동작 유지.
+- page_layout.py의 apply_page_layout/page_heading을 6개 탭 및 placeholder에서 사용.
+  여백 좌우24/상하20, 영역 간격16, 제목-설명 간격4. 제목25/소제목17/본문13은
+  typography.py 공통 상수로 정의. RDS/EC2 제목 및 RDS/S3 소제목 override 제거.
+- S3 내부 scroll content와 Secrets/EC2/RDS의 탭 배경을 공통 #f7fafe로 통일.
+  각 폼/표의 기능상 구조와 compact 로그 상세는 유지하며 root geometry만 공통화.
+- 신규 GUI 검증: 실제 6개 탭의 제목 위치/폰트/여백이 1424×894와 1024×720에서 일치.
+  checkbox/표 indicator 실제 렌더 색상 및 기존 체크 토글 검증.
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_shared_style.py tests/adapter/gui/test_logs.py tests/adapter/gui/test_shell.py tests/adapter/gui/test_dashboard.py tests/adapter/gui/test_secrets.py tests/adapter/gui/test_s3.py tests/adapter/gui/test_s3_final_ui.py tests/adapter/gui/test_table_selection.py tests/adapter/gui/test_icons.py --no-cov -q -o cache_dir=.test-cache-style-final --basetemp=.test-style-final`
+  → 85 passed (3.74s).
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_ec2_rds.py --no-cov -q -o cache_dir=.test-cache-style-rds --basetemp=.test-style-rds`
+  → 20 passed, 기존 RDS CRUD/editor/mockup/endpoint 기대 불일치 4 failed.
+  기존 작업에서 동일한 4개 실패 확인됨. .qa-common-style/rds-tests.log.
+- `ruff check src tests tools`, `ruff format --check src tests tools` → 통과(159 files);
+  `mypy src` → 86 files 통과; `tools/architecture_check.py` → 통과.
+  page_layout/styles/typography Bandit 통과; detect-secrets 결과 .qa-common-style/secrets.json.
+- `.venv/Scripts/python.exe tools/render_gui.py .qa-common-style/desktop` 및
+  `tools/render_gui.py .qa-common-style/small --width 1024 --height 720` → 각 6개 페이지/프로필 렌더 성공.
+  EC2/S3/로그 데스크톱 및 작은 RDS 화면을 직접 확인. 실제 AWS 호출 없음.
+- `./scripts/check.ps1` → 기존 vendor SDK CHANGELOG 링크 오류로 documentation 실패,
+  .qa-common-style/check.log. 전체 게이트 통과 아님.
+- DESIGN/FRONTEND/HTML mockup 갱신. 런타임 영향: Qt 레이아웃/QSS만 변경;
+  DB/네트워크/포트/프로세스/의존성 변화 없음. 다음 단계: 사용자 화면 확인;
+  EXE 배포 사용 시 재빌드 필요. 기존 QA-001/RDS 기대 불일치 별도 추적 유지.
+
+### 2026-09-18 S3 실제 작업과 대시보드 권한 재검증
+- SSOT 검색: upload/record_success/DeleteObject/_historical_state. 정상 upload 경로에
+  완료 기록 누락, rename의 프로필/리전 누락, 24시간 임의 절단을 확인했다.
+- S3 탭이 호출하는 Application S3Service에서 객체별 일반/대용량 업로드 성공,
+  rename의 실제 CopyObject/DeleteObject 성공을 저장한다. 업로드/rename 실패에는
+  실제 typed AWS API와 프로필/리전/버킷을 보존한다. 건너뛰기는 업로드 권한 근거 아님.
+- Dashboard는 보존된 동일 프로필/리전 이력을 사용한다. 성공한 CopyObject와
+  CompleteMultipartUpload를 PutObject 근거로 해석하되 해당 API 실패는 쓰기 거부로
+  단정하지 않는다. 근거: https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-with-s3-policy-actions.html
+- 명시적 권한 새로 확인은 마지막 실제 S3 목록 경로의 ListObjectsV2도 사용한다.
+  bucket/prefix 메타데이터는 중앙 마스킹을 거치며 마스킹/절단/구형 불완전 경로는
+  재조회하지 않는다. ListBuckets 거부는 업로드/삭제 권한과 분리한다.
+- 검증: `.venv/Scripts/python.exe -m pytest tests/unit/application/test_dashboard_service.py tests/unit/application/test_s3_service.py tests/unit/application/test_s3_final_ui_contract.py tests/integration/infrastructure/test_execution_logs.py tests/integration/infrastructure/test_aws_s3_gateway.py --no-cov -q -o cache_dir=.test-cache-s3-permission-final3 --basetemp=.test-s3-permission-final3`
+  → 91 passed, 1 skipped. 실제 서비스→SQLite→Dashboard 통합 경로, multipart,
+  rename/delete, ListBuckets 거부와 쓰기 성공 공존, 이틀 전 성공 이력 포함 검증.
+- `ruff check src tests tools`, `mypy src`, `tools/architecture_check.py` 통과.
+  `./scripts/check.ps1` 문서 링크 오류로 중단(vendor/graft 기존 링크), 로그:
+  `.qa-common-style/check-s3-permissions.log`. 전체 게이트 통과 아님.
+- 부수효과: 권한 새로 확인 시 마지막 S3 경로에 조회 요청 1회 추가(페이지네이션 가능),
+  실제 업로드 객체별/rename 단계별 로그 저장 증가. 변경 검사용 AWS 쓰기 호출 없음.
+  실제 AWS 테스트 및 기존 사용자 DB 변경 없음. DB 마이그레이션/의존성 변경 없음.
+- 미기록 과거 성공은 복원할 수 없다. 수정된 소스 실행 또는 EXE 재빌드 후 실제
+  작업 결과가 기록되며 권한 상태 새로 확인으로 반영된다. 남은 전체 문서 게이트는
+  기존 QA 후속 작업과 함께 처리한다.
+
+### 2026-09-21 S3 권한 표시 재확인 및 대시보드 갱신
+- 사용자 확인: 성공한 업로드/삭제는 이 프로그램 S3 탭에서 수행한 작업이다.
+- SSOT 검색: check_permissions/_historical_state/refresh_recent/S3Service.
+  실행 중 프로세스는 workspace .venv aws-connect/Python이다. bootstrap은 동일
+  ActivityLogService를 S3Service와 DashboardService에 주입한다.
+- 사용자 로컬 SQLite를 mode=ro로 읽고 API/결과/프로필별 집계만 확인했다.
+  현재 DB에는 S3 목록 성공(최근 2026-09-21 KST)은 있으나 PutObject/DeleteObject
+  완료 기록은 없다. 이를 실제 권한 거부로 해석하지 않는다. 원본 대상/인증정보
+  출력 및 AWS 변경 요청 없음. 마지막 성공 시점 사용자 확인은 아직 대기 중이다.
+- 추가 결함: 대시보드 복귀는 최근 목록만 갱신하고 권한 표시는 유지했다.
+  DashboardPage.refresh로 최근 작업과 권한을 함께 재조회하고 중복 진행을 방지한다.
+  각 권한 행에 가능/불가/확인 필요를 명시해 미확인과 거부를 구분한다.
+- 검증: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_dashboard.py tests/unit/application/test_dashboard_service.py tests/integration/infrastructure/test_execution_logs.py --no-cov -q -o cache_dir=.test-cache-s3-recheck-0921 --basetemp=.test-s3-recheck-0921` → 46 passed.
+  `pytest tests/adapter/gui/test_shell.py --no-cov -q -o cache_dir=.test-cache-s3-shell-0921 --basetemp=.test-s3-shell-0921` → 23 passed.
+  `ruff check src tests tools`, `mypy src`, `tools/architecture_check.py` 통과.
+  `./scripts/check.ps1` 기존 documentation 링크 오류로 실패;
+  `.qa-common-style/check-s3-recheck-0921.log`. 전체 통과로 보고하지 않는다.
+- 런타임 영향: 대시보드 복귀에도 기존 읽기 전용 권한 확인 요청이 실행된다.
+  DB 마이그레이션/새 의존성/검사용 쓰기 요청 없음. 실행 중 앱 재시작 필요.
+- 남은 확인: 사용자의 마지막 성공 시점 및 수정본 재시작 후 실제 작업 로그와
+  표시 일치 여부. 기록이 없는 과거 작업의 권한을 추측해 가능/불가로 만들지 않는다.
+- 후속 확인(동일 세션): 사용자 답변은 오늘 앱에서 성공. DB 재조회에서 최초 집계
+  이후 추가된 2026-09-21 08:56 KST DeleteObject 성공 1건, 08:57까지
+  CompleteMultipartUpload 성공 2건을 확인했다. 로컬 로그를 mode=ro로 읽어
+  현행 _historical_state 함수에 적용한 결과 해당 프로필 put=allowed,
+  delete=allowed를 확인했다. 다른 프로필에는 전파되지 않는다. AWS API 호출 없음.
+  따라서 위의 완료 기록 부재/성공시점 대기는 최초 조회 시점의 관측이며 해결되었다.
+  실제 기록 저장과 현재 판정 정상 확인, 잔여 변경은 화면 복귀 자동 갱신 및
+  명확한 상태 텍스트이다. 실행 중 앱에는 재시작 후 변경 반영.
+
+### 2026-09-21 RDS 안내 tooltip 및 더보기 버튼
+- 검색: field_help/help_text/action_button. 기존 _field의 hover tooltip을 재사용하고
+  클릭 시 동일 QToolTip을 표시한다. 세 문구를 사용자 요청과 일치시켰다.
+- rds_session_more와 S3 객체 작업 버튼이 동일 QSS 규칙(28px, 투명, border 0)을
+  공유한다. 별도 RDS 크기 규칙 제거. 메뉴 동작은 그대로이다.
+- `ruff check src tests tools`, `mypy src` 통과. Qt _field 생성 및 tooltip 확인,
+  click→QToolTip.showText 호출 스모크 통과.
+- `pytest tests/adapter/gui/test_ec2_rds.py --no-cov -q -o cache_dir=.test-cache-rds-tooltip --basetemp=.test-rds-tooltip`
+  → 20 passed, 기존 동일 4 failed (QA-001); .qa-common-style/rds-tooltip-tests.log.
+- `./scripts/check.ps1` 기존 documentation 링크 오류로 실패;
+  .qa-common-style/rds-tooltip-check.log. 전체 게이트 통과 아님.
+- 부수효과: Qt tooltip/버튼 스타일만 변경. AWS/DB/포트/프로세스 변경 없음.
+  현재 실행 앱 재시작으로 반영. 다음 단계: 기존 QA-001 및 문서 게이트 후속 처리.
+
+### 2026-09-21 EC2 UI/시작 추적/최근 접속/Terminal 종료
+- SSOT 검색: start_instance/recent_ec2_connections/session_host/exit_code/action_button.
+  pending을 inventory에서 제외한 것이 행 소실 원인. 최근 접속은 기존 SQLite
+  projection을 재사용하며 message 또는 typed StartSession 성공 계약으로 읽는다.
+- UI 설명/Region/Terminal/더보기/접속 날짜 형식을 수정. 시작 행 보존, bounded
+  5초 polling으로 pending→running→SSM Online 추적. 필터값 및 프로필/리전 격리.
+- 명시적인 Windows CTRL_CLOSE_EVENT만 IPC 정상 종료로 전달. 임의 EOF/nonzero는
+  실패 유지. native callback 등록 실패 시 plugin 회수. 정상 외부 세션 종료 후
+  AWS 정리 실패는 별도 warning; 실제 Plugin 실패는 error. 종료별 로그 1회 기록.
+- 설계: 기존 로그 projection 재사용 권장(중복 저장/스키마 변경 없음), 별도 최근 접속
+  테이블은 장기 무기한 보존에는 유리하나 이번 요구에서는 불필요하여 추가하지 않음.
+- 공식 근거: https://learn.microsoft.com/en-us/windows/console/handlerroutine
+  및 https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_TerminateSession.html
+- 검증: `.venv/Scripts/python.exe -m pytest tests/unit/test_session_host.py tests/unit/application/test_ec2_service.py tests/unit/application/test_managed_ssm_session.py tests/unit/infrastructure/test_session_manager_plugin.py tests/integration/infrastructure/test_aws_ssm_gateway.py tests/integration/infrastructure/test_execution_logs.py tests/adapter/gui/test_ec2_rds.py -k 'not test_rds_crud_start_stop_and_dashboard_projection_share_application_dtos and not test_rds_connection_saves_current_editor_values_before_starting and not test_rds_mockup_split_cards_and_actions_are_single_row and not test_rds_endpoint_catalog_selects_host_and_port_without_expanding_editor' --no-cov -q -o cache_dir=.test-cache-ec2-0921d --basetemp=.test-ec2-0921d` → 127 passed, 4 deselected.
+  제외된 4개는 직전 전체 관련 실행에서 재확인한 기존 QA-001 RDS 실패.
+- `pytest tests/unit/application/test_ssm_session.py tests/unit/application/test_rds_tunnel_service.py tests/adapter/cli/test_ec2_cli.py tests/adapter/gui/test_shell.py --no-cov -q -o cache_dir=.test-cache-ec2-regression --basetemp=.test-ec2-regression` → 50 passed.
+- Ruff lint/format, mypy(86 files), architecture_check 통과. Bandit session_host,
+  session_manager_plugin, ssm_session 변경 범위 통과. Qt fake-backed desktop/small 렌더
+  `.qa-common-style/ec2-0921.png`, `ec2-0921-small.png` 확인(작은 화면 테이블 수평 스크롤).
+- `./scripts/check.ps1` 기존 docs 링크 오류로 실패, `.qa-common-style/ec2-0921-check.log`.
+  `graft build` 실행파일 미설치로 실패. 전체 게이트 통과 주장 없음.
+- 런타임 영향: 시작 추적에 bounded EC2/SSM 조회 및 로그 기록 추가, Terminal host
+  native console handler 등록/해제. DB 마이그레이션/의존성 추가 없음. 실제 AWS나
+  사용자 Terminal을 조작하지 않음. 실제 AWS/Windows Terminal 종료 실환경 smoke는
+  승인된 리소스/사용자 환경 후속 확인 필요(AWS-001). 실행 앱 재시작, EXE는 재빌드 필요.
+- 남은 작업: 기존 QA-001 문서/RDS 게이트 및 AWS-001 실환경 확인.
+
+### 2026-09-21 S3 목록/다운로드 UI 보정
+- 검색: UploadSourcesList/_read_preview/prepare_download/_danger_menu_action.
+  기존 로컬 metadata reader, conflict 검사, 진행 이벤트, icon assets를 재사용했다.
+- 사용자 텍스트 우선: 이미지의 대상 경로 대신 실제 원본 로컬 경로를 표시한다.
+  수정 시간은 st_mtime이며 시작 시간 표시를 대체했다. source/target 업무 데이터는 유지.
+- 업로드 버튼 24px(content)+16px 아이콘, 수직 중앙 정렬. 메뉴는 공통 _menu_action
+  QWidgetAction으로 통일하고 삭제만 빨강. 빈 표 click picker 제거, drag/drop 유지.
+- Bucket 최소 380/최대 480px+AdjustToContents, padding 감소, 전체 이름 tooltip.
+- 다운로드 표 상태는 bucket/key별, 프로필 변경 시 폐기. 단일 animation timer는
+  완료/실패/취소 시 정지한다. item progress 계약으로 부분 성공과 실제 실패를 구분.
+- 직접 선택 파일은 root/basename, 폴더 선택은 기존 재귀 구조 유지. basename 충돌을
+  전송 전 거부하며 기존 overwrite/skip 및 path traversal 방어 유지. CLI도 동일 서비스.
+- 검증: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_s3.py tests/adapter/gui/test_s3_final_ui.py tests/adapter/cli/test_s3_cli.py tests/unit/application/test_s3_service.py tests/unit/application/test_s3_final_ui_contract.py tests/integration/infrastructure/test_aws_s3_gateway.py tests/integration/infrastructure/test_execution_logs.py --no-cov -q -o cache_dir=.test-cache-s3-polish3 --basetemp=.test-s3-polish3` → 118 passed, 1 skipped.
+- `ruff check src tests tools`, `mypy src`(86 files), `tools/architecture_check.py` 통과.
+  `.qa-common-style/s3-polish.png`, `s3-polish-menu.png`, `s3-polish-small.png` fake Qt
+  렌더 확인. 시각 확인 후 Bucket 최소 폭 340→380 추가 보정, 관련 GUI 검사 재통과.
+- `./scripts/check.ps1` 기존 documentation 링크 오류로 실패;
+  `.qa-common-style/s3-polish-check.log`. 기존 전체 게이트 실패는 QA-001 참조.
+- 사이드이펙트: GUI 다운로드 중에만 100ms timer, 객체별 progress 이벤트 추가.
+  선택 파일 저장 경로가 basename으로 변경됨. AWS 추가 권한조회/변경 요청 없음,
+  DB 스키마/의존성 변화 없음. 실제 AWS 전송은 수행하지 않았다.
+- 다음 단계: 실행 앱 재시작 후 확인. EXE 배포 시 재빌드 필요. 기존 QA-001은 별도 후속.
+
+### 2026-09-21 Secrets compact 목록/수정 메뉴
+- 검색: set_compact_list_row/edit_saved/last_retrieved_at/elidedText. 기존 공통 행을 선택적 title_suffix/elide 인자로 확장하고 더보기 수정은 edit_saved 재사용.
+- 저장 개수 제목 제거, 이름+우측 고정 시각+24px 더보기/원본 ID의 2줄, ID 전체 tooltip 및 ellipsis. 날짜는 YYYY-MM-DD HH:mm, 미조회는 -.
+- 현재 SavedSecret에 별칭 필드는 없어 기존 이름을 사용한다. 별도 스키마 추가하지 않음. 조회 시각은 기존 Application 성공 조회 후 저장 흐름 유지; 로컬 편집 보존 계약 기존 테스트 확인.
+- 관련 검사: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_secrets.py tests/unit/application/test_secrets_service.py tests/adapter/cli/test_secrets_cli.py --no-cov -q -o cache_dir=.test-cache-secret-compact2 --basetemp=.test-secret-compact2` → 51 passed.
+- 공통 회귀: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_shell.py --no-cov -q -o cache_dir=.test-cache-secret-shared --basetemp=.test-secret-shared` → 23 passed.
+- `.venv/Scripts/python.exe -m ruff check src tests tools`, `mypy src`(86 files), `tools/architecture_check.py`, `bandit -q src/aws_connect/presentation/gui/list_rows.py src/aws_connect/presentation/gui/secrets.py` 통과. 변경 Python ruff format 완료.
+- Qt fake 렌더 `.qa-common-style/secrets-compact.png` 확인. 한글 typography bootstrap 적용, 행 간 정렬/높이는 GUI 테스트에서도 검증.
+- `./scripts/check.ps1` → 기존 vendor/graft 문서 링크 오류 실패; `.qa-common-style/secrets-compact-check.log`. 전체 게이트 통과 아님. `graft build` → CLI 미설치로 실행 불가; 생성 노드 수동 편집하지 않음.
+- 사이드이펙트: GUI 행 폭/텍스트 그리기만 변경, 추가 AWS 호출/DB migration/의존성/타이머 없음. 실제 AWS 조회는 실행하지 않았다.
+- 다음 단계: 실행 앱 재시작 확인, EXE 배포 시 재빌드. 기존 문서 게이트 QA-001은 별도 후속.

@@ -309,3 +309,26 @@ def test_ec2_start_and_reboot_dry_run_before_actual_request(monkeypatch) -> None
     with stubber:
         gateway.start_instance(credentials(), "ap-northeast-2", "i-stopped")
         gateway.reboot_instance(credentials(), "ap-northeast-2", "i-running")
+
+
+def test_ec2_inventory_keeps_transitional_rows(monkeypatch):
+    ec2 = client("ec2")
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: ec2)
+    stubber = Stubber(ec2)
+    stubber.add_response(
+        "describe_instances",
+        {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {"InstanceId": "i-pending", "State": {"Name": "pending", "Code": 0}},
+                        {"InstanceId": "i-stopping", "State": {"Name": "stopping", "Code": 64}},
+                    ]
+                }
+            ]
+        },
+        {},
+    )
+    with stubber:
+        instances = Boto3Ec2MetadataGateway().list_inventory(credentials(), "ap-northeast-2")
+    assert [item.state for item in instances] == ["pending", "stopping"]

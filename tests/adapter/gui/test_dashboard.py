@@ -78,3 +78,38 @@ def test_stale_permission_result_cannot_cross_profile_or_refresh_generation():
         for icon, _ in card._permissions.values()
     )
     page.close()
+
+
+def test_return_to_dashboard_refreshes_actual_s3_success_and_labels_unknown():
+    import json
+
+    _app()
+    service, logs, *_ = build()
+    page = DashboardPage(service, None, ImmediateTaskRunner())
+    page.set_profile(1)
+    page.refresh()
+    assert "확인 필요" in page.cards["s3"]._permissions["put"][1].text()
+    logs.list.return_value = [
+        ExecutionLogEvent(
+            datetime.now(UTC),
+            ExecutionLevel.INFO,
+            ExecutionResult.SUCCESS,
+            ExecutionPhase.COMPLETED,
+            "s3",
+            "upload",
+            "file.txt",
+            "완료",
+            aws_service="s3",
+            aws_action=action,
+            metadata_json=json.dumps(
+                {"profile_id": 1, "region": "example-region", "bucket": "example-bucket"}
+            ),
+        )
+        for action in ("PutObject", "DeleteObject")
+    ]
+    page.refresh()
+    for key in ("put", "delete"):
+        icon, label = page.cards["s3"]._permissions[key]
+        assert icon.accessibleName() == "allowed"
+        assert label.text().endswith("· 가능")
+    page.close()

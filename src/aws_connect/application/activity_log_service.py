@@ -144,7 +144,8 @@ class ActivityLogService:
         if aws_call is not None:
             aws_service = aws_service or aws_call.service
             aws_action = aws_action or aws_call.action
-            aws_request_id = aws_request_id or aws_call.request_id
+            if aws_service == aws_call.service and aws_action == aws_call.action:
+                aws_request_id = aws_request_id or aws_call.request_id
         if event is not None or self._repository is not None:
             if event is None:
                 status = ExecutionResult.from_legacy(result)
@@ -293,7 +294,14 @@ class ActivityLogService:
         for entry in entries:
             if (
                 entry.feature == "ec2"
-                and entry.message_code == "ec2.connection.succeeded"
+                and (
+                    entry.message_code == "ec2.connection.succeeded"
+                    or (
+                        entry.operation in {"connect", "connect_external"}
+                        and entry.aws_service == "ssm"
+                        and entry.aws_action == "StartSession"
+                    )
+                )
                 and ExecutionResult.from_legacy(entry.result) is ExecutionResult.SUCCESS
                 and entry.profile_id == profile_id
                 and entry.region == region
@@ -442,6 +450,8 @@ def record_success(
     operation_id: str | None = None,
     warning: bool = False,
     metadata: dict[str, str | int] | None = None,
+    aws_service: str | None = None,
+    aws_action: str | None = None,
 ) -> None:
     """Record a completed use case without accepting payloads or credentials."""
     if recorder is not None:
@@ -456,6 +466,8 @@ def record_success(
             region=region,
             operation_id=operation_id,
             metadata_json=json.dumps(metadata or {}),
+            aws_service=aws_service,
+            aws_action=aws_action,
         )
 
 

@@ -13,6 +13,7 @@ _METADATA_FIELDS = frozenset(
         "region",
         "instance_id",
         "bucket",
+        "prefix",
         "key",
         "file_size",
         "local_port",

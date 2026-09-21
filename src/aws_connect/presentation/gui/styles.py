@@ -1,13 +1,18 @@
 """Pixel-level visual contract mirrored from the approved HTML mockup."""
 
 from aws_connect.presentation.gui.icons import gui_asset_path
+from aws_connect.presentation.gui.typography import (
+    BODY_FONT_SIZE,
+    PAGE_TITLE_FONT_SIZE,
+    SECTION_TITLE_FONT_SIZE,
+)
 
 # ruff: noqa: E501
 
 NAVIGATION_WIDTH = 220
 
 APP_STYLE = """
-* { color: #172033; font-family: 'Malgun Gothic'; font-size: 13px; }
+* { color: #172033; font-family: 'Malgun Gothic'; font-size: __BODY_SIZE__px; }
 QMainWindow, QWidget#prototype_background { background: #e9eef5; }
 QFrame#app_shell { background: #f8fafc; border: 0; border-radius: 0; }
 QFrame#authentication_header { background: #ffffff; border: 0; border-bottom: 1px solid #dce3ed; }
@@ -27,9 +32,9 @@ QFrame#navigation QPushButton:hover { background: #e2e8f0; }
 QFrame#navigation QPushButton:checked { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
 QFrame#navigation QPushButton:focus { border-color: #2563eb; }
 QStackedWidget#workspace { background: #f7fafe; border: 0; }
-QWidget#dashboard, QWidget#ec2_page, QWidget#rds_page, QWidget#secrets_page, QWidget#s3_page, QWidget#logs_page { background: #f7fafe; }
-QLabel#page_title { color: #172033; font-size: 25px; font-weight: 700; }
-QLabel#section_title, QLabel#feature_heading, QLabel#profile_editor_title, QLabel#managed_log_detail_title { font-size: 17px; font-weight: 700; }
+QWidget#dashboard, QWidget#ec2_page, QWidget#rds_page, QWidget#secrets_page, QWidget#s3_page, QWidget#logs_page, QWidget#secret_page_content, QWidget#s3_page_content { background: #f7fafe; }
+QLabel#section_title, QLabel#feature_heading, QLabel#profile_editor_title, QLabel#managed_log_detail_title, QLabel#rds_editor_title, QLabel#s3_section_title { font-size: __SECTION_TITLE_SIZE__px; font-weight: 700; }
+QLabel#page_title { color: #172033; font-size: __PAGE_TITLE_SIZE__px; font-weight: 700; }
 QFrame#feature_card, QFrame#tunnel_summary, QFrame#content_card, QFrame#session_list_card, QFrame#editor_card, QFrame#catalog_card, QFrame#result_card, QFrame#managed_log_card, QFrame[role="card"] { background: #ffffff; border: 1px solid #dce3ed; border-radius: 14px; }
 QFrame#feature_card { min-height: 178px; }
 QLabel#feature_icon { min-width: 40px; max-width: 40px; min-height: 40px; max-height: 40px; border-radius: 12px; background: #eff6ff; color: #1d4ed8; font-weight: 800; qproperty-alignment: AlignCenter; }
@@ -59,8 +64,8 @@ QComboBox { padding-right: 38px; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; width: 34px; border: 0; border-left: 1px solid #e2e8f0; border-top-right-radius: 8px; border-bottom-right-radius: 8px; background: #f8fafc; }
 QComboBox::down-arrow { image: url(__COMBO_ARROW__); width: 10px; height: 8px; }
 QComboBox QAbstractItemView { padding: 6px; border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; color: #172033; selection-background-color: #dbeafe; selection-color: #1d4ed8; outline: 0; }
-QCheckBox#profile_mfa_enabled::indicator { width: 16px; height: 16px; border: 1px solid #cbd5e1; border-radius: 4px; background: #ffffff; }
-QCheckBox#profile_mfa_enabled::indicator:checked { background: #2563eb; border-color: #2563eb; image: url(__CHECK_MARK__); }
+QCheckBox::indicator, QAbstractItemView::indicator, QMenu::indicator { width: 16px; height: 16px; border: 1px solid #cbd5e1; border-radius: 4px; background: #ffffff; }
+QCheckBox::indicator:checked, QAbstractItemView::indicator:checked, QMenu::indicator:checked { background: #2563eb; border-color: #2563eb; image: url(__CHECK_MARK__); }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 2px solid #3b82f6; }
 QLineEdit[application_error="true"], QComboBox[application_error="true"], QSpinBox[application_error="true"] { border: 2px solid #d92d20; }
 QLabel#field_label { color: #526074; font-size: 12px; font-weight: 600; }
@@ -88,19 +93,19 @@ QLabel#s3_drop_zone { min-height: 28px; padding: 10px; border: 1px dashed #93a4b
 QScrollArea#s3_browser_scroll { background: transparent; border: 0; }
 QTableWidget#s3_upload_sources::item { padding: 4px; }
 QTableWidget#s3_upload_sources QHeaderView::section { padding: 8px 4px; }
-QLabel#s3_section_title { font-size: 17px; font-weight: 700; color: #0b1643; }
-QTableWidget#s3_objects QPushButton[action_button="true"] { min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; border: 0; background: transparent; padding: 0; }
-QPushButton#s3_upload { min-width: 106px; min-height: 40px; font-size: 15px; font-weight: 700; }
+QTableWidget#s3_objects QPushButton[action_button="true"], QPushButton#rds_session_more, QPushButton#ec2_more { min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; border: 0; background: transparent; padding: 0; }
+QPushButton#s3_upload { min-width: 106px; min-height: 40px; font-weight: 700; }
 QPushButton#s3_upload[variant="danger"] { color: white; background: #d92d20; }
-QTableWidget#s3_upload_sources QPushButton[action_button="true"] { min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; padding: 0; border-radius: 6px; }
+QTableWidget#s3_upload_sources QPushButton[action_button="true"] { min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px; padding: 0; border-radius: 6px; }
 QTableWidget#s3_upload_sources QProgressBar { min-height: 12px; max-height: 12px; margin: 14px 4px; font-size: 10px; text-align: center; }
 QTableWidget#s3_upload_sources QProgressBar::chunk { background: #00a35c; }
 QFrame#s3_queue_card > QProgressBar { min-height: 16px; max-height: 16px; text-align: center; }
 QMenu#s3_action_menu { background: white; border: 1px solid #d7e5f7; padding: 6px; }
 QMenu#s3_action_menu::item { padding: 9px 14px; }
 QMenu#s3_action_menu::item:selected { background: #eff6ff; }
-QPushButton#s3_menu_danger { color: #ff2638; border: 0; text-align: left; padding: 0 14px; }
-QPushButton#s3_menu_danger:hover { background: #fff1f0; }
+QPushButton#s3_menu_item { min-height: 34px; max-height: 34px; border: 0; text-align: left; padding: 0 14px; background: transparent; }
+QPushButton#s3_menu_item[danger="true"] { color: #ff2638; }
+QPushButton#s3_menu_item:hover, QPushButton#s3_menu_item:checked { background: #eff6ff; }
 QDialog#s3_search_dialog { background: white; }
 QLabel#s3_dialog_title { font-size: 25px; font-weight: 700; color: #0b1643; }
 QLabel#s3_current_location { background: #f3f7fd; color: #52688f; padding: 14px; border-radius: 8px; }
@@ -136,15 +141,11 @@ QLabel#toast { padding: 12px 15px; border-radius: 10px; background: #172033; col
 )
 
 APP_STYLE += """
-QWidget#ec2_page { background: #f5faff; }
 QWidget#ec2_page QFrame#content_card { border-color: #d7e5f7; border-radius: 12px; }
 QPushButton#ec2_refresh { min-width: 46px; max-width: 46px; min-height: 46px; max-height: 46px; }
 QCheckBox#ec2_favorites_only { min-height: 40px; padding: 0 4px; }
 QWidget#ec2_page QComboBox::drop-down { border: 0; background: transparent; }
 QWidget#ec2_page QLineEdit, QWidget#ec2_page QComboBox, QTableWidget#ec2_targets { font-size: 14px; }
-QWidget#ec2_page QLabel#page_title { font-size: 28px; }
-QWidget#ec2_page QCheckBox::indicator { width: 22px; height: 22px; border: 1px solid #aebfda; border-radius: 5px; background: #ffffff; }
-QWidget#ec2_page QCheckBox::indicator:checked { background: #2563eb; image: url(__CHECK_MARK__); }
 QWidget#icon_text[status="danger"] { background: #feeceb; border-radius: 5px; }
 QWidget#icon_text[status="success"] QLabel { color: #087443; background: transparent; }
 QWidget#icon_text[status="danger"] QLabel { color: #b42318; background: transparent; }
@@ -158,13 +159,9 @@ QMenu#ec2_target_menu::item:selected { background: #eff6ff; }
 """.replace("__CHECK_MARK__", gui_asset_path("common-check.svg"))
 
 APP_STYLE += """
-QWidget#rds_page { background: #f5faff; }
-QWidget#rds_page QLabel#page_title { font-size: 28px; }
-QLabel#rds_editor_title { font-size: 19px; font-weight: 700; }
 QWidget#rds_page QFrame#status_dot[active="false"] { background: #7b88a5; }
 QListWidget#rds_sessions QFrame#compact_list_row { padding: 4px 0; }
 QListWidget#rds_sessions QFrame#compact_list_row[connected="true"] { background: #edf7ff; }
-QPushButton#rds_session_more { min-width: 32px; max-width: 32px; min-height: 34px; max-height: 34px; }
 QLabel#rds_connection_label { font-weight: 700; background: transparent; }
 QFrame#rds_connection_card { border: 0; border-radius: 10px; background: #edf7ff; }
 QWidget#rds_running_notice { background: #edf9f3; border-radius: 10px; }
@@ -183,7 +180,6 @@ QWidget#rds_page QLineEdit:disabled, QWidget#rds_page QComboBox:disabled, QWidge
 """.replace("__COMBO_ARROW__", gui_asset_path("chevron-down.svg"))
 
 APP_STYLE += """
-QWidget#secrets_page { background: #f5faff; }
 QFrame#secret_catalog_card, QFrame#secret_result_card { border-color: #d7e5f7; }
 QWidget#secret_relay_notice { background: #edf7ff; border-radius: 10px; }
 QWidget#secret_relay_notice QLabel { background: transparent; color: #526d94; }
@@ -207,9 +203,7 @@ QPushButton#secret_menu_delete { color: #d92d20; border: 0; text-align: left; pa
 """.replace("__COMBO_ARROW__", gui_asset_path("chevron-down.svg"))
 
 APP_STYLE += """
-QScrollArea#secret_page_scroll, QWidget#secret_page_content { border: 0; background: #f5faff; }
-QWidget#secrets_page QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #aebfda; border-radius: 4px; background: white; }
-QWidget#secrets_page QCheckBox::indicator:checked { background: #2563eb; image: url(__CHECK_MARK__); }
+QScrollArea#secret_page_scroll, QWidget#secret_page_content { border: 0; background: #f7fafe; }
 """.replace("__CHECK_MARK__", gui_asset_path("common-check.svg"))
 
 APP_STYLE += 'QLabel#secret_relay_status[unavailable="true"] { color: #d92d20; }'
@@ -227,4 +221,24 @@ QMenu#profile_row_menu::item { padding: 10px 14px; }
 QMenu#profile_row_menu::item:selected { background: #eff6ff; }
 QPushButton#profile_menu_delete { color: #d92d20; border: 0; text-align: left; padding: 0 14px; }
 QPushButton#profile_menu_delete:hover { background: #fff1f0; }
+"""
+
+APP_STYLE = (
+    APP_STYLE.replace("__BODY_SIZE__", str(BODY_FONT_SIZE))
+    .replace("__PAGE_TITLE_SIZE__", str(PAGE_TITLE_FONT_SIZE))
+    .replace("__SECTION_TITLE_SIZE__", str(SECTION_TITLE_FONT_SIZE))
+)
+
+APP_STYLE += """
+QComboBox#ec2_region { min-height: 22px; max-height: 22px; padding: 8px 30px 8px 10px; }
+QComboBox#ec2_region QLineEdit { min-height: 0; padding: 0; border: 0; background: transparent; }
+QPushButton#ec2_row_action { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; }
+QPushButton#ec2_row_action[variant="primary"] { background: #111111; border-color: #111111; }
+QPushButton#ec2_row_action[variant="primary"]:hover { background: #303030; border-color: #303030; }
+QPushButton#ec2_row_action:disabled { background: #f1f5f9; border-color: #e2e8f0; }
+"""
+
+APP_STYLE += """
+QComboBox#s3_bucket_catalog { min-height: 22px; max-height: 22px; padding: 8px 24px 8px 6px; }
+QComboBox#s3_bucket_catalog QLineEdit { min-height: 0; padding: 0; border: 0; background: transparent; }
 """

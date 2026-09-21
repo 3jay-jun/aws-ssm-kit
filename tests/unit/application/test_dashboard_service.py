@@ -95,3 +95,31 @@ def test_cli_uses_same_service_and_serializable_dto():
     assert result["profile_id"] == 1
     assert len(result["features"]) == 4
     json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "states,expected",
+    [
+        ([PermissionState.ALLOWED] * 3, CapabilityState.AVAILABLE),
+        ([PermissionState.DENIED] * 3, CapabilityState.UNAVAILABLE),
+        ([PermissionState.ALLOWED, PermissionState.DENIED], CapabilityState.PARTIAL),
+        ([PermissionState.UNKNOWN] * 3, CapabilityState.UNKNOWN),
+        ([PermissionState.DENIED, PermissionState.UNKNOWN], CapabilityState.UNKNOWN),
+    ],
+)
+def test_capability_aggregate_never_assumes_unchecked_permissions(states, expected):
+    from aws_connect.application.dashboard_service import capability_state
+
+    assert capability_state(states) is expected
+
+
+def test_authentication_unavailable_does_not_probe_or_show_old_permissions():
+    from aws_connect.domain.errors import CredentialValidationError
+
+    service, _, inventory, managed, secrets, s3 = build()
+    service._sessions.require_credentials.side_effect = CredentialValidationError(
+        "auth.mfa_required", "expired"
+    )
+    result = service.check_permissions(1)
+    assert all(feature.state is CapabilityState.UNKNOWN for feature in result.features)
+    assert not any(gateway.method_calls for gateway in (inventory, managed, secrets, s3))

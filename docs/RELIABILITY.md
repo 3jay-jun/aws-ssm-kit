@@ -106,3 +106,12 @@
 - Logging executes on the existing use-case workers. No queue, background daemon, or shutdown flush protocol is added. Progress bytes are not persisted; start, completion, cancellation, retry and meaningful diagnostics are.
 - SQL filters run before LIMIT. Dates use the local day boundary, stored timestamps use UTC, query values are bound parameters.
 - MFA rebind preserves correlation ID; individual operation IDs remain available for SQLite/file tracing.
+
+- EC2 Terminal host reports CTRL_CLOSE_EVENT over authenticated local IPC before Windows
+  closes the console. A bare pipe EOF remains failure 252; arbitrary nonzero plugin exits
+  are not normalized. Native handler registration failure reclaims the plugin and reports 252.
+- Successful external session exit plus a failed TerminateSession cleanup preserves a
+  SUCCEEDED session with a separate warning. Other process/status failures remain errors;
+  native/RDS managed-session cleanup policy is unchanged. EC2 records each reaped outcome once.
+- EC2 startup polling uses existing asynchronous listing every 5 seconds, bounded to 10 minutes;
+  it stops at running+SSM Online, errors, timeout, or profile/region changes.

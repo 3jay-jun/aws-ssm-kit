@@ -425,3 +425,197 @@ def test_successful_use_case_reaches_gui_and_refresh_preserves_filters(history, 
     assert page._query() == expected
     assert page.entries.rowCount() > 0
     page.close()
+
+
+def test_s3_delete_permission_uses_scoped_real_service_result_not_other_api_errors(history):
+    from tests.unit.application.test_s3_service import _services
+
+    from aws_connect.application.dashboard_service import DashboardService, PermissionState
+    from aws_connect.domain.errors import AwsPermissionError
+
+    logs, _, _ = history
+    _, s3, _, gateway = _services()
+    s3._activity_logs = logs
+    clock = Mock()
+    clock.now.side_effect = lambda: datetime.now(UTC)
+    dashboard = DashboardService(
+        s3._profiles, s3._sessions, logs, clock, Mock(), Mock(), Mock(), Mock()
+    )
+    selected = s3._profiles.resolve(None)
+
+    def deletion_state():
+        result = dashboard.check_permissions(selected.require_id())
+        return next(
+            p.state
+            for f in result.features
+            if f.feature == "s3"
+            for p in f.permissions
+            if p.key == "delete"
+        )
+
+    # No DeleteObject evidence is unknown, never a denial inferred from S3 feature alone.
+    logs.record(
+        feature="s3",
+        operation="list",
+        result="FAILURE",
+        level="ERROR",
+        aws_service="ssm",
+        aws_action="DescribeInstanceInformation",
+        error_category=ErrorCategory.PERMISSION,
+        profile_id=selected.require_id(),
+        region=selected.region,
+    )
+    assert deletion_state() is PermissionState.UNKNOWN
+    s3.delete_object("example-bucket", "example.txt")
+    success = logs.list_recent()[0]
+    assert success.aws_action == "DeleteObject"
+    assert json.loads(success.metadata_json)["profile_id"] == selected.require_id()
+    assert json.loads(success.metadata_json)["bucket"] == "example-bucket"
+    assert deletion_state() is PermissionState.ALLOWED
+
+    gateway.delete_object.side_effect = AwsPermissionError(
+        "aws.permission.denied", "AccessDenied", aws_service="s3", aws_action="DeleteObject"
+    )
+    with pytest.raises(AwsPermissionError):
+        s3.delete_object("restricted-bucket", "example.txt")
+    # The same key in different buckets must not overwrite successful evidence.
+    assert deletion_state() is PermissionState.UNKNOWN
+    failures = [
+        e
+        for e in logs.list_recent()
+        if e.aws_action == "DeleteObject" and e.result is ExecutionResult.FAILURE
+    ]
+    assert len(failures) == 1
+
+
+@pytest.mark.parametrize("multipart", [False, True])
+def test_actual_s3_write_rename_and_delete_feed_dashboard(history, tmp_path, multipart):
+    from tests.unit.application.test_s3_service import _services
+
+    from aws_connect.application.dashboard_service import DashboardService, PermissionState
+    from aws_connect.application.s3_service import MULTIPART_THRESHOLD, UploadConflictPolicy
+    from aws_connect.domain.errors import AwsPermissionError
+
+    logs, _, _ = history
+    _, s3, _, gateway = _services()
+    s3._activity_logs = logs
+    source = tmp_path / "sample.txt"
+    source.write_text("fixture", encoding="utf-8")
+    plan = s3.prepare_upload([source], "example-bucket", "reports/")
+    if multipart:
+        plan = replace(plan, items=(replace(plan.items[0], size=MULTIPART_THRESHOLD),))
+    s3.upload(plan, policy=UploadConflictPolicy.OVERWRITE, context=OperationContext())
+    expected_action = "CompleteMultipartUpload" if multipart else "PutObject"
+    assert any(e.aws_action == expected_action for e in logs.list_recent())
+    s3.rename_object("example-bucket", "reports/sample.txt", "renamed.txt")
+    s3.delete_object("example-bucket", "reports/renamed.txt")
+    s3.list_objects("example-bucket", "reports/")
+    gateway.list_buckets.side_effect = AwsPermissionError("aws.permission.denied", "denied")
+    clock = Mock()
+    clock.now.side_effect = lambda: datetime.now(UTC)
+    dashboard = DashboardService(
+        s3._profiles, s3._sessions, logs, clock, Mock(), Mock(), Mock(), gateway
+    )
+    result = dashboard.check_permissions(plan.profile_id)
+    rows = {p.key: p for f in result.features if f.feature == "s3" for p in f.permissions}
+    assert rows["buckets"].state is PermissionState.DENIED
+    for key in ("put", "delete", "list"):
+        assert rows[key].state is PermissionState.ALLOWED
+    assert "reports/" in rows["list"].explanation
+    assert gateway.put_file.call_count + gateway.multipart_file.call_count == 1
+    assert gateway.delete_object.call_count == 1
+    assert gateway.rename_object.call_count == 1
+
+
+def test_s3_permissions_retain_success_older_than_one_day(history):
+    from tests.unit.application.test_dashboard_service import build, row
+
+    from aws_connect.application.dashboard_service import PermissionState
+
+    logs, _, _ = history
+    logs.record(
+        replace(
+            event(),
+            occurred_at=datetime.now(UTC) - timedelta(days=2),
+            feature="s3",
+            aws_service="s3",
+            aws_action="PutObject",
+            metadata_json=json.dumps({"profile_id": 1, "region": "example-region"}),
+        )
+    )
+    dashboard, *_ = build()
+    dashboard._activity_logs = logs
+    assert row(dashboard.check_permissions(1), "s3", "put").state is PermissionState.ALLOWED
+
+
+def test_ec2_previous_day_success_survives_service_recreation_and_scopes(history):
+    from tests.unit.application.test_ec2_service import build_service
+
+    from aws_connect.application.operations import OperationState
+    from aws_connect.application.ssm_session import ManagedSsmSession
+    from aws_connect.domain.errors import ApplicationError
+
+    logs, store, _ = history
+    ec2, *_ = build_service()
+    ec2._activity_logs = logs
+    ec2._managed_runner = Mock()
+    ec2._managed_runner.start.return_value = ManagedSsmSession(
+        "op", 123, "session", OperationState.RUNNING
+    )
+    yesterday = datetime.now(UTC) - timedelta(days=2)
+    logs._clock.now.side_effect = None
+    logs._clock.now.return_value = yesterday
+    ec2.connect_external("i-online", region="us-east-1")
+    restored = ExecutionLogService(
+        logs._settings,
+        logs._reader,
+        logs._writer,
+        logs._clock,
+        repository=store,
+        sanitizer=MaskedExecutionLogSanitizer(),
+    )
+    assert restored.recent_ec2_connections(1, "us-east-1") == {"i-online": yesterday}
+    assert restored.recent_ec2_connections(2, "us-east-1") == {}
+    assert restored.recent_ec2_connections(1, "ap-northeast-2") == {}
+    ec2._managed_runner.start.side_effect = ApplicationError("plugin.launch.failed", "fixture")
+    with pytest.raises(ApplicationError):
+        ec2.connect_external("i-online", region="us-east-1")
+    assert restored.recent_ec2_connections(1, "us-east-1") == {"i-online": yesterday}
+
+
+def test_ec2_terminal_completion_logs_success_and_real_failure_separately(history):
+    from tests.unit.application.test_ec2_service import build_service
+
+    from aws_connect.application.operations import OperationState
+    from aws_connect.application.ssm_session import ManagedSsmSession
+    from aws_connect.domain.errors import PluginExecutionError
+
+    logs, _, _ = history
+    ec2, *_ = build_service()
+    ec2._activity_logs = logs
+    runner = Mock()
+    ec2._managed_runner = runner
+    for operation, state, code in (
+        ("normal", OperationState.SUCCEEDED, 0),
+        ("broken", OperationState.FAILED, 1),
+    ):
+        runner.start.return_value = ManagedSsmSession(
+            operation, 123, "session", OperationState.RUNNING
+        )
+        ec2.connect_external("i-online")
+        runner.status.return_value = ManagedSsmSession(
+            operation,
+            123,
+            "session",
+            state,
+            code,
+            PluginExecutionError("plugin.exit.nonzero", "fixture") if code else None,
+        )
+        ec2.reap_external_sessions()
+        ec2.reap_external_sessions()  # Terminal outcome must be recorded exactly once.
+    events = [e for e in logs.list_recent(30) if e.action == "session_end"]
+    assert len(events) == 2
+    assert {(e.result, e.level) for e in events} == {
+        (ExecutionResult.SUCCESS, ExecutionLevel.INFO),
+        (ExecutionResult.FAILURE, ExecutionLevel.ERROR),
+    }

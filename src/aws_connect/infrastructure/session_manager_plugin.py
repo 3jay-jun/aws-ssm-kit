@@ -93,7 +93,9 @@ class _TerminalSessionProcess:
                 except (EOFError, OSError):
                     self._record_exit(252)
                     return self._exit_code
-                if isinstance(message, dict) and message.get("event") == "exited":
+                if isinstance(message, dict) and message.get("event") == "console_closed":
+                    self._record_exit(0)
+                elif isinstance(message, dict) and message.get("event") == "exited":
                     try:
                         self._record_exit(int(message["exit_code"]))
                     except (KeyError, TypeError, ValueError):

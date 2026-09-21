@@ -150,7 +150,7 @@ def test_s3_page_browses_direct_location_and_updates_progress(tmp_path: Path) ->
     assert page.bucket.text() == "test-upload-bucket"
     assert page.objects.item(0, 1).text() == "report.txt"
     assert page.objects.item(0, 2).text() == "파일"
-    assert page.objects.columnCount() == 6
+    assert page.objects.columnCount() == 7
     assert page.progress.value() == 100
     assert page.upload_status.text() == "업로드 중: s3://test-upload-bucket/incoming/report.txt"
     s3.prepare_upload.assert_called_once()
@@ -555,7 +555,7 @@ def test_download_confirmation_cancel_or_policy(tmp_path: Path, policy) -> None:
         assert service.download.call_args.kwargs["policy"] is policy
 
 
-def test_upload_cards_preview_and_blank_area_opens_picker(tmp_path: Path) -> None:
+def test_upload_cards_preview_and_blank_area_does_not_open_picker(tmp_path: Path) -> None:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QImage
     from PySide6.QtTest import QTest
@@ -570,7 +570,7 @@ def test_upload_cards_preview_and_blank_area_opens_picker(tmp_path: Path) -> Non
     cards.resize(500, 184)
     cards.show()
     QTest.mouseClick(cards.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(420, 80))
-    assert chosen == [True]
+    assert chosen == []
     source = tmp_path / "a-very-long-image-name-that-needs-to-be-shortened-for-the-card.png"
     image = QImage(20, 20, QImage.Format.Format_RGB32)
     image.fill(Qt.GlobalColor.red)

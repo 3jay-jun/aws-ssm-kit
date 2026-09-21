@@ -10,7 +10,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QTransform
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -54,6 +55,7 @@ from aws_connect.domain.errors import ApplicationError, AwsPermissionError, Conf
 from aws_connect.domain.s3_location import S3Location
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner, MfaCodeProvider
 from aws_connect.presentation.gui.icons import gui_icon, set_button_icon
+from aws_connect.presentation.gui.page_layout import PAGE_SPACING, apply_page_layout, page_heading
 from aws_connect.presentation.gui.s3_search import S3SearchDialog
 from aws_connect.presentation.gui.table_selection import add_check_all_header
 from aws_connect.presentation.gui.tasks import GuiTaskRunner, TaskHandle
@@ -119,6 +121,13 @@ class S3Page(QWidget):
         self._upload_in_progress = False
         self._download_task: TaskHandle | None = None
         self._download_in_progress = False
+        self._download_states: dict[tuple[str, str], str] = {}
+        self._download_selected: set[tuple[str, str]] = set()
+        self._download_current: tuple[str, str] | None = None
+        self._download_angle = 0
+        self._download_spinner = QTimer(self)
+        self._download_spinner.setInterval(100)
+        self._download_spinner.timeout.connect(self._animate_downloads)
         self._shutdown_callbacks: list[Callable[[], None]] = []
         self._queue: dict[Path, UploadQueueEntry] = {}
         self._active_sources: set[Path] = set()
@@ -138,21 +147,14 @@ class S3Page(QWidget):
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(26, 22, 26, 24)
-        layout.setSpacing(16)
+        apply_page_layout(layout)
         page_head = QHBoxLayout()
-        heading_copy = QVBoxLayout()
-        heading_copy.setSpacing(4)
-        title = QLabel("S3 파일")
-        title.setObjectName("page_title")
-        subtitle = QLabel("Bucket을 탐색하거나 현재 Prefix에 로컬 파일을 업로드합니다.")
-        subtitle.setObjectName("page_subtitle")
-        heading_copy.addWidget(title)
-        heading_copy.addWidget(subtitle)
+        heading_copy = page_heading(
+            "S3 파일", "Bucket을 탐색하거나 현재 Prefix에 로컬 파일을 업로드합니다."
+        )
         page_head.addLayout(heading_copy)
         page_head.addStretch()
         layout.addLayout(page_head)
-        layout.addSpacing(8)
 
         self.bucket = QLineEdit(self)
         self.bucket.setObjectName("s3_bucket_input")
@@ -163,8 +165,10 @@ class S3Page(QWidget):
         self.bucket_catalog = QComboBox()
         self.bucket_catalog.setObjectName("s3_bucket_catalog")
         self.bucket_catalog.setEditable(True)
-        self.bucket_catalog.setMinimumWidth(180)
-        self.bucket_catalog.setMaximumWidth(310)
+        self.bucket_catalog.setMinimumWidth(380)
+        self.bucket_catalog.setMaximumWidth(480)
+        self.bucket_catalog.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.bucket_catalog.currentTextChanged.connect(self.bucket_catalog.setToolTip)
         self.bucket_catalog.activated.connect(
             lambda _index: self._catalog_bucket_selected(self.bucket_catalog.currentText())
         )
@@ -181,9 +185,10 @@ class S3Page(QWidget):
         page_head.addWidget(self.upload)
 
         content = QWidget()
+        content.setObjectName("s3_page_content")
         cards = QVBoxLayout(content)
         cards.setContentsMargins(0, 0, 0, 0)
-        cards.setSpacing(18)
+        cards.setSpacing(PAGE_SPACING)
         browser_card = QFrame()
         browser_card.setObjectName("s3_browser_card")
         browser_card.setProperty("role", "card")
@@ -217,11 +222,13 @@ class S3Page(QWidget):
         header.addWidget(self.delete_object_button)
         header.addWidget(self._action_button("common-refresh.svg", "새로고침", self.list_objects))
         right.addLayout(header)
-        self.objects = QTableWidget(0, 6)
+        self.objects = QTableWidget(0, 7)
         self.objects.setObjectName("s3_objects")
         self.objects.setWordWrap(False)
         self.objects.setIconSize(QSize(22, 22))
-        self.objects.setHorizontalHeaderLabels(["", "이름", "유형", "크기", "수정 시간", "작업"])
+        self.objects.setHorizontalHeaderLabels(
+            ["", "이름", "유형", "크기", "수정 시간", "상태", "작업"]
+        )
         self.objects.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.objects.cellDoubleClicked.connect(self._object_activated)
         self.objects.itemSelectionChanged.connect(self._sync_object_actions)
@@ -229,7 +236,7 @@ class S3Page(QWidget):
         self.objects.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.objects.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.objects.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for col, width in enumerate((32, 280, 80, 95, 190, 62)):
+        for col, width in enumerate((32, 280, 80, 95, 170, 52, 62)):
             self.objects.setColumnWidth(col, width)
         self.objects.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.objects.verticalHeader().hide()
@@ -354,17 +361,30 @@ class S3Page(QWidget):
         button.clicked.connect(action)
         return button
 
-    def _danger_menu_action(self, menu: QMenu, text: str, callback: Callable[[], None]) -> None:
+    def _menu_action(
+        self, menu: QMenu, text: str, icon: str, *, danger: bool = False
+    ) -> QWidgetAction:
         action = QWidgetAction(menu)
         action.setText(text)
         button = QPushButton(text)
-        button.setObjectName("s3_menu_danger")
-        set_button_icon(button, "common-delete.svg", color="#ff2638")
+        button.setObjectName("s3_menu_item")
+        button.setProperty("danger", danger)
+        set_button_icon(button, icon, color="#ff2638" if danger else None, size=18)
         action.setDefaultWidget(button)
-        action.triggered.connect(callback)
         button.clicked.connect(action.trigger)
         button.clicked.connect(menu.close)
+
+        def sync() -> None:
+            button.setEnabled(action.isEnabled())
+            button.setCheckable(action.isCheckable())
+            button.setChecked(action.isChecked())
+
+        action.changed.connect(sync)
         menu.addAction(action)
+        return action
+
+    def _danger_menu_action(self, menu: QMenu, text: str, callback: Callable[[], None]) -> None:
+        self._menu_action(menu, text, "common-delete.svg", danger=True).triggered.connect(callback)
 
     def open_search(self) -> None:
         generation = self._profile_generation
@@ -403,18 +423,18 @@ class S3Page(QWidget):
         menu = QMenu(self)
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         menu.setObjectName("s3_action_menu")
-        download = menu.addAction(gui_icon("s3-download.svg"), "다운로드")
+        download = self._menu_action(menu, "다운로드", "s3-download.svg")
         download.setEnabled(not self._download_in_progress)
         download.triggered.connect(self.download_selected_objects)
-        rename = menu.addAction(gui_icon("common-edit.svg"), "이름 변경")
+        rename = self._menu_action(menu, "이름 변경", "common-edit.svg")
         rename.setEnabled(not selected.is_prefix)
         rename.triggered.connect(self.rename_selected_object)
-        copy = menu.addAction(gui_icon("common-copy.svg"), "복사 경로")
+        copy = self._menu_action(menu, "복사 경로", "common-copy.svg")
         uri = f"s3://{self._current_bucket()}/{selected.key}"
         copy.triggered.connect(lambda: QApplication.clipboard().setText(uri))
         self._danger_menu_action(menu, "삭제", self.delete_selected_object)
         menu.actions()[-1].setEnabled(not selected.is_prefix)
-        button = self.objects.cellWidget(row, 5)
+        button = self.objects.cellWidget(row, 6)
         menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
 
     def rename_selected_object(self) -> None:
@@ -461,7 +481,7 @@ class S3Page(QWidget):
                 self._set_failed_only,
             ),
         ):
-            action = menu.addAction(gui_icon(icon), label)
+            action = self._menu_action(menu, label, icon)
             action.setCheckable(True)
             action.setChecked(checked)
             action.toggled.connect(callback)
@@ -484,6 +504,9 @@ class S3Page(QWidget):
         self.cancel_download()
         self._profile_generation += 1
         self._listing_generation += 1
+        self._download_states.clear()
+        self._download_selected.clear()
+        self._download_spinner.stop()
         self._query = None
         self._recent_paths.clear()
         self._hide_completed = False
@@ -764,8 +787,63 @@ class S3Page(QWidget):
                 button = self._action_button(
                     "common-more.svg", "객체 작업", partial(self.open_object_menu, row)
                 )
-                self.objects.setCellWidget(row, 5, button)
+                self.objects.setCellWidget(row, 6, button)
+                status = QLabel()
+                status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.objects.setCellWidget(row, 5, status)
+        self._render_download_states()
         self._sync_object_actions()
+
+    def _animate_downloads(self) -> None:
+        self._download_angle = (self._download_angle + 30) % 360
+        self._render_download_states()
+
+    def _render_download_states(self) -> None:
+        for row, item in enumerate(self._listed_objects):
+            label = self.objects.cellWidget(row, 5)
+            if not isinstance(label, QLabel):
+                continue
+            state = self._download_states.get((self._current_bucket(), item.key), "")
+            label.clear()
+            label.setToolTip(state)
+            label.setAccessibleName(state or "다운로드 상태 없음")
+            if state == "다운로드 중":
+                pixmap = gui_icon("common-refresh.svg", color="#0055ff").pixmap(18, 18)
+                label.setPixmap(
+                    pixmap.transformed(
+                        QTransform().rotate(self._download_angle),
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            elif state in {"성공", "실패"}:
+                label.setPixmap(
+                    gui_icon(
+                        "common-circle-check.svg" if state == "성공" else "common-circle-xmark.svg",
+                        color="#009e55" if state == "성공" else "#ff2638",
+                    ).pixmap(18, 18)
+                )
+        if not any(value == "다운로드 중" for value in self._download_states.values()):
+            self._download_spinner.stop()
+
+    def _finish_download_states(self, state: str) -> None:
+        if self._download_generation != self._profile_generation:
+            return
+        for key in self._download_selected:
+            if self._download_states.get(key) == "다운로드 중":
+                affected = (
+                    self._download_current is None
+                    or key == self._download_current
+                    or (
+                        key[1].endswith("/")
+                        and key[0] == self._download_current[0]
+                        and self._download_current[1].startswith(key[1])
+                    )
+                )
+                self._download_states[key] = state if state != "실패" or affected else ""
+        if self._download_current is not None and state == "실패":
+            self._download_states[self._download_current] = state
+        self._download_spinner.stop()
+        self._render_download_states()
 
     def _sync_object_actions(self) -> None:
         selected = self._selected_objects()
@@ -797,6 +875,12 @@ class S3Page(QWidget):
         if destination_root is None or generation != self._profile_generation:
             return
         self._download_generation = generation
+        self._download_selected = {(bucket, item.key) for item in selected}
+        self._download_current = None
+        for key in self._download_selected:
+            self._download_states[key] = "다운로드 중"
+        self._download_spinner.start()
+        self._render_download_states()
         self._download_in_progress = True
         self.open_object_button.setEnabled(False)
 
@@ -821,6 +905,7 @@ class S3Page(QWidget):
         plan: DownloadPlan = value
         policy = self._confirm_download(self, plan)
         if policy is None or self._download_generation != self._profile_generation or self._closing:
+            self._finish_download_states("")
             self._download_in_progress = False
             self._sync_object_actions()
             self._finish_shutdown()
@@ -850,6 +935,7 @@ class S3Page(QWidget):
 
     def _download_completed(self, value: Any) -> None:
         summary: DownloadSummary = value
+        self._finish_download_states("성공" if not summary.skipped else "")
         self._download_in_progress = False
         self._download_task = None
         self._sync_object_actions()
@@ -860,6 +946,7 @@ class S3Page(QWidget):
         self._finish_shutdown()
 
     def _download_failed(self, error: ApplicationError) -> None:
+        self._finish_download_states("실패")
         self._download_in_progress = False
         self._download_task = None
         self._sync_object_actions()
@@ -867,6 +954,7 @@ class S3Page(QWidget):
         self._finish_shutdown()
 
     def _download_cancelled(self) -> None:
+        self._finish_download_states("")
         self._download_in_progress = False
         self._download_task = None
         self._sync_object_actions()
@@ -875,6 +963,7 @@ class S3Page(QWidget):
         self._finish_shutdown()
 
     def _download_mfa_cancelled(self) -> None:
+        self._finish_download_states("")
         self._download_in_progress = False
         self._download_task = None
         self._sync_object_actions()
@@ -1008,13 +1097,6 @@ class S3Page(QWidget):
             self.upload_sources.update_entry(
                 row, entry, self._upload_in_progress or self._preparing_upload
             )
-            if not entry.target:
-                item = self.upload_sources.item(row, 4)
-                if item is not None:
-                    prefix = self.prefix.text().strip("/")
-                    item.setText(
-                        f"/{prefix}/{entry.source.name}" if prefix else f"/{entry.source.name}"
-                    )
             hidden = (self._hide_completed and entry.state in {"성공", "무시"}) or (
                 self._failed_only and entry.state != "실패"
             )
@@ -1179,6 +1261,17 @@ class S3Page(QWidget):
     def _progressed(self, value: Any) -> None:
         event: ProgressEvent = value
         if event.message_code.startswith("s3.download"):
+            if self._download_generation != self._profile_generation:
+                return
+            if event.target and event.target.startswith("s3://"):
+                bucket, _, key = event.target[5:].partition("/")
+                self._download_current = (bucket, key)
+                self._download_selected.add((bucket, key))
+                state = {"s3.download.item.completed": "성공", "s3.download.item.skipped": ""}.get(
+                    event.message_code, "다운로드 중"
+                )
+                self._download_states[(bucket, key)] = state
+                self._render_download_states()
             self.upload_status.setText(f"다운로드 중: {event.target or ''}")
             return
         if (

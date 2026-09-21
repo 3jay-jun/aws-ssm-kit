@@ -1,6 +1,7 @@
 """Compact list rows with shared metadata, accessibility, and separators."""
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -13,12 +14,28 @@ from PySide6.QtWidgets import (
 )
 
 
+class _ElidedLabel(QLabel):
+    """Preserve the complete accessible text while painting within the row width."""
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setFont(self.font())
+        painter.setPen(self.palette().windowText().color())
+        painter.drawText(
+            self.contentsRect(),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, self.width()),
+        )
+
+
 def set_compact_list_row(
     list_widget: QListWidget,
     item: QListWidgetItem,
     title: str,
     metadata: tuple[str, ...],
     *,
+    title_suffix: str | None = None,
+    elide: bool = False,
     connected: bool = False,
     show_status: bool = False,
     trailing: QWidget | None = None,
@@ -46,14 +63,29 @@ def set_compact_list_row(
     for index, text in enumerate((title, *metadata)):
         if not text:
             continue
-        label = QLabel(text)
+        label = _ElidedLabel(text) if elide else QLabel(text)
+        label.setToolTip(text)
         label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         label.setTextFormat(Qt.TextFormat.PlainText)
         label.setObjectName("compact_row_title" if index == 0 else "compact_row_metadata")
         label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        layout.addWidget(label)
-    if trailing is not None:
-        content.addWidget(trailing)
+        if index == 0 and title_suffix is not None:
+            heading = QHBoxLayout()
+            heading.setSpacing(6)
+            heading.addWidget(label, 1)
+            suffix = QLabel(title_suffix)
+            suffix.setObjectName("compact_row_metadata")
+            suffix.ensurePolished()
+            suffix.setFixedWidth(suffix.fontMetrics().horizontalAdvance("0000-00-00 00:00") + 8)
+            suffix.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            heading.addWidget(suffix)
+            if trailing is not None:
+                heading.addWidget(trailing, alignment=Qt.AlignmentFlag.AlignVCenter)
+            layout.addLayout(heading)
+        else:
+            layout.addWidget(label)
+    if trailing is not None and title_suffix is None:
+        content.addWidget(trailing, alignment=Qt.AlignmentFlag.AlignVCenter)
     description = "\n".join(text for text in (title, *metadata) if text)
     item.setToolTip(description)
     item.setData(Qt.ItemDataRole.AccessibleTextRole, description)

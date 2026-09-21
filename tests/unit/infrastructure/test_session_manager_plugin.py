@@ -336,3 +336,17 @@ def test_ctrl_c_kills_plugin_when_graceful_stop_times_out(tmp_path) -> None:
     with pytest.raises(KeyboardInterrupt):
         plugin.run(invocation())
     assert process.terminated and process.killed
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ({"event": "console_closed"}, 0),
+        ({"event": "exited", "exit_code": 0}, 0),
+        ({"event": "exited", "exit_code": 1}, 1),
+        ({"event": "exited", "exit_code": 252}, 252),
+    ],
+)
+def test_terminal_explicit_close_is_normal_but_plugin_failures_are_preserved(message, expected):
+    process = plugin_module._TerminalSessionProcess(FakeConnection(message), 9123)
+    assert process.poll() == expected

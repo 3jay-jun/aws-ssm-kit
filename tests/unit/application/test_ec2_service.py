@@ -577,6 +577,8 @@ def test_external_shell_records_success_only_after_launch_and_excludes_secret_co
         result="succeeded",
         message_code="ec2.connection.succeeded",
         operation="connect",
+        aws_service="ssm",
+        aws_action="StartSession",
         profile_id=1,
         region="us-east-1",
     )

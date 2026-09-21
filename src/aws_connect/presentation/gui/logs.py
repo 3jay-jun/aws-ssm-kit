@@ -42,6 +42,7 @@ from aws_connect.application.settings_service import (
 )
 from aws_connect.domain.app_settings import AppSettings
 from aws_connect.presentation.gui.icons import gui_icon, icon_text, set_button_icon, status_badge
+from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 from aws_connect.presentation.gui.view_models import (
@@ -74,19 +75,13 @@ class LogsSettingsPage(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(34, 20, 34, 20)
-        layout.setSpacing(16)
+        apply_page_layout(layout)
         page_head = QHBoxLayout()
-        heading_copy = QVBoxLayout()
-        title = QLabel("실행 로그")
-        title.setObjectName("page_title")
-        subtitle = QLabel(
+        heading_copy = page_heading(
+            "실행 로그",
             "프로그램 동작과 AWS 요청 이력을 확인할 수 있습니다. "
-            "민감한 인증정보와 Secret 값은 마스킹되어 기록됩니다."
+            "민감한 인증정보와 Secret 값은 마스킹되어 기록됩니다.",
         )
-        subtitle.setObjectName("page_subtitle")
-        heading_copy.addWidget(title)
-        heading_copy.addWidget(subtitle)
         page_head.addLayout(heading_copy)
         page_head.addStretch()
         self.open_button = QPushButton("로그 폴더 열기 ↗")

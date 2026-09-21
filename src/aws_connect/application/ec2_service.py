@@ -9,7 +9,7 @@ from threading import Lock
 
 from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
-from aws_connect.application.execution_logging import logged_operation
+from aws_connect.application.execution_logging import logged_operation, record_failure
 from aws_connect.application.operations import OperationContext, OperationState
 from aws_connect.application.ports import (
     Ec2FavoriteStore,
@@ -142,6 +142,7 @@ class ExternalSessionHandle:
     state: OperationState
     exit_code: int | None = None
     error: ApplicationError | None = None
+    warning: ApplicationError | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +151,7 @@ class _ExternalSession:
     instance_id: str
     process_id: int
     ssm_session_id: str
+    region: str
 
 
 class Ec2Service:
@@ -308,7 +310,11 @@ class Ec2Service:
             )
         with self._external_lock:
             self._external[managed.operation_id] = _ExternalSession(
-                profile.require_id(), instance_id, managed.process_id, managed.session_id
+                profile.require_id(),
+                instance_id,
+                managed.process_id,
+                managed.session_id,
+                selected_region,
             )
         if document_name is None and parameters is None and managed.state is OperationState.RUNNING:
             self._record_connection(profile.require_id(), selected_region, instance_id)
@@ -322,6 +328,8 @@ class Ec2Service:
                 result="succeeded",
                 message_code="ec2.connection.succeeded",
                 operation="connect",
+                aws_service="ssm",
+                aws_action="StartSession",
                 profile_id=profile_id,
                 region=region,
             )
@@ -361,7 +369,29 @@ class Ec2Service:
             )
             if managed.state is not OperationState.RUNNING:
                 with self._external_lock:
-                    self._external.pop(operation_id, None)
+                    removed = self._external.pop(operation_id, None)
+                if removed is not None and self._activity_logs is not None:
+                    if managed.error is not None:
+                        record_failure(
+                            self._activity_logs,
+                            "ec2",
+                            "session_end",
+                            managed.error,
+                            target=metadata.instance_id,
+                            profile_id=metadata.profile_id,
+                            region=metadata.region,
+                        )
+                    else:
+                        record_success(
+                            self._activity_logs,
+                            "ec2",
+                            "session_end",
+                            target=metadata.instance_id,
+                            profile_id=metadata.profile_id,
+                            region=metadata.region,
+                            operation_id=operation_id,
+                            warning=managed.warning is not None,
+                        )
         return handles
 
     @logged_operation("ec2", "stop_external", completion=True)
@@ -423,6 +453,7 @@ class Ec2Service:
             managed.state,
             managed.exit_code,
             managed.error,
+            managed.warning,
         )
 
     def _list(self, credentials: PlainCredentials, region: str, profile_id: int) -> list[Ec2Target]:

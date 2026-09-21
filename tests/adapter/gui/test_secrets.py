@@ -469,7 +469,7 @@ def test_secret_count_and_conditional_relay_guidance() -> None:
     page.set_profile(1)
     page.get_secret()
 
-    assert page.saved_count.text() == "1"
+    assert page.catalog.count() == 1
     assert page.relay_panel.isHidden()
     assert page.relay_consent.isHidden()
     assert page.relay_notice.isHidden()
@@ -560,7 +560,7 @@ def test_short_arn_keeps_full_lookup_identity_and_compact_rows() -> None:
     assert page.secret_id.text() == "demo/database-AbCdEf"
     assert page._current_identifier() == identifier
     item = page.catalog.item(0)
-    assert "arn:" not in item.toolTip()
+    assert identifier in item.toolTip()
     assert page.catalog.itemWidget(item).property("last_row") is True
     page.secret_id.setText("another/name")
     assert page._current_identifier() == "another/name"
@@ -688,7 +688,7 @@ def test_saved_menu_copies_identifiers_and_deletes_only_local_snapshot(monkeypat
     monkeypatch.setattr(QMessageBox, "warning", lambda *_: QMessageBox.StandardButton.Yes)
     page.set_profile(1)
     page.get_secret()
-    assert page.saved_count.text() == "1"
+    assert page.catalog.count() == 1
     assert page.register_saved_button.text() == "+ 수동 생성"
     assert page.delete_saved_button.isHidden()
     page.show()
@@ -696,16 +696,17 @@ def test_saved_menu_copies_identifiers_and_deletes_only_local_snapshot(monkeypat
     button.click()
     menu = button.findChild(QMenu)
     assert [action.text() for action in menu.actions()] == [
+        "수정하기",
         "Secret ID 복사",
         "이름 복사",
         "저장된 Secret 삭제",
     ]
-    menu.actions()[0].trigger()
     menu.actions()[1].trigger()
-    assert copied == ["arn:test", "arn:test"]
     menu.actions()[2].trigger()
+    assert copied == ["arn:test", "arn:test"]
+    menu.actions()[3].trigger()
     assert service.saved == []
-    assert page.saved_count.text() == "0"
+    assert page.catalog.count() == 0
     assert page._result is None
     page.close()
     app.processEvents()
@@ -725,3 +726,50 @@ def test_stale_lookup_cannot_reveal_previous_profiles_secret() -> None:
     assert page._result is None
     assert page.raw_view.toPlainText() == ""
     assert page.fields.rowCount() == 0
+
+
+def test_compact_saved_rows_align_timestamps_ids_and_reuse_edit(monkeypatch) -> None:
+    from datetime import datetime
+
+    from PySide6.QtWidgets import QMenu
+
+    from aws_connect.presentation.gui.styles import APP_STYLE
+
+    app = _app()
+    service = FakeSecrets()
+    timestamp = datetime(2026, 9, 16, 14, 20).astimezone()
+    service.saved = [
+        SavedSecret(1, 1, "demo/" + "long-name" * 20, last_retrieved_at=timestamp),
+        SavedSecret(2, 1, "demo/short"),
+    ]
+    page = SecretsPage(service, ImmediateRunner())  # type: ignore[arg-type]
+    page.setStyleSheet(APP_STYLE)
+    edited = []
+    monkeypatch.setattr(page, "edit_saved", lambda: edited.append(page.catalog.currentRow()))
+    page.set_profile(1)
+    page.resize(1250, 850)
+    page.show()
+    app.processEvents()
+    rows = [page.catalog.itemWidget(page.catalog.item(i)) for i in range(2)]
+    labels = [row.findChildren(QLabel) for row in rows]
+    times = [
+        next(label for label in group if label.text() in ("2026-09-16 14:20", "-"))
+        for group in labels
+    ]
+    ids = [
+        next(label for label in group if label.text().startswith("Secret ID")) for group in labels
+    ]
+    buttons = [row.findChild(QPushButton) for row in rows]
+    assert times[0].geometry() == times[1].geometry()
+    assert ids[0].geometry() == ids[1].geometry()
+    assert buttons[0].geometry() == buttons[1].geometry()
+    assert service.saved[0].identifier in ids[0].toolTip()
+    assert rows[0].height() <= 66
+    assert all(label.text() != "저장된 Secret" for label in page.findChildren(QLabel))
+    buttons[1].click()
+    menu = buttons[1].findChild(QMenu)
+    menu.actions()[0].trigger()
+    assert edited == [1]
+    menu.close()
+    page.close()
+    app.processEvents()

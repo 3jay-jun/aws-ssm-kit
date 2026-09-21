@@ -76,6 +76,7 @@ from aws_connect.presentation.gui.list_rows import (
     update_list_row_separators,
 )
 from aws_connect.presentation.gui.logs import LogsSettingsPage
+from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.s3 import S3Page
 from aws_connect.presentation.gui.secrets import SecretsPage
 from aws_connect.presentation.gui.styles import APP_STYLE, NAVIGATION_WIDTH
@@ -664,10 +665,10 @@ class MainWindow(QMainWindow):
     def _placeholder(title: str) -> QWidget:
         placeholder = QWidget()
         layout = QVBoxLayout(placeholder)
-        heading = QLabel(title)
-        heading.setObjectName("page_title")
-        layout.addWidget(heading)
-        layout.addWidget(QLabel("이 기능은 다음 구현 단계에서 공통 서비스를 연결합니다."))
+        apply_page_layout(layout)
+        layout.addLayout(
+            page_heading(title, "이 기능은 다음 구현 단계에서 공통 서비스를 연결합니다.")
+        )
         layout.addStretch()
         return placeholder
 
@@ -815,7 +816,7 @@ class MainWindow(QMainWindow):
         return self.dashboard_page
 
     def _load_dashboard_recent(self) -> None:
-        self.dashboard_page.refresh_recent()
+        self.dashboard_page.refresh()
 
     def reload_profiles(self, selected_id: int | None = None) -> None:
         self._runner.submit(
@@ -936,6 +937,7 @@ class MainWindow(QMainWindow):
         self.reload_profiles(selected_id)
 
     def connect_profile(self, profile_id: int) -> None:
+        self.dashboard_page.set_profile(None)
         self._apply_header(
             checking_authentication_header(
                 next(item for item in self._profile_summaries if item.id == profile_id)

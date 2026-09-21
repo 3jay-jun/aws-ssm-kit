@@ -133,3 +133,24 @@ def test_session_host_stops_plugin_when_started_event_cannot_transfer_ownership(
     assert exit_code == 252
     assert process.terminated
     assert connection.closed
+
+
+def test_console_close_handler_reports_only_explicit_close(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    register = Mock(return_value=1)
+    monkeypatch.setattr(
+        session_host.ctypes,
+        "WinDLL",
+        lambda *a, **k: SimpleNamespace(SetConsoleCtrlHandler=register),
+    )
+    sent = []
+    unregister = session_host._register_console_close(sent.append)
+    callback = register.call_args.args[0]
+    callback(0)
+    assert sent == []
+    callback(2)
+    assert sent == [{"event": "console_closed"}]
+    unregister()
+    assert register.call_args.args[1] == 0

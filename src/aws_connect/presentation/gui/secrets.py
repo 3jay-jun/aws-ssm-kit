@@ -50,6 +50,7 @@ from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner, M
 from aws_connect.presentation.gui.clipboard import copy_temporarily
 from aws_connect.presentation.gui.icons import gui_icon, icon_text, set_button_icon
 from aws_connect.presentation.gui.list_rows import set_compact_list_row, update_list_row_separators
+from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 
@@ -114,17 +115,11 @@ class SecretsPage(QWidget):
         page_scroll.setWidget(page_content)
         outer.addWidget(page_scroll)
         root = QVBoxLayout(page_content)
-        root.setContentsMargins(34, 30, 34, 40)
-        root.setSpacing(16)
+        apply_page_layout(root)
         page_head = QHBoxLayout()
-        heading_copy = QVBoxLayout()
-        heading_copy.setSpacing(4)
-        heading = QLabel("Secrets Manager")
-        heading.setObjectName("page_title")
-        subtitle = QLabel("현재 조회 방식으로 접근 가능한 Secrets Manager 항목을 표시합니다.")
-        subtitle.setObjectName("page_subtitle")
-        heading_copy.addWidget(heading)
-        heading_copy.addWidget(subtitle)
+        heading_copy = page_heading(
+            "Secrets Manager", "현재 조회 방식으로 접근 가능한 Secrets Manager 항목을 표시합니다."
+        )
         page_head.addLayout(heading_copy)
         page_head.addStretch()
         self.list_button = QPushButton()
@@ -264,20 +259,11 @@ class SecretsPage(QWidget):
         catalog_card.setFixedWidth(360)
         catalog = QVBoxLayout(catalog_card)
         catalog.setContentsMargins(20, 20, 20, 20)
-        catalog_title = QLabel("저장된 Secret")
-        catalog_title.setObjectName("section_title")
         self.register_saved_button = QPushButton("+ 수동 생성")
         self.register_saved_button.setProperty("variant", "primary")
         self.register_saved_button.setToolTip("로컬 SQLite 저장 항목 생성")
         self.register_saved_button.clicked.connect(self.register_saved)
         catalog.addWidget(self.register_saved_button)
-        catalog_heading = QHBoxLayout()
-        catalog_heading.addWidget(catalog_title)
-        self.saved_count = QLabel("0")
-        self.saved_count.setObjectName("secret_saved_count")
-        catalog_heading.addWidget(self.saved_count)
-        catalog_heading.addStretch()
-        catalog.addLayout(catalog_heading)
         self.saved_status = QLabel("프로필을 선택하면 저장 항목을 불러옵니다.")
         self.saved_status.setObjectName("helper_text")
         catalog.addWidget(self.saved_status)
@@ -405,7 +391,6 @@ class SecretsPage(QWidget):
         self.secret_selector.clear()
         self._catalog_entries = []
         self._saved_entries = []
-        self.saved_count.setText("0")
         self._selection_changed()
         if profile_id is not None:
             self.catalog_status.setText("Secret 목록을 불러오는 중입니다…")
@@ -436,12 +421,18 @@ class SecretsPage(QWidget):
                 self.catalog,
                 item,
                 identifier.rsplit("/", 1)[-1],
-                (f"Secret ID  {identifier}",),
+                (f"Secret ID  {saved.identifier}",),
+                title_suffix=(
+                    saved.last_retrieved_at.astimezone().strftime("%Y-%m-%d %H:%M")
+                    if saved.last_retrieved_at
+                    else "-"
+                ),
+                elide=True,
                 trailing=self._saved_menu_button(saved),
             )
-        self.saved_count.setText(str(len(self._saved_entries)))
         update_list_row_separators(self.catalog)
         self.saved_status.setText("" if self._saved_entries else "저장된 Secret이 없습니다.")
+        self.saved_status.setVisible(not self._saved_entries)
         selected_row = next(
             (
                 row
@@ -811,6 +802,7 @@ class SecretsPage(QWidget):
     def _saved_menu_button(self, saved: SavedSecret) -> QPushButton:
         button = QPushButton()
         button.setProperty("icon_only", True)
+        button.setFixedSize(24, 24)
         set_button_icon(button, "common-more.svg", tooltip="저장된 Secret 더보기")
         button.clicked.connect(lambda: self._show_saved_menu(saved, button))
         return button
@@ -823,6 +815,8 @@ class SecretsPage(QWidget):
         menu = QMenu(button)
         menu.setObjectName("secret_saved_menu")
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        edit = menu.addAction("수정하기")
+        edit.triggered.connect(self.edit_saved)
         for text, value in (
             ("Secret ID 복사", saved.identifier),
             ("이름 복사", _short_secret_id(saved.identifier).rsplit("/", 1)[-1]),
@@ -932,7 +926,7 @@ class SecretsPage(QWidget):
         """Keep the approved desktop codebox while avoiding overlap at 720p."""
 
         self.fields.setMinimumHeight(66 if self.height() < 650 else 150)
-        self.catalog_card.setFixedWidth(260 if self.width() < 1000 else 360)
+        self.catalog_card.setFixedWidth(360 if self.width() < 1000 else 420)
         super().resizeEvent(event)
 
     def _failed(self, error: ApplicationError) -> None:

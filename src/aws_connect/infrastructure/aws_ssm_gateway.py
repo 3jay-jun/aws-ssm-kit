@@ -109,7 +109,7 @@ class Boto3Ec2MetadataGateway:
                 for reservation in response.get("Reservations", []):
                     for item in reservation.get("Instances", []):
                         state = str(item.get("State", {}).get("Name", "unknown"))
-                        if state not in {"running", "stopped"}:
+                        if state not in {"pending", "running", "stopping", "stopped"}:
                             continue
                         result.append(
                             Ec2Instance(

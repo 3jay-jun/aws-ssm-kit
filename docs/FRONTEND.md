@@ -19,3 +19,9 @@ visual geometry, colors, spacing, icons, and state presentation.
 - The S3 page performs file selection/drop on the GUI thread but runs preflight, listing, and upload
   through `GuiTaskRunner`; it renders the shared `ProgressEvent` and cancels only through the shared
   `CancellationToken`.
+
+- Every tab uses `apply_page_layout` and `page_heading` from `presentation/gui/page_layout.py`.
+  Insets are 24px horizontal / 20px vertical, section spacing 16px, heading gap 4px.
+  Typography sizes are defined in `typography.py`: page title 25px, section title 17px, body 13px.
+- Checkbox indicators (widgets, item views, and menus) share the global MFA-derived QSS rule.
+  Do not override checkbox size/color or page-title font size inside a feature selector.

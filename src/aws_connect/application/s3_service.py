@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
-from aws_connect.application.execution_logging import logged_operation
+from aws_connect.application.execution_logging import logged_operation, record_failure
 from aws_connect.application.operations import (
     OperationCancelled,
     OperationContext,
@@ -188,10 +188,13 @@ class S3Service:
             target=location.bucket,
             profile_id=selected.require_id(),
             region=selected.region,
+            aws_service="s3",
+            aws_action="ListObjectsV2",
+            metadata={"bucket": location.bucket, "prefix": location.prefix},
         )
         return result
 
-    @logged_operation("s3", "rename", target_parameter="key")
+    @logged_operation("s3", "rename", completion=False, target_parameter="key")
     def rename_object(
         self,
         bucket: str,
@@ -222,7 +225,33 @@ class S3Service:
             raise ConfigurationError(
                 "s3.rename.exists", "같은 이름의 파일이 있습니다. 다른 이름을 입력하세요."
             )
-        self._gateway.rename_object(credentials, selected.region, location.bucket, key, target)
+        try:
+            self._gateway.rename_object(credentials, selected.region, location.bucket, key, target)
+        except ApplicationError as error:
+            if self._activity_logs is not None:
+                record_failure(
+                    self._activity_logs,
+                    "s3",
+                    "rename",
+                    error,
+                    target=key,
+                    profile_id=selected.require_id(),
+                    region=selected.region,
+                    metadata={"bucket": location.bucket},
+                )
+            raise
+        for action, object_key in (("CopyObject", target), ("DeleteObject", key)):
+            record_success(
+                self._activity_logs,
+                "s3",
+                "rename",
+                target=object_key,
+                profile_id=selected.require_id(),
+                region=selected.region,
+                aws_service="s3",
+                aws_action=action,
+                metadata={"bucket": location.bucket},
+            )
         return target
 
     def prepare_upload(
@@ -320,7 +349,7 @@ class S3Service:
             )
         return UploadPlan(selected.require_id(), selected.region, tuple(items))
 
-    @logged_operation("s3", "delete_object", completion=True, target_parameter="key")
+    @logged_operation("s3", "delete_object", completion=False, target_parameter="key")
     def delete_object(
         self,
         bucket: str,
@@ -333,7 +362,34 @@ class S3Service:
         normalized_key = key.strip()
         if not normalized_key or normalized_key.endswith("/"):
             raise ConfigurationError("s3.delete.object.required", "Select one non-prefix S3 object")
-        self._gateway.delete_object(credentials, selected.region, location.bucket, normalized_key)
+        try:
+            self._gateway.delete_object(
+                credentials, selected.region, location.bucket, normalized_key
+            )
+        except ApplicationError as error:
+            if self._activity_logs is not None:
+                record_failure(
+                    self._activity_logs,
+                    "s3",
+                    "delete_object",
+                    error,
+                    target=normalized_key,
+                    profile_id=selected.require_id(),
+                    region=selected.region,
+                    metadata={"bucket": location.bucket},
+                )
+            raise
+        record_success(
+            self._activity_logs,
+            "s3",
+            "delete_object",
+            target=normalized_key,
+            profile_id=selected.require_id(),
+            region=selected.region,
+            metadata={"bucket": location.bucket},
+            aws_service="s3",
+            aws_action="DeleteObject",
+        )
 
     @logged_operation("s3", "download_object", completion=False, target_parameter="key")
     def download_object(
@@ -388,6 +444,11 @@ class S3Service:
             )
 
         expanded: list[S3Object] = []
+        direct_keys = {
+            item.key
+            for item in selected_objects
+            if not item.is_prefix and not item.key.endswith("/")
+        }
         for selected_object in selected_objects:
             if selected_object.is_prefix or selected_object.key.endswith("/"):
                 expanded.extend(
@@ -413,7 +474,11 @@ class S3Service:
                 raise ConfigurationError(
                     "s3.download.key.invalid", "S3 object key cannot escape the destination folder"
                 )
-            target = root.joinpath(*relative.parts).resolve()
+            target = (
+                root / relative.name
+                if candidate.key in direct_keys
+                else root.joinpath(*relative.parts)
+            ).resolve()
             if not target.is_relative_to(root):
                 raise ConfigurationError(
                     "s3.download.key.invalid", "S3 object key cannot escape the destination folder"
@@ -473,9 +538,11 @@ class S3Service:
         try:
             for current in plan.items:
                 context.raise_if_cancelled()
+                context.report("starting", "s3.download.item.started", target=current.uri)
                 if current.destination.exists():
                     if policy is UploadConflictPolicy.SKIP_EXISTING:
                         skipped.append(current.destination)
+                        context.report("skipped", "s3.download.item.skipped", target=current.uri)
                         total -= current.size
                         continue
                     if not current.exists:
@@ -501,6 +568,7 @@ class S3Service:
                     overwrite=policy is UploadConflictPolicy.OVERWRITE and current.exists,
                 )
                 downloaded.append(current.destination)
+                context.report("completed", "s3.download.item.completed", target=current.uri)
             context.raise_if_cancelled()
         except ApplicationError as error:
             context.report(
@@ -640,6 +708,22 @@ class S3Service:
                         lambda: context.cancellation.is_cancellation_requested,
                     )
                 uploaded.append(item.uri)
+                record_success(
+                    self._activity_logs,
+                    "s3",
+                    "upload",
+                    target=item.key,
+                    profile_id=plan.profile_id,
+                    region=plan.region,
+                    operation_id=context.operation_id,
+                    aws_service="s3",
+                    aws_action=(
+                        "CompleteMultipartUpload"
+                        if item.size >= MULTIPART_THRESHOLD
+                        else "PutObject"
+                    ),
+                    metadata={"bucket": item.bucket, "file_size": item.size},
+                )
                 context.report(
                     "completed",
                     "s3.upload.item.completed",
@@ -651,6 +735,17 @@ class S3Service:
         except ApplicationError as error:
             if error.message_code == "s3.upload.cancelled":
                 raise OperationCancelled from error
+            if self._activity_logs is not None:
+                record_failure(
+                    self._activity_logs,
+                    "s3",
+                    "upload",
+                    error,
+                    target=item.key,
+                    profile_id=plan.profile_id,
+                    region=plan.region,
+                    metadata={"bucket": item.bucket},
+                )
             raise
         context.report("completed", "s3.upload.completed", completed=total, total=total)
         return UploadSummary(tuple(uploaded), completed, tuple(skipped))

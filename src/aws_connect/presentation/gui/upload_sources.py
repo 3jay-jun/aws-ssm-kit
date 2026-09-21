@@ -13,7 +13,6 @@ from PySide6.QtGui import (
     QDropEvent,
     QImage,
     QImageReader,
-    QMouseEvent,
     QPainter,
     QPixmap,
 )
@@ -104,8 +103,9 @@ class UploadSourcesList(QTableWidget):
         self._previews: list[TaskHandle] = []
         self.setObjectName("s3_upload_sources")
         self.setWordWrap(False)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.setHorizontalHeaderLabels(
-            ["", "미리보기", "파일명", "크기", "대상 경로", "상태", "진행률", "시작 시간", "작업"]
+            ["", "미리보기", "파일명", "크기", "로컬 경로", "수정 시간", "상태", "진행률", "작업"]
         )
         self.setAcceptDrops(True)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -116,12 +116,12 @@ class UploadSourcesList(QTableWidget):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for col, width in enumerate((32, 64, 180, 75, 175, 70, 120, 160, 86)):
+        for col, width in enumerate((32, 64, 180, 75, 175, 160, 70, 120, 76)):
             self.setColumnWidth(col, width)
         self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.setMinimumHeight(214)
         add_check_all_header(self)
-        self.setAccessibleName("업로드 큐: 빈 배경을 클릭하거나 파일과 폴더를 끌어다 놓으세요")
+        self.setAccessibleName("업로드 큐: 폴더 추가 버튼을 누르거나 파일과 폴더를 끌어다 놓으세요")
 
     def clear(self) -> None:
         self._generation += 1
@@ -139,17 +139,6 @@ class UploadSourcesList(QTableWidget):
             raise RuntimeError("업로드 큐 셀이 초기화되지 않았습니다.")
         return item
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and self.itemAt(event.position().toPoint()) is None
-            and self.indexAt(event.position().toPoint()).row() < 0
-        ):
-            self._on_choose()
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
     def paintEvent(self, event: Any) -> None:  # noqa: N802
         super().paintEvent(event)
         if not self.rowCount():
@@ -158,7 +147,7 @@ class UploadSourcesList(QTableWidget):
             painter.drawText(
                 self.viewport().rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "클릭하거나 파일·폴더를 끌어다 놓으세요",
+                "우측 상단 폴더 추가 버튼을 누르거나 파일·폴더를 끌어다 놓으세요",
             )
             painter.end()
 
@@ -195,9 +184,9 @@ class UploadSourcesList(QTableWidget):
         for col, text in (
             (2, entry.source.name),
             (3, "…"),
-            (4, entry.target or "현재 경로"),
-            (5, entry.state),
-            (7, entry.started),
+            (4, str(entry.source)),
+            (5, "…"),
+            (6, entry.state),
         ):
             item = QTableWidgetItem(text)
             item.setToolTip(str(entry.source) if col == 2 else text)
@@ -205,27 +194,33 @@ class UploadSourcesList(QTableWidget):
         progress = QProgressBar()
         progress.setRange(0, 100)
         progress.setValue(entry.percent)
-        self.setCellWidget(row, 6, progress)
+        self.setCellWidget(row, 7, progress)
         actions = QWidget()
         layout = QHBoxLayout(actions)
-        layout.setContentsMargins(4, 5, 4, 5)
+        layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(4)
         again = QPushButton()
         again.setObjectName("upload_retry")
         again.setProperty("action_button", True)
-        set_button_icon(again, "common-refresh.svg", color="#0055ff", tooltip="실패 항목 재시도")
+        set_button_icon(
+            again, "common-refresh.svg", color="#0055ff", tooltip="실패 항목 재시도", size=16
+        )
         again.clicked.connect(lambda: retry(entry.source))
         again.setVisible(entry.state == "실패")
-        layout.addWidget(again)
+        layout.addWidget(again, alignment=Qt.AlignmentFlag.AlignVCenter)
         button = QPushButton()
         button.setObjectName("upload_source_remove")
         button.setProperty("action_button", True)
         button.setProperty("variant", "danger")
         set_button_icon(
-            button, "common-delete.svg", color="#ffffff", tooltip="큐에서 제거 (S3 파일은 유지)"
+            button,
+            "common-delete.svg",
+            color="#ffffff",
+            tooltip="큐에서 제거 (S3 파일은 유지)",
+            size=16,
         )
         button.clicked.connect(lambda: remove(entry.source))
-        layout.addWidget(button)
+        layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignVCenter)
         self.setCellWidget(row, 8, actions)
         generation = self._generation
 
@@ -233,7 +228,8 @@ class UploadSourcesList(QTableWidget):
             if generation != self._generation:
                 return
             self._cell(row, 3).setText(value.size)
-            self._cell(row, 3).setToolTip(value.modified)
+            self._cell(row, 5).setText(value.modified)
+            self._cell(row, 5).setToolTip(value.modified)
             if not value.image.isNull():
                 icon.setPixmap(
                     QPixmap.fromImage(value.image).scaled(
@@ -253,20 +249,17 @@ class UploadSourcesList(QTableWidget):
         )
 
     def update_entry(self, row: int, entry: UploadQueueEntry, busy: bool) -> None:
-        self._cell(row, 4).setText(
-            entry.target.removeprefix("s3://").partition("/")[2] if entry.target else "현재 경로"
-        )
-        self._cell(row, 4).setToolTip(entry.target)
-        self._cell(row, 5).setText(entry.state)
+        self._cell(row, 4).setText(str(entry.source))
+        self._cell(row, 4).setToolTip(str(entry.source))
+        self._cell(row, 6).setText(entry.state)
         state_icons = {
             "성공": ("common-circle-check.svg", "#009e55"),
             "실패": ("common-circle-xmark.svg", "#ff2638"),
             "대기": ("clock-solid-full.svg", "#7182a5"),
         }
         icon, color = state_icons.get(entry.state, ("clock-solid-full.svg", "#0055ff"))
-        self._cell(row, 5).setIcon(gui_icon(icon, color=color))
-        self._cell(row, 7).setText(entry.started)
-        bar = self.cellWidget(row, 6)
+        self._cell(row, 6).setIcon(gui_icon(icon, color=color))
+        bar = self.cellWidget(row, 7)
         if isinstance(bar, QProgressBar):
             bar.setValue(entry.percent)
         actions = self.cellWidget(row, 8)

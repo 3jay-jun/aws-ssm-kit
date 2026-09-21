@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
+from time import monotonic
 from typing import Any
 
 from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer, Signal
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
     QWidgetAction,
@@ -60,6 +63,7 @@ from aws_connect.presentation.gui.list_rows import (
     set_compact_list_row,
     update_list_row_separators,
 )
+from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 from aws_connect.presentation.gui.view_models import (
@@ -113,6 +117,8 @@ class ActiveTunnelRow(QWidget):
 class Ec2Page(QWidget):
     """Search, select and launch EC2 sessions using the shared EC2 service."""
 
+    _START_WAIT_SECONDS = 600
+    _STALE_START_SECONDS = 15
     error_raised = Signal(object)
     notice_raised = Signal(str)
 
@@ -138,18 +144,14 @@ class Ec2Page(QWidget):
         self._target_by_id: dict[str, Ec2Target] = {}
         self._action_busy = False
         self._load_revision = 0
+        self._starting_targets: dict[str, Ec2Target] = {}
+        self._pending_until: dict[str, float] = {}
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(34, 30, 34, 40)
-        layout.setSpacing(16)
+        apply_page_layout(layout)
         heading = QHBoxLayout()
-        title_block = QVBoxLayout()
-        title_block.setSpacing(4)
-        title = QLabel("EC2 접속")
-        title.setObjectName("page_title")
-        subtitle = QLabel("인스턴스를 선택하면 별도 Windows Terminal에서 셸을 실행합니다.")
-        subtitle.setObjectName("page_subtitle")
-        title_block.addWidget(title)
-        title_block.addWidget(subtitle)
+        title_block = page_heading(
+            "EC2 접속", "EC2 인스턴스를 조회하고 SSM을 통해 Windows Terminal에서 셸을 실행합니다."
+        )
         heading.addLayout(title_block)
         heading.addStretch()
         self.refresh_button = QPushButton()
@@ -159,14 +161,13 @@ class Ec2Page(QWidget):
         self.refresh_button.clicked.connect(self.reload)
         heading.addWidget(self.refresh_button)
         layout.addLayout(heading)
-        layout.addSpacing(8)
         filters = QHBoxLayout()
         filters.setSpacing(14)
         self.region = QComboBox()
         self.region.setEditable(True)
         self.region.addItem(self._region)
-        self.region.setMinimumWidth(160)
-        self.region.setMaximumWidth(194)
+        self.region.setMinimumWidth(210)
+        self.region.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.region.setObjectName("ec2_region")
         self.region.setAccessibleName("EC2 Region")
         self.status = QComboBox()
@@ -185,9 +186,9 @@ class Ec2Page(QWidget):
         )
         self.favorites_only = QCheckBox("즐겨찾기만")
         self.favorites_only.setObjectName("ec2_favorites_only")
-        self.favorites_only.toggled.connect(self._render_targets)
-        self.filter.textChanged.connect(self._render_targets)
-        self.status.currentIndexChanged.connect(self._render_targets)
+        self.favorites_only.toggled.connect(self._filters_changed)
+        self.filter.textChanged.connect(self._filters_changed)
+        self.status.currentIndexChanged.connect(self._filters_changed)
         self.region.activated.connect(self.reload)
         region_editor = self.region.lineEdit()
         if region_editor is not None:
@@ -256,12 +257,16 @@ class Ec2Page(QWidget):
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(2000)
         self._poll_timer.timeout.connect(self.refresh_session_states)
+        self._instance_timer = QTimer(self)
+        self._instance_timer.setInterval(5000)
+        self._instance_timer.timeout.connect(self._refresh_starting_instances)
 
     def set_profile(self, profile_id: int | None, region: str | None = None) -> None:
         selected_region = region or self._region
         if self._profile_id == profile_id and self._region == selected_region:
             return
         self._load_revision += 1
+        self._reset_start_tracking()
         self._profile_id = profile_id
         self._region = selected_region
         self.region.setCurrentText(selected_region)
@@ -284,6 +289,7 @@ class Ec2Page(QWidget):
         if self.region.findText(region) < 0:
             self.region.addItem(region)
         if region != self._region:
+            self._reset_start_tracking()
             self._region = region
             self._targets = []
             self._render_targets()
@@ -312,8 +318,58 @@ class Ec2Page(QWidget):
     def _targets_loaded(self, value: Any) -> None:
         self._action_busy = False
         self.refresh_button.setEnabled(True)
-        self._targets = list(value)
+        targets = {target.instance_id: target for target in value}
+        for instance_id, previous in tuple(self._starting_targets.items()):
+            if instance_id not in targets and instance_id not in self._pending_until:
+                self._starting_targets.pop(instance_id)
+                continue
+            current = targets.get(instance_id, previous)
+            if instance_id in self._pending_until:
+                if current.instance_state == "stopped":
+                    started_at = self._pending_until[instance_id] - self._START_WAIT_SECONDS
+                    if monotonic() - started_at < self._STALE_START_SECONDS:
+                        current = previous  # Briefly tolerate a stale post-StartInstances read.
+                    else:
+                        self._pending_until.pop(instance_id)
+                        self.notice_raised.emit(
+                            "인스턴스가 중지 상태로 확인되었습니다. AWS 시작 상태를 확인하세요."
+                        )
+                if current.instance_state == "running" and current.ssm_ready:
+                    self._pending_until.pop(instance_id)
+            targets[instance_id] = current
+            self._starting_targets[instance_id] = current
+        self._targets = list(targets.values())
+        if not self._pending_until:
+            self._instance_timer.stop()
+        else:
+            self._instance_timer.start()
         self._render_targets()
+
+    def _filters_changed(self) -> None:
+        self._starting_targets = {
+            key: value
+            for key, value in self._starting_targets.items()
+            if key in self._pending_until
+        }
+        self._render_targets()
+
+    def _reset_start_tracking(self) -> None:
+        self._instance_timer.stop()
+        self._starting_targets.clear()
+        self._pending_until.clear()
+
+    def _refresh_starting_instances(self) -> None:
+        expired = [key for key, deadline in self._pending_until.items() if monotonic() >= deadline]
+        for key in expired:
+            self._pending_until.pop(key)
+        if expired:
+            self.notice_raised.emit(
+                "자동 상태 확인 시간이 지났습니다. EC2/SSM 상태를 새로고침해 확인하세요."
+            )
+        if not self._pending_until:
+            self._instance_timer.stop()
+        elif self.refresh_button.isEnabled() and not self._action_busy:
+            self.reload()
 
     def _render_targets(self) -> None:
         selected = self._selected_target()
@@ -327,6 +383,21 @@ class Ec2Page(QWidget):
                 favorites_only=self.favorites_only.isChecked(),
             ),
         )
+        # Keep the initiated rows visible across a state transition without
+        # changing the user's selected state/search/favorite controls.
+        pinned = filter_ec2_targets(
+            list(self._starting_targets.values()),
+            Ec2TargetFilter(
+                keyword=self.filter.text(),
+                ping_status="all",
+                favorites_only=self.favorites_only.isChecked(),
+            ),
+        )
+        visible += [
+            target
+            for target in pinned
+            if target.instance_id not in {item.instance_id for item in visible}
+        ]
         self._target_by_id = {target.instance_id: target for target in visible}
         self.table.clearContents()
         self.table.setRowCount(len(visible))
@@ -363,7 +434,11 @@ class Ec2Page(QWidget):
                 5,
                 _centered_cell(
                     _status_label(
-                        "준비됨" if target.ssm_ready else "지원 안됨",
+                        "준비됨"
+                        if target.ssm_ready
+                        else "확인 중"
+                        if target.instance_id in self._pending_until
+                        else "지원 안됨",
                         "success" if target.ssm_ready else "danger",
                         icon="common-circle-check.svg" if target.ssm_ready else "common-ban.svg",
                     )
@@ -395,7 +470,7 @@ class Ec2Page(QWidget):
                 set_button_icon(action, "common-start.svg", tooltip=_target_action_text(target))
             elif _target_action_role(target) == "primary":
                 action.setText("")
-                set_button_icon(action, "ec2-terminal.svg", tooltip="터미널 열기")
+                set_button_icon(action, "ec2-terminal.svg", tooltip="터미널 열기", color="#ffffff")
             else:
                 action.setText("")
                 set_button_icon(
@@ -414,7 +489,7 @@ class Ec2Page(QWidget):
             action_layout = QHBoxLayout(actions)
             action_layout.setContentsMargins(8, 4, 8, 4)
             action_layout.setSpacing(10)
-            action_layout.addWidget(action)
+            action_layout.addWidget(action, alignment=Qt.AlignmentFlag.AlignVCenter)
             more = QPushButton()
             set_button_icon(more, "common-more.svg", tooltip="더보기")
             more.setObjectName("ec2_more")
@@ -426,7 +501,7 @@ class Ec2Page(QWidget):
                     value, button
                 )
             )
-            action_layout.addWidget(more)
+            action_layout.addWidget(more, alignment=Qt.AlignmentFlag.AlignVCenter)
             action_layout.addStretch()
             action_item = self.table.item(row, 7)
             if action_item is not None:
@@ -547,20 +622,34 @@ class Ec2Page(QWidget):
             return operation(target.instance_id, profile_id, region=region)
 
         if self._authenticated is None:
-            self._runner.submit(request, lambda _value: self._power_requested(action), self._failed)
+            self._runner.submit(
+                request,
+                lambda _value: self._power_requested(action, target, profile_id, region),
+                self._failed,
+            )
         else:
             self._authenticated.submit(
                 profile_id,
                 request,
-                lambda _value: self._power_requested(action),
+                lambda _value: self._power_requested(action, target, profile_id, region),
                 self._failed,
                 self._cancelled,
             )
 
-    def _power_requested(self, action: str) -> None:
+    def _power_requested(
+        self, action: str, target: Ec2Target, profile_id: int, region: str
+    ) -> None:
+        if (profile_id, region) != (self._profile_id, self._region):
+            return
         self._action_busy = False
+        if action == "start":
+            self._starting_targets[target.instance_id] = replace(
+                target, instance_state="pending", ssm_ping_status="Offline"
+            )
+            self._pending_until[target.instance_id] = monotonic() + self._START_WAIT_SECONDS
+            self._instance_timer.start()
         self.notice_raised.emit(
-            "시작 요청이 접수되었습니다. 상태를 새로고침하세요."
+            "시작 요청이 접수되었습니다. 실행 및 SSM 준비 상태를 자동 확인합니다."
             if action == "start"
             else "재부팅 요청이 접수되었습니다. 상태를 새로고침하세요."
         )
@@ -635,11 +724,16 @@ class Ec2Page(QWidget):
         for handle in handles:
             if handle.error is not None:
                 self.error_raised.emit(handle.error)
+            elif handle.warning is not None:
+                self.notice_raised.emit(
+                    "터미널은 정상 종료되었습니다. AWS 세션 정리 요청은 확인이 필요합니다."
+                )
         self._sync_actions()
         if not any_running:
             self._poll_timer.stop()
 
     def _failed(self, error: ApplicationError) -> None:
+        self._instance_timer.stop()
         self._action_busy = False
         self._render_targets()
         self.refresh_button.setEnabled(self._profile_id is not None)
@@ -713,17 +807,11 @@ class RdsPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(34, 30, 34, 40)
-        root.setSpacing(16)
+        apply_page_layout(root)
         heading = QHBoxLayout()
-        title_block = QVBoxLayout()
-        title_block.setSpacing(4)
-        title = QLabel("RDS 터널")
-        title.setObjectName("page_title")
-        subtitle = QLabel("터널 연결 정보를 저장하고 필요할 때 다시 사용할 수 있습니다.")
-        subtitle.setObjectName("page_subtitle")
-        title_block.addWidget(title)
-        title_block.addWidget(subtitle)
+        title_block = page_heading(
+            "RDS 터널", "터널 연결 정보를 저장하고 필요할 때 다시 사용할 수 있습니다."
+        )
         heading.addLayout(title_block)
         heading.addStretch()
         self.new_button = QPushButton("+ 새 터널")
@@ -731,7 +819,6 @@ class RdsPage(QWidget):
         self.new_button.setProperty("variant", "primary")
         self.new_button.clicked.connect(lambda: self.new_session())
         root.addLayout(heading)
-        root.addSpacing(8)
         content = QHBoxLayout()
         content.setSpacing(16)
         self.session_card = QFrame()
@@ -829,7 +916,9 @@ class RdsPage(QWidget):
             _field(
                 "SSM 중계 EC2",
                 self.relay,
-                help_text="RDS에 접근하여 SSM 포트포워딩을 실행할 EC2입니다.",
+                help_text=(
+                    "RDS에 접근 가능한 EC2를 선택합니다. 해당 EC2에 SSM 연결 권한이 필요합니다."
+                ),
             ),
             1,
             0,
@@ -847,7 +936,7 @@ class RdsPage(QWidget):
             _field(
                 "RDS 엔드포인트",
                 host_controls,
-                help_text="중계 EC2에서 연결할 RDS의 호스트 주소입니다.",
+                help_text="터널을 통해 연결할 RDS 엔드포인트를 선택합니다.",
             ),
             2,
             0,
@@ -868,7 +957,10 @@ class RdsPage(QWidget):
             _field(
                 "로컬 포트",
                 port_controls,
-                help_text="로컬 PC의 127.0.0.1에서 열릴 포트입니다. 빈 포트를 입력하세요.",
+                help_text=(
+                    "내 PC에서 사용할 포트입니다. "
+                    "다른 프로그램에서 사용 중인 포트는 사용할 수 없습니다."
+                ),
             ),
             3,
             1,
@@ -1822,6 +1914,11 @@ def _field(label: str, control: QWidget, *, help_text: str | None = None) -> QWi
         help_icon = QToolButton()
         help_icon.setObjectName("field_help")
         set_button_icon(help_icon, "common-info.svg", tooltip=help_text, color="#7b88a5", size=16)
+        help_icon.clicked.connect(
+            lambda: QToolTip.showText(
+                help_icon.mapToGlobal(help_icon.rect().bottomLeft()), help_icon.toolTip(), help_icon
+            )
+        )
         caption_row.addWidget(help_icon)
         caption_row.addStretch()
         layout.addLayout(caption_row)
@@ -1854,6 +1951,10 @@ def _centered_cell(control: QWidget) -> QWidget:
 
 
 def _instance_state_label(state: str | None) -> str:
+    if state == "pending":
+        return "● 시작 중"
+    if state == "stopping":
+        return "● 중지 중"
     if state == "running":
         return "● 실행 중"
     if state == "stopped":

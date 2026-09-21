@@ -271,8 +271,4 @@ def ec2_connection_time(value: datetime | None, *, now: datetime | None = None) 
     if value is None:
         return "-"
     local = value.astimezone()
-    today = (now or datetime.now().astimezone()).astimezone().date()
-    days = (today - local.date()).days
-    if days in (0, 1):
-        return f"{'오늘' if days == 0 else '어제'} {local:%H:%M}"
-    return local.strftime("%Y-%m-%d")
+    return local.strftime("%Y-%m-%d %H:%M")

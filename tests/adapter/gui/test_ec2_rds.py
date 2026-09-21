@@ -314,7 +314,7 @@ def test_ec2_table_separates_power_ssm_and_actions() -> None:
     page.show()
     app.processEvents()
     assert page.table.horizontalScrollBar().maximum() == 0
-    assert action.width() >= 40
+    assert action.width() == action.height() == 34
     offline.click()
     assert ec2.power_calls == []
     stopped.click()
@@ -875,7 +875,7 @@ def test_ec2_favorites_selection_and_history_combine_without_cross_profile_state
     page = Ec2Page(service, ImmediateRunner())  # type: ignore[arg-type]
     page.set_profile(1)
     page.table.selectRow(0)
-    assert "마지막 연결 성공 (오늘 10:24)" in page.session_state.text()
+    assert f"마지막 연결 성공 ({timestamp:%Y-%m-%d %H:%M})" in page.session_state.text()
     page.favorites_only.setChecked(True)
     assert page.table.rowCount() == 1
     assert "web-dev" in page.session_state.text()
@@ -954,8 +954,60 @@ def test_ec2_connection_time_uses_calendar_day_and_blank_history() -> None:
 
     now = datetime.now().astimezone().replace(hour=10, minute=24)
     assert ec2_connection_time(None, now=now) == "-"
-    assert ec2_connection_time(now, now=now) == "오늘 10:24"
-    assert ec2_connection_time(now - timedelta(days=1), now=now) == "어제 10:24"
+    assert ec2_connection_time(now, now=now) == now.strftime("%Y-%m-%d %H:%M")
+    assert ec2_connection_time(now - timedelta(days=1), now=now) == (
+        now - timedelta(days=1)
+    ).strftime("%Y-%m-%d %H:%M")
     assert ec2_connection_time(now - timedelta(days=2), now=now) == (
         now - timedelta(days=2)
-    ).strftime("%Y-%m-%d")
+    ).strftime("%Y-%m-%d %H:%M")
+
+
+def test_ec2_start_keeps_filtered_row_until_running_and_ssm_ready():
+    from dataclasses import replace
+
+    _app()
+    service = FakeEc2()
+    target = replace(
+        service.targets[0], instance_state="stopped", ssm_ping_status="Offline", favorite=True
+    )
+    service.targets = [target]
+    page = Ec2Page(service, ImmediateRunner())
+    page.set_profile(1)
+    page.status.setCurrentIndex(page.status.findData("stopped"))
+    page.filter.setText("web-dev")
+    page.favorites_only.setChecked(True)
+    page.run_target_action(target)
+    assert page._starting_targets[target.instance_id].instance_state == "pending"
+    assert page.table.rowCount() == 1
+    service.targets = []  # EC2 eventual consistency must not remove the initiated row.
+    page._refresh_starting_instances()
+    assert page.table.rowCount() == 1
+    service.targets = [replace(target, instance_state="running")]
+    page._refresh_starting_instances()
+    assert page.table.rowCount() == 1 and page._instance_timer.isActive()
+    service.targets = [replace(target, instance_state="running", ssm_ping_status="Online")]
+    page._refresh_starting_instances()
+    assert page.table.rowCount() == 1 and not page._instance_timer.isActive()
+    assert page._target_by_id[target.instance_id].ssm_ready
+    assert page.status.currentData() == "stopped"
+    assert page.filter.text() == "web-dev" and page.favorites_only.isChecked()
+    page.set_profile(2)
+    assert not page._starting_targets and not page._pending_until
+    page.close()
+
+
+def test_ec2_start_completion_cannot_leak_to_another_profile():
+    from dataclasses import replace
+
+    _app()
+    service, runner = FakeEc2(), QueuedRunner()
+    page = Ec2Page(service, runner)
+    page.set_profile(1)
+    target = replace(service.targets[0], instance_state="stopped")
+    page._run_power_action(target, "start")
+    callback = runner.pending[-1][1]
+    page.set_profile(2)
+    callback(object())
+    assert not page._starting_targets and not page._instance_timer.isActive()
+    page.close()

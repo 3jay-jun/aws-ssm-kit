@@ -683,9 +683,9 @@ def test_desktop_shell_uses_mockup_geometry_tokens_exactly() -> None:
     margins = dashboard.layout().contentsMargins()
     assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (
         24,
-        22,
+        20,
         24,
-        24,
+        20,
     )
     window.close()
 

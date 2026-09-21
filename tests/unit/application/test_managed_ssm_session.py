@@ -278,3 +278,20 @@ def test_observer_typed_failure_reclaims_owned_credentials_and_reports_cleanup()
     assert "observer-fault" not in runner._owned
     assert process.terminated
     gateway.end_session.assert_called_once()
+
+
+def test_normal_external_exit_with_cleanup_failure_is_warning_not_session_failure():
+    gateway, process = FakeGateway(), FakeProcess()
+    gateway.end_session = Mock(side_effect=PluginExecutionError("session.end.failed", "cleanup"))
+    runner = ManagedSsmSessionRunner(gateway, FakePlugin(process))
+    session = runner.start(
+        PlainCredentials("ACCESSKEYTEST0001", "local-test-secret", "local-test-token"),
+        "us-east-1",
+        "i-test",
+        external_terminal=True,
+    )
+    process.exit_code = 0
+    result = runner.status(session.operation_id)
+    assert result.state is OperationState.SUCCEEDED and result.error is None
+    assert result.warning is not None
+    gateway.end_session.assert_called_once()

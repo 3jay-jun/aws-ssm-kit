@@ -29,6 +29,7 @@ from aws_connect.application.dashboard_service import (
 )
 from aws_connect.domain.errors import ApplicationError
 from aws_connect.presentation.gui.icons import gui_icon, set_button_icon, status_badge
+from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 from aws_connect.presentation.gui.view_models import (
     LogBadgeViewModel,
@@ -40,11 +41,13 @@ _CAPABILITY_BADGES = {
     CapabilityState.AVAILABLE: replace(log_result_view_model("SUCCESS"), text="사용 가능"),
     CapabilityState.PARTIAL: replace(log_result_view_model("WARNING"), text="일부 가능"),
     CapabilityState.UNAVAILABLE: replace(log_result_view_model("FAILURE"), text="사용 불가"),
-    CapabilityState.UNKNOWN: LogBadgeViewModel("unknown", "확인 필요", "common-info.svg", "#667085"),
+    CapabilityState.UNKNOWN: LogBadgeViewModel(
+        "unknown", "확인 필요", "common-info.svg", "#667085"
+    ),
 }
 _PERMISSION_BADGES = {
-    PermissionState.ALLOWED: log_result_view_model("SUCCESS"),
-    PermissionState.DENIED: log_result_view_model("FAILURE"),
+    PermissionState.ALLOWED: replace(log_result_view_model("SUCCESS"), text="가능"),
+    PermissionState.DENIED: replace(log_result_view_model("FAILURE"), text="불가"),
     PermissionState.UNKNOWN: _CAPABILITY_BADGES[CapabilityState.UNKNOWN],
 }
 
@@ -59,7 +62,7 @@ class FeatureCard(QFrame):
         self.setMinimumWidth(235)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 16, 14, 14)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
         top = QHBoxLayout()
         icon = QLabel()
         icon.setPixmap(gui_icon(f"tab-{route}.svg").pixmap(30, 30))
@@ -81,6 +84,9 @@ class FeatureCard(QFrame):
         caption.setObjectName("field_label")
         layout.addWidget(caption)
         self._permissions: dict[str, tuple[QLabel, QLabel]] = {}
+        self._permission_labels = {
+            definition.key: definition.label for definition in PERMISSIONS[route]
+        }
         permissions = QGridLayout()
         permissions.setVerticalSpacing(10)
         for index, definition in enumerate(PERMISSIONS[route]):
@@ -107,15 +113,19 @@ class FeatureCard(QFrame):
             _CAPABILITY_BADGES[capability.state if capability else CapabilityState.UNKNOWN]
         )
         self._badge_layout.replaceWidget(self._badge, badge)
+        self._badge.hide()
         self._badge.deleteLater()
         self._badge = badge
         observations = {row.key: row for row in capability.permissions} if capability else {}
         for key, (icon, label) in self._permissions.items():
             observation = observations.get(key)
             state = observation.state if observation else PermissionState.UNKNOWN
-            badge = _PERMISSION_BADGES[state]
-            icon.setPixmap(gui_icon(badge.icon or "", color=badge.color).pixmap(18, 18))
+            permission_badge = _PERMISSION_BADGES[state]
+            icon.setPixmap(
+                gui_icon(permission_badge.icon or "", color=permission_badge.color).pixmap(18, 18)
+            )
             icon.setAccessibleName(state.value)
+            label.setText(f"{self._permission_labels[key]} · {permission_badge.text}")
             label.setToolTip(
                 observation.explanation if observation else "현재 프로필의 권한 상태를 확인하세요."
             )
@@ -144,16 +154,11 @@ class DashboardPage(QScrollArea):
         content.setObjectName("dashboard")
         self.setWidget(content)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 22, 24, 24)
-        layout.setSpacing(18)
+        apply_page_layout(layout)
         head = QHBoxLayout()
-        copy = QVBoxLayout()
-        title = QLabel("대시보드")
-        title.setObjectName("page_title")
-        copy.addWidget(title)
-        subtitle = QLabel("현재 AWS 프로필로 사용할 수 있는 기능과 최근 작업 현황을 확인합니다.")
-        subtitle.setObjectName("page_subtitle")
-        copy.addWidget(subtitle)
+        copy = page_heading(
+            "대시보드", "현재 AWS 프로필로 사용할 수 있는 기능과 최근 작업 현황을 확인합니다."
+        )
         head.addLayout(copy, 1)
         actions = QVBoxLayout()
         self.refresh_button = QPushButton("권한 상태 새로 확인")
@@ -248,6 +253,12 @@ class DashboardPage(QScrollArea):
             lambda value: self._permissions_loaded(value, generation),
             lambda error: self._permissions_failed(error, generation),
         )
+
+    def refresh(self) -> None:
+        """Reload service observations when returning from a feature page."""
+        self.refresh_recent()
+        if self.refresh_button.isEnabled():
+            self.refresh_permissions()
 
     def _permissions_loaded(self, result: DashboardPermissions, generation: int) -> None:
         if generation != self._generation or result.profile_id != self._profile_id:

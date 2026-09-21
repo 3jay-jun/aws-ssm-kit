@@ -175,3 +175,91 @@ def test_old_listing_cannot_replace_newer_navigation() -> None:
     pending[1]([S3Object("new/right.txt", 1, None)])
     pending[0]([S3Object("old.txt", 1, None)])
     assert page.objects.item(0, 1).text() == "right.txt"
+
+
+def test_upload_local_path_mtime_and_centered_actions(tmp_path):
+    import os
+    from datetime import datetime
+
+    from aws_connect.presentation.gui.styles import APP_STYLE
+
+    page, _ = make_page()
+    page.setStyleSheet(APP_STYLE)
+    page.resize(1250, 850)
+    page.show()
+    source = tmp_path / "photo.png"
+    source.write_bytes(b"fixture")
+    timestamp = 1700000000
+    os.utime(source, (timestamp, timestamp))
+    page.add_sources([source])
+    page._queue[source].target = "s3://test-upload-bucket/elsewhere/photo.png"
+    page._queue[source].state = "실패"
+    page._render_queue_state()
+    _app().processEvents()
+    table = page.upload_sources
+    assert table.horizontalHeaderItem(4).text() == "로컬 경로"
+    assert table.item(0, 4).text() == str(source)
+    assert table.item(0, 4).toolTip() == str(source)
+    assert table.item(0, 5).text() == datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+    buttons = table.cellWidget(0, 8).findChildren(QPushButton)
+    assert len({(b.width(), b.height(), b.y()) for b in buttons}) == 1
+    assert all(b.y() >= 0 and b.geometry().bottom() < table.rowHeight(0) for b in buttons)
+    page.close()
+
+
+def test_download_status_keeps_more_button_and_separates_failure(tmp_path):
+    from aws_connect.application.s3_service import DownloadItem, DownloadPlan
+
+    page, service = make_page()
+    page._download_destination = lambda _: tmp_path
+    objects = [S3Object("images/first.txt", 3, None), S3Object("images/second.txt", 3, None)]
+    page._objects_loaded(objects)
+    for row in range(2):
+        page.objects.item(row, 0).setCheckState(Qt.CheckState.Checked)
+    items = tuple(
+        DownloadItem("test-upload-bucket", obj.key, tmp_path / obj.key.split("/")[-1], 3, False)
+        for obj in objects
+    )
+    service.prepare_download.return_value = DownloadPlan(7, "ap-northeast-2", items)
+
+    def download(plan, context, *, policy):
+        for index, item in enumerate(plan.items):
+            context.report("starting", "s3.download.item.started", target=item.uri)
+            assert page.objects.cellWidget(index, 5).accessibleName() == "다운로드 중"
+            assert isinstance(page.objects.cellWidget(index, 6), QPushButton)
+            if index:
+                raise S3TransferError("s3.transfer.failed", "fixture")
+            context.report("completed", "s3.download.item.completed", target=item.uri)
+
+    service.download.side_effect = download
+    page.download_selected_objects()
+    assert page.objects.cellWidget(0, 5).accessibleName() == "성공"
+    assert page.objects.cellWidget(1, 5).accessibleName() == "실패"
+    assert not page._download_spinner.isActive()
+    page.set_profile(8)
+    assert not page._download_states
+    page.close()
+
+
+def test_object_and_queue_menus_share_uniform_item_geometry():
+    from aws_connect.presentation.gui.styles import APP_STYLE
+
+    page, _ = make_page()
+    page.setStyleSheet(APP_STYLE)
+    page.show()
+    page._objects_loaded([S3Object("file.txt", 1, None)])
+    page.open_object_menu(0)
+    menu = page.findChildren(QMenu)[-1]
+    _app().processEvents()
+    object_sizes = [action.defaultWidget().height() for action in menu.actions()]
+    assert len(set(object_sizes)) == 1
+    assert menu.actions()[-1].defaultWidget().property("danger") is True
+    menu.close()
+    page.open_queue_menu()
+    menu = page.findChildren(QMenu)[-1]
+    _app().processEvents()
+    assert all(action.defaultWidget().height() == object_sizes[0] for action in menu.actions())
+    menu.actions()[0].trigger()
+    assert page._hide_completed
+    menu.close()
+    page.close()

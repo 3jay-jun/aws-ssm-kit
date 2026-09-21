@@ -164,7 +164,7 @@ def test_prepare_download_expands_mixed_files_and_prefixes_and_deduplicates_keys
     plan = service.prepare_download([direct, prefix], tmp_path, "test-upload-bucket", "dev")
 
     assert [(item.key, item.destination) for item in plan.items] == [
-        ("reports/a.txt", tmp_path / "reports" / "a.txt"),
+        ("reports/a.txt", tmp_path / "a.txt"),
         ("reports/nested/b.txt", tmp_path / "reports" / "nested" / "b.txt"),
     ]
     gateway.list_objects_recursive.assert_called_once()
@@ -506,3 +506,20 @@ def test_download_new_conflict_after_preflight_cannot_be_overwritten(tmp_path: P
     with pytest.raises(ConfigurationError, match="s3.download.destination.exists"):
         service.download(plan, OperationContext(), policy=UploadConflictPolicy.OVERWRITE)
     gateway.download_file.assert_not_called()
+
+
+def test_selected_nested_files_download_directly_and_reject_basename_collision(tmp_path):
+    _, service, _, gateway = _services()
+    plan = service.prepare_download(
+        [S3Object("images/banners/logo.png", 3, None)], tmp_path, "test-upload-bucket"
+    )
+    assert plan.items[0].destination == tmp_path / "logo.png"
+    service.download(plan, OperationContext())
+    assert gateway.download_file.call_args.args[4] == tmp_path / "logo.png"
+    with pytest.raises(ConfigurationError, match="s3.download.destination.duplicate"):
+        service.prepare_download(
+            [S3Object("first/logo.png", 3, None), S3Object("second/logo.png", 3, None)],
+            tmp_path,
+            "test-upload-bucket",
+        )
+    gateway.download_file.assert_called_once()

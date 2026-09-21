@@ -32,6 +32,7 @@ class ManagedSsmSession:
     state: OperationState
     exit_code: int | None = None
     error: ApplicationError | None = None
+    warning: ApplicationError | None = None
 
 
 @dataclass(slots=True)
@@ -41,6 +42,7 @@ class _OwnedSession:
     session_id: str
     process: SessionProcess
     ended: bool = False
+    external_terminal: bool = False
 
 
 class ForegroundSsmSessionRunner:
@@ -172,7 +174,11 @@ class ManagedSsmSessionRunner:
         operation_id = context.operation_id
         with self._lock:
             self._owned[operation_id] = _OwnedSession(
-                credentials, region, started.session_id, process
+                credentials,
+                region,
+                started.session_id,
+                process,
+                external_terminal=external_terminal,
             )
         try:
             context.report("running", "session.running", completed=1, total=1, target=target)
@@ -222,11 +228,14 @@ class ManagedSsmSessionRunner:
                 else None
             )
             end_error = self._capture_end_error(owned)
+            warning = None
+            if exit_code == 0 and owned.external_terminal:
+                warning, end_error = end_error, None
             if end_error is not None:
                 plugin_error = _combine_errors(plugin_error, end_error)
                 state = OperationState.FAILED
             self._owned.pop(operation_id, None)
-            return self._snapshot(operation_id, owned, state, exit_code, plugin_error)
+            return self._snapshot(operation_id, owned, state, exit_code, plugin_error, warning)
 
     def stop(self, operation_id: str) -> ManagedSsmSession:
         with self._lock:
@@ -341,9 +350,10 @@ class ManagedSsmSessionRunner:
         state: OperationState,
         exit_code: int | None,
         error: PluginExecutionError | None = None,
+        warning: ApplicationError | None = None,
     ) -> ManagedSsmSession:
         return ManagedSsmSession(
-            operation_id, owned.process.pid, owned.session_id, state, exit_code, error
+            operation_id, owned.process.pid, owned.session_id, state, exit_code, error, warning
         )
 
     def _require_owned(self, operation_id: str) -> _OwnedSession:

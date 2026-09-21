@@ -43,3 +43,8 @@ Application use cases record through `ExecutionLogService` (the compatible `Acti
 `ExecutionLogRepository` is implemented by the existing SQLite store, migration 10.
 A shared sanitizer runs before SQLite/file serialization and after database reads.
 GUI logs and dashboard recent work query SQLite; rotating Python logs remain diagnostic artifacts.
+
+
+DashboardService composes existing read-only gateway methods with profile/region-scoped execution
+history. DashboardPage consumes its typed permission DTO and the shared recent-log projection;
+it never reads feature widgets. CLI `dashboard --profile ID` uses the same application service.
