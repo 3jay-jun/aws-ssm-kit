@@ -12,6 +12,7 @@ from PySide6.QtCore import QEventLoop, Qt, QThread, QThreadPool, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFrame,
     QLabel,
     QLineEdit,
@@ -45,7 +46,12 @@ def _app() -> QApplication:
 
 
 def _profile(
-    profile_id: int, name: str, *, default: bool, mfa_enabled: bool = True
+    profile_id: int,
+    name: str,
+    *,
+    default: bool,
+    mfa_enabled: bool = True,
+    session_duration_hours: int = 12,
 ) -> ProfileSummary:
     return ProfileSummary(
         id=profile_id,
@@ -56,6 +62,7 @@ def _profile(
         mfa_arn=f"arn:aws:iam::123456789012:mfa/user-{profile_id}",
         is_default=default,
         mfa_enabled=mfa_enabled,
+        session_duration_hours=session_duration_hours,
     )
 
 
@@ -89,6 +96,7 @@ class FakeProfiles:
                 item.name,
                 default=item.id == profile_id,
                 mfa_enabled=item.mfa_enabled,
+                session_duration_hours=item.session_duration_hours,
             )
             for item in self.items
         ]
@@ -97,6 +105,7 @@ class FakeProfiles:
             selected.name,
             default=True,
             mfa_enabled=selected.mfa_enabled,
+            session_duration_hours=selected.session_duration_hours,
         )
 
     def create(self, request: SaveProfileRequest) -> ProfileSummary:
@@ -105,6 +114,7 @@ class FakeProfiles:
             request.name,
             default=False,
             mfa_enabled=request.mfa_enabled is not False,
+            session_duration_hours=request.session_duration_hours or 12,
         )
         self.items.append(created)
         return created
@@ -119,13 +129,25 @@ class FakeProfiles:
             mfa_enabled=(
                 request.mfa_enabled if request.mfa_enabled is not None else current.mfa_enabled
             ),
+            session_duration_hours=(
+                request.session_duration_hours
+                if request.session_duration_hours is not None
+                else current.session_duration_hours
+            ),
         )
         self.items = [updated if item.id == request.profile_id else item for item in self.items]
         return updated
 
     def clone(self, profile_id: int, name: str) -> ProfileSummary:
         self.cloned.append((profile_id, name))
-        cloned = _profile(3, name, default=False)
+        source = next(item for item in self.items if item.id == profile_id)
+        cloned = _profile(
+            3,
+            name,
+            default=False,
+            mfa_enabled=source.mfa_enabled,
+            session_duration_hours=source.session_duration_hours,
+        )
         self.items.append(cloned)
         return cloned
 
@@ -152,11 +174,13 @@ class FakeAuthentication:
 class FakeOperations:
     def __init__(self, profiles: FakeProfiles) -> None:
         self.profiles = profiles
-        self.start_calls: list[int] = []
+        self.start_calls: list[tuple[int, bool]] = []
         self.resume_calls: list[tuple[str, str | None]] = []
 
-    def start_refresh(self, profile_id: int) -> OperationResult[AuthenticationStatus]:
-        self.start_calls.append(profile_id)
+    def start_refresh(
+        self, profile_id: int, *, discard_cached_session: bool = False
+    ) -> OperationResult[AuthenticationStatus]:
+        self.start_calls.append((profile_id, discard_cached_session))
         profile = next(item for item in self.profiles.items if item.id == profile_id)
         if not profile.mfa_enabled:
             return OperationResult(
@@ -268,6 +292,17 @@ def test_profile_change_resumes_mfa_and_refreshes_header_and_feature_data() -> N
     assert operations.resume_calls == [("operation-1", "123456")]
 
 
+def test_header_refresh_button_forces_token_reissue() -> None:
+    window, _profiles, operations = _window(auto_start=False)
+    window.reload_profiles()
+
+    window.refresh_button.click()
+
+    assert operations.start_calls == [(1, True)]
+    assert operations.resume_calls == [("operation-1", "123456")]
+    assert window.toast.text() == "토큰을 재발급했습니다."
+
+
 def test_profile_crud_fields_mask_credentials_and_errors_do_not_close_app() -> None:
     window, profiles, _operations = _window(auto_start=False)
     assert not window.profile_button.icon().isNull()
@@ -276,6 +311,8 @@ def test_profile_crud_fields_mask_credentials_and_errors_do_not_close_app() -> N
     window.profile_dialog.set_profiles(profiles.items, 1)
     assert window.profile_dialog.findChild(QLineEdit, "profile_mfa_arn") is None
     assert window.profile_dialog.findChild(QCheckBox, "profile_mfa_enabled") is not None
+    duration = window.profile_dialog.findChild(QComboBox, "profile_session_duration")
+    assert duration is not None and duration.currentData() == 12
     assert window.profile_dialog.access_key.text() == ""
     assert window.profile_dialog.secret_key.text() == ""
     assert "등록됨" in window.profile_dialog.access_key.placeholderText()
@@ -303,6 +340,7 @@ def test_profile_dialog_omits_implementation_mfa_and_preserves_masked_credential
     assert captured[0].profile_id == 1
     assert captured[0].mfa_arn is None
     assert captured[0].mfa_enabled
+    assert captured[0].session_duration_hours == 12
     assert captured[0].access_key is None
     assert captured[0].secret_key is None
     assert window.profile_dialog.findChild(QLabel, "profile_sequence") is None
@@ -329,8 +367,30 @@ def test_profile_dialog_new_credentials_keep_existing_save_signal_contract() -> 
     assert captured[0].profile_id is None
     assert captured[0].mfa_arn is None
     assert captured[0].mfa_enabled
+    assert captured[0].session_duration_hours == 12
     assert captured[0].access_key == "AKIAEXAMPLE"
     assert captured[0].secret_key == "new-secret"  # pragma: allowlist secret
+
+
+def test_profile_dialog_selects_session_duration_and_warns_for_long_sessions() -> None:
+    window, profiles, _operations = _window(auto_start=False)
+    profiles.items[1] = _profile(
+        2, "운영계", default=False, session_duration_hours=36
+    )
+    dialog = window.profile_dialog
+    dialog.set_profiles(profiles.items, 2)
+    captured: list[SaveProfileRequest] = []
+    dialog.save_requested.connect(captured.append)
+
+    assert dialog.session_duration.currentData() == 36
+    assert dialog.session_duration.accessibleName() == "인증 유지 시간"
+    assert dialog.session_duration_warning.isVisibleTo(dialog)
+
+    dialog.session_duration.setCurrentIndex(dialog.session_duration.findData(8))
+    assert not dialog.session_duration_warning.isVisible()
+    dialog._request_save()
+
+    assert captured[0].session_duration_hours == 8
 
 
 def test_profile_eyes_only_toggle_new_input_and_reset_on_selection() -> None:
@@ -378,7 +438,7 @@ def test_profile_without_mfa_connects_without_requesting_a_code() -> None:
 
     window.connect_profile(2)
 
-    assert operations.start_calls == [2]
+    assert operations.start_calls == [(2, False)]
     assert operations.resume_calls == []
     assert "인증됨" in window.auth_state.text()
 

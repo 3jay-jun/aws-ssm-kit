@@ -137,7 +137,7 @@ def test_versioned_settings_migration_persists_and_deletes_values(tmp_path) -> N
     database = tmp_path / "state.db"
     store = SqliteProfileStore(database)
 
-    assert store.current_schema_version() == store.expected_schema_version == 10
+    assert store.current_schema_version() == store.expected_schema_version == 11
     assert store.get_setting("log.level") is None
     store.put_setting("log.level", "WARNING")
     store.put_setting("log.level", "ERROR")
@@ -163,11 +163,14 @@ def test_profile_mfa_usage_is_persisted_and_existing_default_is_enabled(tmp_path
             encrypted_access_key=disabled_profile.encrypted_access_key,
             encrypted_secret_key=disabled_profile.encrypted_secret_key,
             mfa_enabled=False,
+            session_duration_hours=36,
         )
     )
 
     assert enabled.mfa_enabled
+    assert enabled.session_duration_hours == 12
     assert not disabled.mfa_enabled
+    assert disabled.session_duration_hours == 36
 
 
 def test_mfa_usage_migration_enables_existing_profiles(tmp_path) -> None:
@@ -203,6 +206,7 @@ def test_mfa_usage_migration_enables_existing_profiles(tmp_path) -> None:
     migrated = SqliteProfileStore(database).get_by_name("existing")
 
     assert migrated is not None and migrated.mfa_enabled
+    assert migrated.session_duration_hours == 12
 
 
 def test_s3_location_migration_crud_uniqueness_and_profile_cascade(tmp_path) -> None:
@@ -281,7 +285,7 @@ def test_saved_secret_v7_migration_applies_snapshot_defaults(tmp_path) -> None:
     store = SqliteProfileStore(database)
     migrated = store.get_saved_secret_by_identifier(int(profile_id or 0), "db/legacy")
 
-    assert store.current_schema_version() == store.expected_schema_version == 10
+    assert store.current_schema_version() == store.expected_schema_version == 11
     assert migrated is not None
     assert migrated.value == ""
     assert migrated.lookup_mode is SecretLookupMode.DIRECT

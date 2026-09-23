@@ -54,11 +54,16 @@ def test_profile_parser_exposes_explicit_mfa_usage_flags() -> None:
     assert parser.parse_args(common).mfa is None
     assert parser.parse_args([*common, "--mfa"]).mfa is True
     assert parser.parse_args([*common, "--no-mfa"]).mfa is False
+    assert parser.parse_args(common).session_duration_hours is None
+    parsed = parser.parse_args([*common, "--session-duration-hours", "36"])
+    assert parsed.session_duration_hours == 36
 
 
 def test_profile_create_passes_disabled_mfa_to_shared_request(capsys, monkeypatch) -> None:
     app = services()
-    app.profiles.create.return_value = replace(summary(), mfa_enabled=False)
+    app.profiles.create.return_value = replace(
+        summary(), mfa_enabled=False, session_duration_hours=36
+    )
     monkeypatch.setattr(
         "aws_connect.cli_main._read_credentials",
         lambda _stdin: ("ACCESSKEYTEST0001", "not-sensitive-test-value"),
@@ -77,6 +82,8 @@ def test_profile_create_passes_disabled_mfa_to_shared_request(capsys, monkeypatc
             "--user-id",
             "developer",
             "--no-mfa",
+            "--session-duration-hours",
+            "36",
             "--output",
             "json",
         ],
@@ -86,7 +93,10 @@ def test_profile_create_passes_disabled_mfa_to_shared_request(capsys, monkeypatc
     assert exit_code == 0
     request = app.profiles.create.call_args.args[0]
     assert request.mfa_enabled is False
-    assert json.loads(capsys.readouterr().out)["mfa_enabled"] is False
+    assert request.session_duration_hours == 36
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mfa_enabled"] is False
+    assert payload["session_duration_hours"] == 36
 
 
 @pytest.mark.parametrize(

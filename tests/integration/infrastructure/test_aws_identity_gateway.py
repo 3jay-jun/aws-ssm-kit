@@ -63,9 +63,9 @@ def test_typed_sts_errors(monkeypatch, code, error_type) -> None:
 
 def test_get_session_token_uses_mfa_parameters(monkeypatch) -> None:
     gateway, stubber = stubbed_gateway(monkeypatch)
-    expiration = datetime.now(UTC) + timedelta(hours=12)
+    expiration = datetime.now(UTC) + timedelta(hours=36)
     expected = {
-        "DurationSeconds": 43200,
+        "DurationSeconds": 129600,
         "SerialNumber": "arn:aws:iam::123456789012:mfa/developer",
         "TokenCode": "123456",
     }
@@ -83,7 +83,11 @@ def test_get_session_token_uses_mfa_parameters(monkeypatch) -> None:
     )
     with stubber:
         issued = gateway.get_session_token(
-            credentials(), "ap-northeast-2", expected["SerialNumber"], "123456"
+            credentials(),
+            "ap-northeast-2",
+            expected["SerialNumber"],
+            "123456",
+            duration_seconds=129600,
         )
 
     assert issued.expires_at_utc == expiration
@@ -106,6 +110,8 @@ def test_get_session_token_omits_mfa_parameters_when_disabled(monkeypatch) -> No
     )
 
     with stubber:
-        issued = gateway.get_session_token(credentials(), "ap-northeast-2", None, None)
+        issued = gateway.get_session_token(
+            credentials(), "ap-northeast-2", None, None, duration_seconds=43200
+        )
 
     assert issued.expires_at_utc == expiration

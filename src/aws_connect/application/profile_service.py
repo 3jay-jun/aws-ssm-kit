@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aws_connect.application.ports import CredentialProtector, IdentityGateway, ProfileStore
-from aws_connect.domain.aws_profile import AwsProfile, PlainCredentials, default_mfa_arn
+from aws_connect.domain.aws_profile import (
+    DEFAULT_SESSION_DURATION_HOURS,
+    AwsProfile,
+    PlainCredentials,
+    default_mfa_arn,
+)
 from aws_connect.domain.errors import ConfigurationError, CredentialValidationError
 
 
@@ -19,6 +24,7 @@ class SaveProfileRequest:
     secret_key: str | None = None
     mfa_arn: str | None = None
     mfa_enabled: bool | None = None
+    session_duration_hours: int | None = None
     profile_id: int | None = None
 
 
@@ -32,6 +38,7 @@ class ProfileSummary:
     mfa_arn: str
     is_default: bool
     mfa_enabled: bool = True
+    session_duration_hours: int = DEFAULT_SESSION_DURATION_HOURS
 
 
 class ProfileService:
@@ -66,6 +73,11 @@ class ProfileService:
             encrypted_access_key=self._protector.protect(credentials.access_key),
             encrypted_secret_key=self._protector.protect(credentials.secret_key),
             mfa_enabled=request.mfa_enabled is not False,
+            session_duration_hours=(
+                request.session_duration_hours
+                if request.session_duration_hours is not None
+                else DEFAULT_SESSION_DURATION_HOURS
+            ),
         )
         return self._summary(self._store.create(profile))
 
@@ -90,6 +102,11 @@ class ProfileService:
             mfa_enabled=(
                 request.mfa_enabled if request.mfa_enabled is not None else current.mfa_enabled
             ),
+            session_duration_hours=(
+                request.session_duration_hours
+                if request.session_duration_hours is not None
+                else current.session_duration_hours
+            ),
             is_default=current.is_default,
             created_at=current.created_at,
             updated_at=current.updated_at,
@@ -112,6 +129,7 @@ class ProfileService:
             encrypted_access_key=source.encrypted_access_key,
             encrypted_secret_key=source.encrypted_secret_key,
             mfa_enabled=source.mfa_enabled,
+            session_duration_hours=source.session_duration_hours,
         )
         return self._summary(self._store.create(cloned))
 
@@ -173,6 +191,7 @@ class ProfileService:
             mfa_arn=profile.mfa_arn,
             is_default=profile.is_default,
             mfa_enabled=profile.mfa_enabled,
+            session_duration_hours=profile.session_duration_hours,
         )
 
     @staticmethod

@@ -163,6 +163,7 @@ def create_profile(
     user_id: str,
     mfa_arn: str | None,
     mfa_enabled: bool | None,
+    session_duration_hours: int | None,
     access_key: str,
     secret_key: str,
 ) -> ProfileSummary:
@@ -174,6 +175,7 @@ def create_profile(
             user_id=user_id,
             mfa_arn=mfa_arn,
             mfa_enabled=mfa_enabled,
+            session_duration_hours=session_duration_hours,
             access_key=access_key,
             secret_key=secret_key,
         )

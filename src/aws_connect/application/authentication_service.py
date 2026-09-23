@@ -140,6 +140,7 @@ class AuthenticationService:
                 profile.region,
                 profile.mfa_arn if profile.mfa_enabled else None,
                 mfa_code if profile.mfa_enabled else None,
+                duration_seconds=profile.session_duration_hours * 60 * 60,
             )
             if self._activity_logs is not None:
                 from aws_connect.domain.execution_log import ExecutionPhase

@@ -20,6 +20,7 @@ from aws_connect.bootstrap import (
     build_application_services,
     build_doctor_service,
 )
+from aws_connect.domain.aws_profile import SESSION_DURATION_HOURS
 from aws_connect.domain.errors import ApplicationError, CredentialValidationError
 from aws_connect.presentation.cli.ec2 import connection_payload, targets_payload
 from aws_connect.presentation.cli.errors import map_error, map_unexpected, render_human_error
@@ -450,6 +451,7 @@ def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, An
                     user_id=args.user_id,
                     mfa_arn=args.mfa_arn,
                     mfa_enabled=args.mfa,
+                    session_duration_hours=args.session_duration_hours,
                     access_key=access_key,
                     secret_key=secret_key,
                 )
@@ -472,6 +474,7 @@ def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, An
                         user_id=args.user_id,
                         mfa_arn=args.mfa_arn,
                         mfa_enabled=args.mfa,
+                        session_duration_hours=args.session_duration_hours,
                         access_key=updated_access_key,
                         secret_key=updated_secret_key,
                     )
@@ -791,6 +794,12 @@ def _profile_fields(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Use MFA for temporary sessions (default for new profiles); use --no-mfa to disable",
+    )
+    parser.add_argument(
+        "--session-duration-hours",
+        type=int,
+        choices=SESSION_DURATION_HOURS,
+        help="Temporary session lifetime in hours (default: 12 for new profiles)",
     )
 
 

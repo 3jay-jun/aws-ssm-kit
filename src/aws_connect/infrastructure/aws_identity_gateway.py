@@ -41,9 +41,11 @@ class Boto3IdentityGateway:
         region: str,
         mfa_arn: str | None,
         mfa_code: str | None,
+        *,
+        duration_seconds: int,
     ) -> IssuedSession:
         client = self._client(credentials, region)
-        request: dict[str, Any] = {"DurationSeconds": 43200}
+        request: dict[str, Any] = {"DurationSeconds": duration_seconds}
         if mfa_arn is not None and mfa_code is not None:
             request.update(SerialNumber=mfa_arn, TokenCode=mfa_code)
         try:

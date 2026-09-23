@@ -81,6 +81,8 @@ class IdentityGateway(Protocol):
         region: str,
         mfa_arn: str | None,
         mfa_code: str | None,
+        *,
+        duration_seconds: int,
     ) -> IssuedSession: ...
 
 

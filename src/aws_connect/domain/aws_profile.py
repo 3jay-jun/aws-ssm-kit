@@ -11,7 +11,9 @@ from aws_connect.domain.errors import ConfigurationError
 _ACCOUNT_ID = re.compile(r"^\d{12}$")
 _REGION = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d$")
 _ACCESS_KEY = re.compile(r"^[A-Z0-9]{16,128}$")
-SESSION_REFRESH_WINDOW = timedelta(minutes=30)
+SESSION_DURATION_HOURS: tuple[int, ...] = (1, 8, 12, 24, 36)
+DEFAULT_SESSION_DURATION_HOURS = 12
+MAX_SESSION_REFRESH_WINDOW = timedelta(minutes=30)
 
 
 def default_mfa_arn(account_id: str, user_id: str) -> str:
@@ -29,6 +31,20 @@ def validated_region(region: str) -> str:
     return normalized
 
 
+def validated_session_duration_hours(value: int) -> int:
+    """Return an allowed STS session duration expressed in whole hours."""
+
+    if value not in SESSION_DURATION_HOURS:
+        raise _configuration("profile.session_duration.invalid")
+    return value
+
+
+def is_long_session_duration(value: int) -> bool:
+    """Return whether the duration requires the long-session security notice."""
+
+    return validated_session_duration_hours(value) >= 24
+
+
 @dataclass(frozen=True, slots=True)
 class AwsProfile:
     """Persisted non-secret profile metadata plus protected credentials."""
@@ -42,6 +58,7 @@ class AwsProfile:
     encrypted_access_key: bytes
     encrypted_secret_key: bytes
     mfa_enabled: bool = True
+    session_duration_hours: int = DEFAULT_SESSION_DURATION_HOURS
     is_default: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -58,6 +75,11 @@ class AwsProfile:
             raise _configuration("profile.mfa_arn.invalid")
         if not self.encrypted_access_key or not self.encrypted_secret_key:
             raise _configuration("profile.credentials.required")
+        object.__setattr__(
+            self,
+            "session_duration_hours",
+            validated_session_duration_hours(self.session_duration_hours),
+        )
 
     def require_id(self) -> int:
         """Return the persistent identity or fail for an unsaved profile."""
@@ -96,10 +118,15 @@ class SessionCredentials:
     verified_at_utc: datetime
 
     def needs_refresh(self, now: datetime) -> bool:
-        """Return true when expired or within the shared refresh window."""
+        """Return true when expired or inside the bounded proportional refresh window."""
 
         normalized_now = now.astimezone(UTC)
-        return self.expires_at_utc.astimezone(UTC) <= normalized_now + SESSION_REFRESH_WINDOW
+        expires_at = self.expires_at_utc.astimezone(UTC)
+        issued_duration = expires_at - self.verified_at_utc.astimezone(UTC)
+        if issued_duration <= timedelta(0):
+            return True
+        refresh_window = min(MAX_SESSION_REFRESH_WINDOW, issued_duration / 10)
+        return expires_at <= normalized_now + refresh_window
 
 
 def _configuration(code: str) -> ConfigurationError:

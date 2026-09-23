@@ -119,6 +119,10 @@ _MESSAGES: dict[str, tuple[str, str]] = {
         "MFA 장치 ARN이 올바르지 않습니다",
         "현재 계정의 MFA ARN을 입력하세요.",
     ),
+    "profile.session_duration.invalid": (
+        "인증 유지 시간이 올바르지 않습니다",
+        "1시간, 8시간, 12시간, 24시간 또는 36시간을 선택하세요.",
+    ),
     "profile.not_found": ("프로필이 없습니다", "프로필 관리에서 AWS 인증정보를 등록하세요."),
     "profile.credentials.required": (
         "인증정보를 입력하세요",
@@ -312,6 +316,7 @@ _FIELD_BY_CODE: dict[str, str] = {
     "profile.region.invalid": "profile_region_input",
     "profile.account_id.invalid": "profile_account_input",
     "profile.user_id.invalid": "profile_user_input",
+    "profile.session_duration.invalid": "profile_session_duration",
     "profile.credentials.required": "profile_access_key_input",
     "profile.credentials.incomplete": "profile_access_key_input",
     "credentials.access_key.invalid": "profile_access_key_input",

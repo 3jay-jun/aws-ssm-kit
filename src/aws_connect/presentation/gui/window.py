@@ -10,6 +10,7 @@ from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -55,6 +56,11 @@ from aws_connect.application.rds_tunnel_service import TunnelSessionService
 from aws_connect.application.s3_service import S3LocationService, S3Service
 from aws_connect.application.secrets_service import SecretsService
 from aws_connect.application.settings_service import DiagnosticLogService, SettingsService
+from aws_connect.domain.aws_profile import (
+    DEFAULT_SESSION_DURATION_HOURS,
+    SESSION_DURATION_HOURS,
+    is_long_session_duration,
+)
 from aws_connect.domain.errors import ApplicationError, ConfigurationError
 from aws_connect.presentation.gui.dashboard import DashboardPage
 from aws_connect.presentation.gui.ec2_rds import Ec2Page, RdsPage
@@ -215,6 +221,22 @@ class ProfileDialog(QDialog):
         self.mfa_enabled = QCheckBox("세션 토큰 발급 시 MFA 사용 (선택)")
         self.mfa_enabled.setObjectName("profile_mfa_enabled")
         self.mfa_enabled.setChecked(True)
+        self.session_duration = QComboBox()
+        self.session_duration.setObjectName("profile_session_duration")
+        self.session_duration.setAccessibleName("인증 유지 시간")
+        for hours in SESSION_DURATION_HOURS:
+            suffix = " (기본)" if hours == DEFAULT_SESSION_DURATION_HOURS else ""
+            self.session_duration.addItem(f"{hours}시간{suffix}", hours)
+        self.session_duration.setCurrentIndex(
+            self.session_duration.findData(DEFAULT_SESSION_DURATION_HOURS)
+        )
+        self.session_duration.currentIndexChanged.connect(self._session_duration_changed)
+        self.session_duration_warning = QLabel(
+            "장시간 인증은 기기 분실·탈취 시 접근 가능 시간이 길어집니다."
+        )
+        self.session_duration_warning.setObjectName("profile_session_duration_warning")
+        self.session_duration_warning.setWordWrap(True)
+        self.session_duration_warning.hide()
         form = QGridLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(14)
@@ -241,6 +263,16 @@ class ProfileDialog(QDialog):
         add_field("Secret Access Key", self.secret_key, 3, 0, 2)
         editor.addLayout(form)
         editor.addWidget(self.mfa_enabled)
+        duration_block = QWidget()
+        duration_layout = QVBoxLayout(duration_block)
+        duration_layout.setContentsMargins(0, 4, 0, 0)
+        duration_layout.setSpacing(6)
+        duration_label = QLabel("인증 유지 시간")
+        duration_label.setObjectName("field_label")
+        duration_layout.addWidget(duration_label)
+        duration_layout.addWidget(self.session_duration)
+        duration_layout.addWidget(self.session_duration_warning)
+        editor.addWidget(duration_block)
         notice = icon_text(
             "common-lock.svg",
             "Secret Access Key와 세션 토큰은 현재 Windows 사용자 범위로 암호화해 "
@@ -342,6 +374,9 @@ class ProfileDialog(QDialog):
         self._show_new_credential_placeholders()
         self.region.setText("ap-northeast-2")
         self.mfa_enabled.setChecked(True)
+        self.session_duration.setCurrentIndex(
+            self.session_duration.findData(DEFAULT_SESSION_DURATION_HOURS)
+        )
         self.connect_button.setEnabled(False)
 
     def _select_item(
@@ -363,6 +398,9 @@ class ProfileDialog(QDialog):
         self.user.setText(profile.user_id)
         self.region.setText(profile.region)
         self.mfa_enabled.setChecked(profile.mfa_enabled)
+        self.session_duration.setCurrentIndex(
+            self.session_duration.findData(profile.session_duration_hours)
+        )
         self.access_key.clear()
         self.secret_key.clear()
         self._show_saved_credential_placeholders()
@@ -383,8 +421,15 @@ class ProfileDialog(QDialog):
                 # preserved by ProfileService for edits.
                 mfa_arn=None,
                 mfa_enabled=self.mfa_enabled.isChecked(),
+                session_duration_hours=int(self.session_duration.currentData()),
                 profile_id=self._selected_id,
             )
+        )
+
+    def _session_duration_changed(self, _index: int) -> None:
+        value = self.session_duration.currentData()
+        self.session_duration_warning.setVisible(
+            value is not None and is_long_session_duration(int(value))
         )
 
     def _add_credential_toggle(self, field: QLineEdit) -> None:
@@ -987,16 +1032,25 @@ class MainWindow(QMainWindow):
 
     def refresh_token(self) -> None:
         if self._active_profile_id is not None:
-            self._start_refresh(self._active_profile_id, self._refresh_completed)
+            self._start_refresh(
+                self._active_profile_id,
+                self._refresh_completed,
+                discard_cached_session=True,
+            )
 
     def _start_refresh(
         self,
         profile_id: int,
         on_completed: Callable[[AuthenticationStatus], None],
+        *,
+        discard_cached_session: bool = False,
     ) -> None:
         self.refresh_button.setEnabled(False)
         self._runner.submit(
-            lambda: self._operations.start_refresh(profile_id),
+            lambda: self._operations.start_refresh(
+                profile_id,
+                discard_cached_session=discard_cached_session,
+            ),
             lambda result: self._refresh_started(result, on_completed),
             self._show_error,
         )

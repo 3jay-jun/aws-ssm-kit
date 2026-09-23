@@ -183,6 +183,13 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX execution_logs_by_operation ON execution_logs(operation_id);
     """,
     ),
+    (
+        11,
+        """
+        ALTER TABLE aws_profiles
+        ADD COLUMN session_duration_hours INTEGER NOT NULL DEFAULT 12;
+        """,
+    ),
 )
 
 
@@ -408,8 +415,9 @@ class SqliteProfileStore:
                 cursor = connection.execute(
                     """INSERT INTO aws_profiles
                     (name, region, account_id, user_id, mfa_arn, mfa_enabled,
+                     session_duration_hours,
                      encrypted_access_key, encrypted_secret_key, is_default, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         profile.name,
                         profile.region,
@@ -417,6 +425,7 @@ class SqliteProfileStore:
                         profile.user_id,
                         profile.mfa_arn,
                         int(profile.mfa_enabled),
+                        profile.session_duration_hours,
                         profile.encrypted_access_key,
                         profile.encrypted_secret_key,
                         int(make_default or profile.is_default),
@@ -438,7 +447,8 @@ class SqliteProfileStore:
             with self._connect() as connection:
                 cursor = connection.execute(
                     """UPDATE aws_profiles SET name=?, region=?, account_id=?, user_id=?,
-                    mfa_arn=?, mfa_enabled=?, encrypted_access_key=?, encrypted_secret_key=?,
+                    mfa_arn=?, mfa_enabled=?, session_duration_hours=?,
+                    encrypted_access_key=?, encrypted_secret_key=?,
                     updated_at=?
                     WHERE id=?""",
                     (
@@ -448,6 +458,7 @@ class SqliteProfileStore:
                         profile.user_id,
                         profile.mfa_arn,
                         int(profile.mfa_enabled),
+                        profile.session_duration_hours,
                         profile.encrypted_access_key,
                         profile.encrypted_secret_key,
                         _now_text(),
@@ -922,6 +933,7 @@ def _profile(row: sqlite3.Row) -> AwsProfile:
         encrypted_access_key=bytes(row["encrypted_access_key"]),
         encrypted_secret_key=bytes(row["encrypted_secret_key"]),
         mfa_enabled=bool(row["mfa_enabled"]),
+        session_duration_hours=int(row["session_duration_hours"]),
         is_default=bool(row["is_default"]),
         created_at=datetime.fromisoformat(str(row["created_at"])),
         updated_at=datetime.fromisoformat(str(row["updated_at"])),

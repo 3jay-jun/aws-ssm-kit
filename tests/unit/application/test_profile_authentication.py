@@ -36,7 +36,7 @@ class FakeIdentityGateway:
             "arn:aws:iam::123456789012:user/developer",
         )
         self.refresh_calls = 0
-        self.refresh_requests: list[tuple[str | None, str | None]] = []
+        self.refresh_requests: list[tuple[str | None, str | None, int]] = []
         self.reject_mfa = False
 
     def get_identity(self, credentials: PlainCredentials, region: str) -> AwsIdentity:
@@ -48,14 +48,16 @@ class FakeIdentityGateway:
         region: str,
         mfa_arn: str | None,
         mfa_code: str | None,
+        *,
+        duration_seconds: int,
     ) -> IssuedSession:
         self.refresh_calls += 1
-        self.refresh_requests.append((mfa_arn, mfa_code))
+        self.refresh_requests.append((mfa_arn, mfa_code, duration_seconds))
         if self.reject_mfa:
             raise MfaValidationError("mfa.code.rejected", "test rejection")
         return IssuedSession(
             PlainCredentials("SESSIONKEYTEST001", "temporary-test-secret", "temporary-test-token"),
-            self.clock.now() + timedelta(hours=12),
+            self.clock.now() + timedelta(seconds=duration_seconds),
         )
 
 
@@ -212,6 +214,40 @@ def test_profile_clone_creates_independent_inactive_record_with_protected_creden
     assert cloned_credentials == source_credentials
 
 
+def test_profile_session_duration_defaults_updates_preserves_and_clones(tmp_path) -> None:
+    _store, _clock, gateway, profiles, authentication, created = build_services(tmp_path)
+
+    assert created.session_duration_hours == 12
+    configured = profiles.update(
+        SaveProfileRequest(
+            "dev",
+            "ap-northeast-2",
+            "123456789012",
+            "developer",
+            session_duration_hours=36,
+            profile_id=created.id,
+        )
+    )
+    preserved = profiles.update(
+        SaveProfileRequest(
+            "dev",
+            "ap-northeast-2",
+            "123456789012",
+            "developer",
+            profile_id=created.id,
+        )
+    )
+    cloned = profiles.clone(created.id, "dev-copy-duration")
+    authentication.refresh(created.id, "123456")
+
+    assert configured.session_duration_hours == 36
+    assert preserved.session_duration_hours == 36
+    assert cloned.session_duration_hours == 36
+    assert gateway.refresh_requests == [
+        ("arn:aws:iam::123456789012:mfa/developer", "123456", 129600)
+    ]
+
+
 def test_refresh_then_reuse_and_refresh_when_near_expiry(tmp_path) -> None:
     store, clock, gateway, profiles, authentication, created = build_services(tmp_path)
     coordinator = OperationCoordinator(authentication, clock)
@@ -248,7 +284,7 @@ def test_profile_without_mfa_issues_session_without_challenge_or_mfa_parameters(
     assert completed.state is OperationState.SUCCEEDED
     assert completed.challenge is None
     assert completed.value is not None and completed.value.reusable
-    assert gateway.refresh_requests == [(None, None)]
+    assert gateway.refresh_requests == [(None, None, 43200)]
 
 
 def test_profile_update_persists_mfa_usage_and_discards_cached_session(tmp_path) -> None:
@@ -293,6 +329,24 @@ def test_near_expiry_is_not_returned_and_ready_refresh_short_circuits(tmp_path) 
 
     clock.value += timedelta(hours=11, minutes=31)
     assert authentication.reusable_credentials(created.id) is None
+
+
+def test_forced_refresh_discards_ready_session_and_issues_a_new_token(tmp_path) -> None:
+    _store, clock, gateway, _profiles, authentication, created = build_services(tmp_path)
+    initial = authentication.refresh(created.id, "123456")
+    coordinator = OperationCoordinator(authentication, clock)
+    clock.value += timedelta(minutes=1)
+
+    challenge = coordinator.start_refresh(created.id, discard_cached_session=True)
+    refreshed = coordinator.resume(challenge.operation_id, "654321")
+
+    assert challenge.state is OperationState.MFA_REQUIRED
+    assert refreshed.state is OperationState.SUCCEEDED
+    assert refreshed.value is not None
+    assert initial.expires_at_utc is not None
+    assert refreshed.value.expires_at_utc is not None
+    assert refreshed.value.expires_at_utc > initial.expires_at_utc
+    assert gateway.refresh_calls == 2
 
 
 def test_refresh_rejects_malformed_mfa_without_calling_aws(tmp_path) -> None:

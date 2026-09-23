@@ -1,5 +1,42 @@
 # aws-ssm-kit 실행 계획
 
+## 2026-09-22 상단 토큰 강제 재발급
+
+- 범위/수용 기준: 상단 `토큰 재발급` 버튼은 유효한 캐시 세션도 폐기하고 새 STS 세션을
+  발급한다. MFA 프로필은 새 코드를 요청하고, 일반 프로필 연결과 자동 인증의 캐시 재사용은
+  유지한다.
+- SSOT 검색: `refresh_token|start_refresh|discard_cached_session|get_session_token`으로 GUI,
+  인증 coordinator, STS gateway를 확인했다. 기존 `discard_cached_session` 옵션을 재사용했다.
+- 구현: 수동 상단 버튼에서만 `_start_refresh(..., discard_cached_session=True)`를 전달한다.
+  강제 플래그의 GUI 전달/MFA 재개와 실제 캐시 폐기/STS 재호출/만료 연장을 회귀 테스트한다.
+- 검증: GUI shell 및 profile authentication 테스트 `42 passed`; 변경 파일 Ruff check/format
+  통과; `mypy src/aws_connect/presentation/gui/window.py` 통과; `git diff --check` 통과.
+  `./scripts/check.ps1`은 이번 변경과 무관한 기존 `.vendor-license-source` 및 `graft/` 깨진 링크
+  (QA-001)로 documentation 단계에서 실패해 전체 게이트 통과로 주장하지 않는다.
+- 부수효과: 버튼 클릭 시 STS 네트워크 호출과 MFA 입력이 새로 발생한다. MFA 취소/실패 시
+  기존 임시 세션은 이미 폐기되어 다음 AWS 작업에서 인증을 다시 요구한다. 프로세스/포트/DB
+  스키마/메모리 모델 변화는 없다.
+- 다음 단계: 패키지 배포본에 반영하려면 새 EXE/ZIP을 빌드하고, 승인된 비운영 프로필로 실제
+  STS 만료 시각 연장을 확인한다.
+
+## 2026-09-22 루트 README 작성
+
+- 범위: 저장소의 제품·설계·명령 근거를 바탕으로 신규 기여자와 배포본 사용자가 함께 볼 수
+  있는 루트 `README.md`를 추가한다. 구현, 의존성, 런타임 설정과 AWS 리소스는 변경하지 않는다.
+- SSOT 검색: `aws-ssm-kit|bootstrap.ps1|check.ps1|doctor|aws-connect`로 제품 명세, pyproject,
+  scripts, CLI entry point를 확인했고 기존 루트 README는 없었다.
+- 결정: 상세 요구사항을 중복 복사하지 않고 제품/설계/보안/패키징 기준 문서로 연결한다.
+  README에는 검증된 설치·실행·검사 명령과 현재 Windows/0.1.0 범위만 요약한다.
+- 검증: `.venv/Scripts/python.exe -m aws_connect.cli_main --help`로 11개 상위 명령을 확인했다.
+  README 로컬 링크 12개 존재 확인 및
+  `git diff --check -- README.md docs/exec-plans/active/001-aws-connect.md` 통과.
+  두 문서 대상 `uv run --no-sync detect-secrets scan`은 findings 0.
+  `$env:UV_CACHE_DIR=.uv-cache-readme; ./scripts/verify-docs.ps1`은 README와 무관한 기존
+  `.vendor-license-source` 및 `graft/` 깨진 링크(QA-001)로 실패해 전체 문서 게이트 통과로
+  주장하지 않는다.
+- 부수효과: 문서만 추가하므로 프로세스, 포트, 메모리, DB, 네트워크 및 패키지 동작 영향 없음.
+- 다음 단계: QA-001의 문서 검사 범위를 정리한 뒤 `./scripts/check.ps1` 전체 게이트 재실행.
+
 ## 2026-09-21 Actions GUI test failure / Windows access violation
 
 - 목표: 첨부 CI 로그의 RDS 4 failures 및 S3 picker native crash를 해결하고 기존

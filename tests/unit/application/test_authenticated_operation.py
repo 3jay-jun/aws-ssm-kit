@@ -44,6 +44,8 @@ class ConcurrentGateway:
         region: str,
         mfa_arn: str | None,
         mfa_code: str | None,
+        *,
+        duration_seconds: int,
     ) -> IssuedSession:
         with self._lock:
             self.refresh_calls += 1
@@ -59,7 +61,7 @@ class ConcurrentGateway:
                     "temporary-test-secret",
                     "temporary-test-token",
                 ),
-                self.clock.now() + timedelta(hours=12),
+                self.clock.now() + timedelta(seconds=duration_seconds),
             )
         finally:
             with self._lock:
