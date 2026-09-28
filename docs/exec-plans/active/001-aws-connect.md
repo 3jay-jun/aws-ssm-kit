@@ -1,5 +1,16 @@
 # aws-ssm-kit 실행 계획
 
+## 2026-09-29 v1.0.1 생성 DB 문서 동기화
+
+- 범위/원인: migration 11의 `session_duration_hours` 추가 후 `docs/generated/db-schema.md`를
+  재생성하지 않아 release-windows의 documentation drift 검사가 실패했다.
+- SSOT 검색: `generate-docs|Generated documentation drift|session_duration_hours`로 생성·검증
+  스크립트와 migration을 확인하고 `scripts/generate-docs.ps1`만 사용해 Migration 11을 반영했다.
+- 검증: 별도 임시 경로에 스키마를 다시 생성해 추적 산출물과 바이트 단위 일치 확인.
+  로컬 전체 문서 검사는 기존 미추적 `.vendor-license-source`/`graft` 깨진 링크로 실패하며,
+  제공된 CI 로그에서는 링크 검사가 통과했으므로 이번 drift 수정과 분리한다.
+- 부수효과: 생성 문서만 변경하며 런타임, DB migration 실행, 네트워크, 프로세스 및 포트 영향 없음.
+
 ## 2026-09-28 v1.0.1 버전 승격
 
 - 범위: 인증 유지 시간 표시·레이아웃 회귀 수정 릴리스 버전을 `1.0.1`로 승격하고 해당 변경만

@@ -162,3 +162,10 @@ CREATE TABLE execution_logs (
         CREATE INDEX execution_logs_by_correlation ON execution_logs(correlation_id);
         CREATE INDEX execution_logs_by_operation ON execution_logs(operation_id);
 ```
+
+## Migration 11
+
+```sql
+ALTER TABLE aws_profiles
+        ADD COLUMN session_duration_hours INTEGER NOT NULL DEFAULT 12;
+```
