@@ -1,5 +1,33 @@
 # aws-ssm-kit 실행 계획
 
+## 2026-09-28 v1.0.1 버전 승격
+
+- 범위: 인증 유지 시간 표시·레이아웃 회귀 수정 릴리스 버전을 `1.0.1`로 승격하고 해당 변경만
+  선별 커밋한다. 기존 테스트 임시 파일과 사용자 작업 파일은 커밋하지 않는다.
+- SSOT 검색: `version =|__version__|0.1.0`으로 패키징 스크립트와 런타임을 확인했다.
+  `pyproject.toml`, `aws_connect.__version__`, 로컬 패키지 lock 항목을 `1.0.1`로 동기화한다.
+- 검증: 런타임/프로젝트 버전 일치 `version=1.0.1`, `uv lock --check` 성공, 관련 테스트
+  `80 passed`, 변경 Python 파일 Ruff check/format 및 mypy 통과, 변경 파일 diff check 통과.
+- 부수효과: 빌드 산출물 이름과 패키지 메타데이터가 `1.0.1`로 변경된다. 런타임 프로세스,
+  포트, 네트워크 및 DB 스키마 영향은 없다.
+
+## 2026-09-28 프로필 인증 유지 시간 표시 및 레이아웃 회귀 수정
+
+- 범위/수용 기준: DB에 저장된 1·8·12·24·36시간 설정을 프로필 관리 재진입 시 그대로
+  표시하고, 24·36시간 보안 안내가 나타나도 인증 유지 시간 입력과 저장 버튼이 잘리지 않는다.
+- SSOT 검색: `session_duration_hours|ProfileSummary|_profile_selected|profile_session_duration`으로
+  도메인, 프로필 서비스, SQLite 저장소와 GUI를 확인했다. DB/서비스 값은 정상이며 GUI의
+  `ProfileSummary` 재구성에서 해당 필드만 누락된 것이 원인이었다.
+- 구현: 프로필 전환 시 `dataclasses.replace`로 기존 요약의 모든 필드를 보존하고 기본 여부만
+  변경한다. 프로필 대화상자의 최소 높이를 620px, 최초 높이를 680px로 조정했다.
+- 검증: 두 회귀 테스트 `2 passed`, GUI shell 전체 `25 passed`, 인증 유지 시간 관련 도메인·
+  애플리케이션·SQLite·AWS gateway·CLI·GUI 테스트 `80 passed`; 변경 파일 Ruff check/format 및
+  `git diff --check` 통과. `scripts/check.ps1`은 이번 변경과 무관한 기존
+  `.vendor-license-source` 및 `graft/` 깨진 링크(QA-001)로 documentation 단계에서 실패했다.
+- 부수효과: 프로필 대화상자의 최초 세로 크기가 60px 늘어난다. 프로세스 시작 순서, 포트,
+  네트워크 호출, 메모리 수명 및 DB 스키마에는 이번 회귀 수정으로 인한 변화가 없다.
+- 다음 단계: 패키지 배포본에 반영하려면 EXE/ZIP을 재빌드하고 실제 화면 배율에서 확인한다.
+
 ## 2026-09-22 상단 토큰 강제 재발급
 
 - 범위/수용 기준: 상단 `토큰 재발급` 버튼은 유효한 캐시 세션도 폐기하고 새 STS 세션을

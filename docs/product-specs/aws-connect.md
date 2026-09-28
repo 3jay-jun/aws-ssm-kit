@@ -108,8 +108,9 @@ aws-connect/
 
 ### 7.1 최초 실행 및 AWS 프로필 등록
 
-1. 사용자가 프로필 이름, Region, Account ID, IAM User ID, Access Key, Secret Key와 MFA 사용
-   여부를 입력한다. 새 프로필의 MFA 사용 기본값은 활성화다.
+1. 사용자가 프로필 이름, Region, Account ID, IAM User ID, Access Key, Secret Key, MFA 사용
+   여부와 인증 유지 시간을 입력한다. 새 프로필의 MFA 사용 기본값은 활성화이며 인증 유지 시간
+   기본값은 12시간이다.
 2. 애플리케이션은 STS `GetCallerIdentity`로 자격증명을 검증한다.
 3. 예상 Account ID와 IAM User가 실제 응답과 일치하는지 검사한다.
 4. Access Key와 Secret Key는 DPAPI로 암호화하여 SQLite에 저장한다.
@@ -121,8 +122,8 @@ aws-connect/
 2. 유효하고 만료까지 30분 초과로 남았다면 재사용한다.
 3. 만료, 불일치, 파싱 오류 또는 만료 임박이면 프로필 설정을 확인한다. MFA 사용 프로필만
    6자리 코드를 요청하며, 미사용 프로필은 사용자 입력 없이 발급을 계속한다.
-4. STS `GetSessionToken`으로 새 임시 자격증명을 발급한다. MFA 미사용 프로필은
-   `SerialNumber`와 `TokenCode`를 요청에 포함하지 않는다.
+4. STS `GetSessionToken`으로 프로필에 저장된 인증 유지 시간만큼 새 임시 자격증명을 발급한다.
+   MFA 미사용 프로필은 `SerialNumber`와 `TokenCode`를 요청에 포함하지 않는다.
 5. 새 자격증명을 검증한 뒤 기존 값을 교체한다.
 6. 임시 Access Key, Secret Key, Session Token도 DPAPI 암호문으로 저장한다.
 
@@ -198,6 +199,8 @@ aws-connect/
   전환해야 한다. 선택한 프로필은 새 고유 ID로 복제할 수 있어야 한다.
 - FR-AUTH-008: 프로필별 MFA 사용 여부를 저장·수정할 수 있어야 하며 기존 프로필과 새 프로필의
   기본값은 활성화여야 한다.
+- FR-AUTH-009: 프로필별 인증 유지 시간을 1·8·12·24·36시간 중 선택해 저장·수정할 수 있어야
+  하며 기본값은 12시간이다. 프로필 관리 화면을 다시 열어도 저장값을 표시해야 한다.
 
 ### 8.2 MFA와 세션
 
@@ -209,6 +212,8 @@ aws-connect/
 - FR-SESSION-005: MFA 코드는 저장하거나 로그에 남기지 않아야 한다.
 - FR-SESSION-006: MFA 미사용 프로필은 MFA 입력 상태를 만들지 않고 `GetSessionToken`의 MFA
   파라미터를 생략한 뒤 원래 작업을 한 번만 이어서 실행해야 한다.
+- FR-SESSION-007: 새 토큰 발급 시 프로필의 인증 유지 시간을 STS `DurationSeconds`에 전달하고,
+  24·36시간 선택 시 장시간 인증에 대한 보안 안내를 표시해야 한다.
 
 ### 8.3 EC2 SSM
 

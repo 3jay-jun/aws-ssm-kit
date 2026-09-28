@@ -327,6 +327,7 @@ account_id
 user_id
 mfa_arn
 mfa_enabled
+session_duration_hours
 encrypted_access_key
 encrypted_secret_key
 is_default
@@ -340,6 +341,8 @@ updated_at
 - Region, Account ID, User ID, Access Key, Secret Key는 등록 전에 검증한다.
 - `mfa_enabled`가 꺼진 프로필도 관례적 ARN은 메타데이터로 보존하지만 세션 발급 요청에는
   MFA ARN과 코드를 전달하지 않는다.
+- `session_duration_hours`는 1, 8, 12, 24, 36 중 하나이며 기본값은 12다. 이 값은 STS
+  `GetSessionToken.DurationSeconds`의 단일 진실로 사용한다.
 - 키 원문은 모델 직렬화나 로그 출력 대상이 아니다.
 
 ### 6.2 SessionCredentials
@@ -356,7 +359,7 @@ verified_at_utc
 규칙:
 
 - 한 프로필당 활성 세션은 최대 하나다.
-- 만료까지 30분 이하이면 갱신 대상으로 판정한다.
+- 발급 시간의 10%와 30분 중 작은 값 이하로 남으면 갱신 대상으로 판정한다.
 - 새 세션 검증이 완료된 뒤 기존 세션을 교체한다.
 
 ### 6.3 TunnelSession
@@ -410,6 +413,7 @@ CREATE TABLE aws_profiles (
     user_id TEXT NOT NULL,
     mfa_arn TEXT NOT NULL,
     mfa_enabled INTEGER NOT NULL DEFAULT 1 CHECK (mfa_enabled IN (0, 1)),
+    session_duration_hours INTEGER NOT NULL DEFAULT 12,
     encrypted_access_key BLOB NOT NULL,
     encrypted_secret_key BLOB NOT NULL,
     is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),

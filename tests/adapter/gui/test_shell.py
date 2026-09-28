@@ -280,16 +280,19 @@ def test_header_view_models_cover_missing_mfa_and_ready_states() -> None:
 
 
 def test_profile_change_resumes_mfa_and_refreshes_header_and_feature_data() -> None:
-    window, _profiles, operations = _window()
+    window, profiles, operations = _window()
+    profiles.items[1] = _profile(2, "운영계", default=False, session_duration_hours=36)
     window.reload_profiles()
 
     window.connect_profile(2)
+    window.open_profiles()
 
     assert window.profile_name.text() == "운영계"
     assert window.iam_user.text() == "user-2"
     assert "인증됨" in window.auth_state.text()
     assert window.feature_data_revision == 2
     assert operations.resume_calls == [("operation-1", "123456")]
+    assert window.profile_dialog.session_duration.currentData() == 36
 
 
 def test_header_refresh_button_forces_token_reissue() -> None:
@@ -373,18 +376,26 @@ def test_profile_dialog_new_credentials_keep_existing_save_signal_contract() -> 
 
 
 def test_profile_dialog_selects_session_duration_and_warns_for_long_sessions() -> None:
+    app = _app()
     window, profiles, _operations = _window(auto_start=False)
-    profiles.items[1] = _profile(
-        2, "운영계", default=False, session_duration_hours=36
-    )
+    profiles.items[1] = _profile(2, "운영계", default=False, session_duration_hours=36)
     dialog = window.profile_dialog
     dialog.set_profiles(profiles.items, 2)
+    dialog.show()
+    app.processEvents()
     captured: list[SaveProfileRequest] = []
     dialog.save_requested.connect(captured.append)
 
     assert dialog.session_duration.currentData() == 36
     assert dialog.session_duration.accessibleName() == "인증 유지 시간"
     assert dialog.session_duration_warning.isVisibleTo(dialog)
+    assert dialog.height() >= 680
+    assert dialog.rect().contains(
+        dialog.session_duration.mapTo(dialog, dialog.session_duration.rect().bottomRight())
+    )
+    assert dialog.rect().contains(
+        dialog.save_button.mapTo(dialog, dialog.save_button.rect().bottomRight())
+    )
 
     dialog.session_duration.setCurrentIndex(dialog.session_duration.findData(8))
     assert not dialog.session_duration_warning.isVisible()

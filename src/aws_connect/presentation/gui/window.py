@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -151,8 +152,8 @@ class ProfileDialog(QDialog):
         self.setModal(True)
         self.setMaximumWidth(920)
         self.setMaximumHeight(720)
-        self.setMinimumHeight(556)
-        self.resize(920, 620)
+        self.setMinimumHeight(620)
+        self.resize(920, 680)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -1001,17 +1002,7 @@ class MainWindow(QMainWindow):
         self.feature_data_revision += 1
         self.profile_dialog.close()
         self._profile_summaries = [
-            ProfileSummary(
-                id=item.id,
-                name=item.name,
-                region=item.region,
-                account_id=item.account_id,
-                user_id=item.user_id,
-                mfa_arn=item.mfa_arn,
-                is_default=item.id == profile.id,
-                mfa_enabled=item.mfa_enabled,
-            )
-            for item in self._profile_summaries
+            replace(item, is_default=item.id == profile.id) for item in self._profile_summaries
         ]
         self.profile_dialog.set_profiles(self._profile_summaries, profile.id)
         self._apply_header(checking_authentication_header(profile))
