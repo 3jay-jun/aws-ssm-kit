@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
-    QToolTip,
     QVBoxLayout,
     QWidget,
     QWidgetAction,
@@ -58,6 +57,7 @@ from aws_connect.domain.errors import ApplicationError, AwsPermissionError
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner
 from aws_connect.presentation.gui.clipboard import copy_temporarily
+from aws_connect.presentation.gui.form_fields import form_field as _field
 from aws_connect.presentation.gui.icons import gui_icon, icon_text, set_button_icon
 from aws_connect.presentation.gui.list_rows import (
     set_compact_list_row,
@@ -792,6 +792,8 @@ class RdsPage(QWidget):
         self._draft_visible = False
         self._relays_ready = False
         self._connection_busy = False
+        self._starting = False
+        self._shutdown_requested = False
         self._editor_baseline: tuple[object, ...] | None = None
         self._port_available: bool | None = None
         self._port_revision = 0
@@ -1531,7 +1533,8 @@ class RdsPage(QWidget):
 
     def start(self, tunnel_id: int | None = None) -> None:
         if (
-            self._connection_busy
+            self._shutdown_requested
+            or self._connection_busy
             or (tunnel_id is None and self._selected_id is None)
             or self._profile_id is None
             or not self._relay_available()
@@ -1551,13 +1554,14 @@ class RdsPage(QWidget):
             else None
         )
         request = StartTunnelRequest(selected_id, self._profile_id, selected)
+        self._starting = True
         self._connection_busy = True
         self._sync_editor_actions()
         self.tunnel_state.setText("연결 시작 중…")
         self._runner.submit(
             lambda: self._tunnels.start_managed(request),
             lambda result: self._start_result(result, request),
-            self._failed,
+            self._start_failed,
         )
 
     def _start_result(
@@ -1566,13 +1570,18 @@ class RdsPage(QWidget):
         request: StartTunnelRequest,
     ) -> None:
         if result.state is OperationState.MFA_REQUIRED and result.challenge is not None:
-            code = self._mfa_code_provider(self, result.challenge.device_arn)
+            code = (
+                None
+                if self._shutdown_requested
+                else self._mfa_code_provider(self, result.challenge.device_arn)
+            )
             self._runner.submit(
                 lambda: self._tunnels.resume(result.operation_id, code),
                 lambda resumed: self._start_result(resumed, request),
-                self._failed,
+                self._start_failed,
             )
             return
+        self._starting = False
         self._connection_busy = False
         if result.state is OperationState.SUCCEEDED and result.value is not None:
             address = f"127.0.0.1:{result.value.tunnel.local_port}"
@@ -1589,6 +1598,10 @@ class RdsPage(QWidget):
         elif result.error is not None:
             self._failed(result.error)
         self._sync_editor_actions()
+
+    def _start_failed(self, error: ApplicationError) -> None:
+        self._starting = False
+        self._failed(error)
 
     def refresh_active(self) -> None:
         profile_id = self._profile_id
@@ -1748,7 +1761,13 @@ class RdsPage(QWidget):
         super().resizeEvent(event)
 
     def shutdown(self, completed: Callable[[], None]) -> None:
+        self._shutdown_requested = True
+        self.setEnabled(False)
         self._poll_timer.stop()
+        # A start already in flight must register its owned session before stop_all snapshots it.
+        if self._starting or self._connection_busy:
+            QTimer.singleShot(50, lambda: self.shutdown(completed))
+            return
         self._runner.submit(
             self._tunnels.stop_all,
             lambda _value: completed(),
@@ -1898,34 +1917,6 @@ def _confirm_discard(parent: QWidget) -> bool:
         )
         is QMessageBox.StandardButton.Discard
     )
-
-
-def _field(label: str, control: QWidget, *, help_text: str | None = None) -> QWidget:
-    container = QWidget()
-    container.setObjectName("field")
-    layout = QVBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
-    caption = QLabel(label)
-    caption.setObjectName("field_label")
-    if help_text is None:
-        layout.addWidget(caption)
-    else:
-        caption_row = QHBoxLayout()
-        caption_row.addWidget(caption)
-        help_icon = QToolButton()
-        help_icon.setObjectName("field_help")
-        set_button_icon(help_icon, "common-info.svg", tooltip=help_text, color="#7b88a5", size=16)
-        help_icon.clicked.connect(
-            lambda: QToolTip.showText(
-                help_icon.mapToGlobal(help_icon.rect().bottomLeft()), help_icon.toolTip(), help_icon
-            )
-        )
-        caption_row.addWidget(help_icon)
-        caption_row.addStretch()
-        layout.addLayout(caption_row)
-    layout.addWidget(control)
-    return container
 
 
 def _status_label(text: str, status: str, *, icon: str | None = None) -> QWidget:

@@ -87,6 +87,73 @@ def mapped_error_types_for_gui() -> frozenset[type[ApplicationError]]:
 
 
 _MESSAGES: dict[str, tuple[str, str]] = {
+    "drive.runtime.rclone_missing": (
+        "rclone 실행 파일이 없습니다",
+        "배포 폴더의 rclone.exe가 필요합니다. "
+        "소스 실행 시 scripts/setup-drive-runtime.ps1을 실행하세요.",
+    ),
+    "drive.runtime.winfsp_missing": (
+        "WinFsp 설치가 필요합니다",
+        "Windows 드라이브 연결에 필요한 WinFsp가 설치되지 않았습니다. "
+        "공식 WinFsp Core를 관리자 권한으로 설치한 뒤 다시 연결하세요.",
+    ),
+    "drive.runtime.missing": (
+        "드라이브 실행 환경이 없습니다",
+        "환경 진단에서 rclone과 WinFsp 설치 상태를 확인하세요.",
+    ),
+    "drive.letter.busy": (
+        "드라이브 문자가 사용 중입니다",
+        "다른 드라이브 문자를 선택한 뒤 다시 저장하거나 연결하세요.",
+    ),
+    "drive.letter.invalid": ("드라이브 문자를 확인하세요", "D:부터 Z: 사이의 문자를 선택하세요."),
+    "drive.prefix.invalid": (
+        "드라이브 경로를 확인하세요",
+        "상대 경로를 입력하세요. 예약 이름이나 상위 경로(..)는 사용할 수 없습니다.",
+    ),
+    "drive.cache.pending": (
+        "아직 안전하게 해제할 수 없습니다",
+        "열린 파일을 닫고 네트워크·인증을 확인한 뒤 재시도하세요. 미전송 데이터는 보존됩니다. "
+        "오류 후에는 재연결해 전송을 복구하세요.",
+    ),
+    "drive.cache.full": (
+        "캐시 공간이 부족합니다",
+        "로컬 디스크의 여유 공간을 확보하세요. 미전송 캐시 파일은 삭제하지 마세요.",
+    ),
+    "drive.transfer.failed": (
+        "파일 전송에 실패했습니다",
+        "네트워크와 S3 권한을 확인하세요. 토큰이 만료되었다면 인증 갱신 / 재연결을 선택하세요.",
+    ),
+    "drive.control.failed": (
+        "연결 상태를 확인할 수 없습니다",
+        "드라이브와 캐시를 보존했습니다. 잠시 후 재시도하거나 환경 진단을 확인하세요.",
+    ),
+    "drive.process.failed": (
+        "드라이브 연결이 종료되었습니다",
+        "캐시는 보존됩니다. 재연결하여 미전송 파일을 복구하세요.",
+    ),
+    "drive.observe.failed": (
+        "Windows 드라이브 상태가 일치하지 않습니다",
+        "연결을 해제한 뒤 재시도하세요. 오류가 지속되면 환경 진단을 확인하세요.",
+    ),
+    "drive.owned_elsewhere": (
+        "다른 앱에서 사용 중인 연결입니다",
+        "이 드라이브를 연결한 AWS-SSM-KIT 창 또는 CLI에서 해제하세요.",
+    ),
+    "drive.active": (
+        "연결 중인 드라이브입니다",
+        "먼저 안전하게 연결을 해제한 뒤 설정을 수정하세요.",
+    ),
+    "drive.storage.failed": (
+        "드라이브 설정을 저장하지 못했습니다",
+        "같은 이름의 연결이 있는지, 선택한 프로필이 존재하는지 확인하세요.",
+    ),
+    "drive.not_found": (
+        "저장된 드라이브가 없습니다",
+        "목록을 새로고침하고 연결 설정을 다시 선택하세요.",
+    ),
+    "drive.not_connected": ("연결되지 않은 마운트입니다", "연결한 뒤 탐색기를 열어 주세요."),
+    "drive.explorer.failed": ("탐색기를 열 수 없습니다", "연결 상태와 Windows 경로를 확인하세요."),
+    "drive.closing": ("앱을 종료하는 중입니다", "연결 정리가 끝날 때까지 기다려 주세요."),
     "s3.rename.changed": (
         "파일 상태가 변경되었습니다",
         "대상 파일이 생겼거나 원본이 변경되었습니다. 목록을 새로고침해 확인하세요.",

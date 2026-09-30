@@ -1,5 +1,40 @@
 # aws-ssm-kit 실행 계획
 
+## 2026-09-29 S3 드라이브 기능 사전 협의 검토
+
+- 범위: 사용자 요청의 8개 기능을 현행 구조와 대조해 구현 전 결정사항을 식별한다.
+  기능 구현/설치/실제 AWS 호출은 범위 밖이며 아래 추천은 승인된 요구사항이 아니다.
+- 현재 기반: Python 3.12, lock 기준 PySide6 6.11.2/boto3 1.43.90.
+  `graft map`, `graft ask "S3 mount rclone saved locations authentication profile deletion connection lifecycle doctor diagnostics" --source`,
+  `graft grep "rclone|WinFsp|S3LocationService|AuthenticatedOperationCoordinator"` 및
+  `rg -n 'rclone|WinFsp|s3.mount|class S3LocationService|class AuthenticatedOperationCoordinator|class ProfileConnectionLifecycleService|class DoctorService' src tests`
+  실행 성공. 저장 위치/공통 인증/삭제 lifecycle/doctor는 존재하며 rclone/WinFsp 구현은 검색되지 않음.
+- 재사용 지점: S3LocationService와 SQLite 저장 위치, AuthenticatedOperationCoordinator,
+  ProfileConnectionLifecycleService, DoctorService. 마운트 실행 책임은 별도 application/port/adapter로
+  연결하되 인증/프로필 규칙은 재정의하지 않는다. 기존 설계 문서의 BAT 현황은 역사적 내용이며
+  현재 상태는 소스와 lock 기준으로 확인했다.
+- 협의 항목: 신규 드라이브 내부 가상 경로 vs 기존 드라이브 폴더 마운트, 드라이브당 연결 수,
+  프로필 전환 후 기존 마운트 유지 및 자동 연결 대상, 트레이 유지 vs 완전 종료 후 독립 관리,
+  재인증 전 대기 및 갱신 전달/재연결, 탐색기 삭제·덮어쓰기 허용 범위, 미전송 캐시 보존/종료,
+  캐시 기본값과 평문 파일 보호, 외부 도구 배포/설치 정책, 실제 사용하는 편집 프로그램.
+- 권고 후보: 연결당 새 드라이브 하나와 선택적 내부 폴더, 현재 프로필에 저장 연결 귀속,
+  기존 연결은 원 프로필 소유 유지, 자동 연결은 명시적으로 켠 항목만 수행,
+  트레이 유지와 완전 종료를 구분, 읽기 전용 기본 및 읽기/쓰기 명시적 선택,
+  미전송 캐시가 있으면 삭제/완전 종료를 바로 진행하지 않는다. 사용자 결정 전 확정하지 않음.
+- 정책 충돌: product FR-S3-004/005 및 SECURITY의 앱 내 덮어쓰기/단건 삭제 확인 정책은
+  탐색기 쓰기 접근에 그대로 적용되지 않음. VFS 디스크 캐시도 기존 파일 보존 정책과 별도 명시 필요.
+  승인 후 product/security/reliability 문서를 함께 갱신해야 한다.
+- 공식 자료 확인: https://rclone.org/commands/rclone_mount/ (Windows mount/WinFsp/VFS),
+  https://rclone.org/combine/ (가상 하위 폴더), https://rclone.org/s3/ (STS 및 실행 중 backend 설정 갱신).
+  캐시 제한은 절대 상한이 아니며 미전송 캐시 복구/격리가 필요하다. 실행 중 인증 갱신 지원은
+  확인했지만 앱 통합과 열린 파일의 연속성은 아직 검증하지 않았다.
+- 검증 범위: 문서/소스 검색과 공식 문서 대조만 완료. 기능 테스트, 전체 check.ps1,
+  Windows 마운트 smoke는 미실행이며 기능 작동을 주장하지 않는다. 기존 QA-001/AWS-001은 유지.
+- 부수효과: 이번 변경은 검토 기록뿐으로 런타임 영향 없음. 구현 시에는 상주 프로세스,
+  드라이브 점유, 디스크/메모리 캐시, AWS 요청, 인증 전달 채널의 수명과 보호를 검증해야 한다.
+- 다음 단계: 사용자와 매핑/종료 수명/쓰기 정책을 우선 협의하고, 합의 후 구현 수용 기준과
+  별도 실행 계획을 확정한다. office-hours 설계 문서 작성 단계는 아직 진행하지 않았다.
+
 ## 2026-09-29 v1.0.1 생성 DB 문서 동기화
 
 - 범위/원인: migration 11의 `session_duration_hours` 추가 후 `docs/generated/db-schema.md`를

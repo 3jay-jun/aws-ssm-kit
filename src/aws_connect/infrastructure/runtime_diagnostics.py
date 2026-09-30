@@ -11,6 +11,7 @@ from aws_connect.application.settings_service import SettingsService
 from aws_connect.application.system_info import (
     DatabaseDiagnostic,
     DataProtectionDiagnostic,
+    DriveRuntimeDiagnostic,
     LogDiagnostic,
     ProfileDiagnostic,
     RuntimeDiagnostics,
@@ -21,6 +22,7 @@ from aws_connect.infrastructure.session_manager_plugin import (
     session_host_path,
 )
 from aws_connect.infrastructure.sqlite_profile_store import SqliteProfileStore
+from aws_connect.infrastructure.windows_drive_runtime import winfsp_available
 
 
 class LocalRuntimeDiagnosticProbe:
@@ -31,12 +33,14 @@ class LocalRuntimeDiagnosticProbe:
         plugin: SessionPlugin,
         settings: SettingsService,
         clock: Clock,
+        drive_executable: Path | None = None,
     ) -> None:
         self._store = store
         self._protector = protector
         self._plugin = plugin
         self._settings = settings
         self._clock = clock
+        self._drive_executable = drive_executable
 
     def inspect(self) -> RuntimeDiagnostics:
         configured = self._settings.get()
@@ -81,6 +85,11 @@ class LocalRuntimeDiagnosticProbe:
             self._plugin.diagnose(),
             _session_host_diagnostic(),
             profile,
+            DriveRuntimeDiagnostic(
+                self._drive_executable, self._drive_executable.is_file(), winfsp_available()
+            )
+            if self._drive_executable
+            else None,
         )
 
 

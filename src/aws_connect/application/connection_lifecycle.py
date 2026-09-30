@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from threading import Lock
 
@@ -10,7 +11,9 @@ from aws_connect.application.operations import OperationState
 from aws_connect.application.ports import ProfileStore
 from aws_connect.application.profile_service import ProfileService
 from aws_connect.application.rds_tunnel_operation import RdsTunnelOperationCoordinator
+from aws_connect.application.s3_drive_service import S3DriveService
 from aws_connect.domain.errors import ApplicationError, ConfigurationError
+from aws_connect.domain.s3_drive import DriveState
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,10 +21,11 @@ class ProfileConnections:
     profile_id: int
     ec2_count: int
     rds_count: int
+    s3_drive_count: int = 0
 
     @property
     def has_active(self) -> bool:
-        return self.ec2_count > 0 or self.rds_count > 0
+        return self.ec2_count > 0 or self.rds_count > 0 or self.s3_drive_count > 0
 
 
 class ProfileConnectionLifecycleService:
@@ -33,11 +37,13 @@ class ProfileConnectionLifecycleService:
         store: ProfileStore,
         ec2: Ec2Service,
         rds: RdsTunnelOperationCoordinator,
+        drives: S3DriveService | None = None,
     ) -> None:
         self._profiles = profiles
         self._store = store
         self._ec2 = ec2
         self._rds = rds
+        self._drives = drives
         self._lock = Lock()
 
     def active(self, profile_id: int) -> ProfileConnections:
@@ -64,6 +70,9 @@ class ProfileConnectionLifecycleService:
             profile_id,
             sum(item.state is OperationState.RUNNING for item in ec2),
             sum(item.handle.state is OperationState.RUNNING for item in rds),
+            sum(item.state is not DriveState.DISCONNECTED for item in self._drives.list(profile_id))
+            if self._drives is not None
+            else 0,
         )
 
     def delete(self, selector: str | int, *, stop_active: bool) -> None:
@@ -73,7 +82,7 @@ class ProfileConnectionLifecycleService:
             if active.has_active and not stop_active:
                 raise ConfigurationError(
                     "profile.connections.active",
-                    "Active EC2 or RDS connections must be stopped before profile deletion",
+                    "Active EC2, RDS or S3 drives must be stopped before profile deletion",
                 )
             if active.has_active:
                 first_error: ApplicationError | None = None
@@ -88,4 +97,5 @@ class ProfileConnectionLifecycleService:
                         first_error = error
                 if first_error is not None:
                     raise first_error
-            self._store.delete(profile_id)
+            with self._drives.profile_deletion(profile_id) if self._drives else nullcontext():
+                self._store.delete(profile_id)

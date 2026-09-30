@@ -11,6 +11,7 @@ from aws_connect.application.authentication_service import SessionGuard
 from aws_connect.application.execution_logging import logged_operation
 from aws_connect.application.operations import OperationContext, OperationState
 from aws_connect.application.ports import (
+    PORT_FORWARD_DOCUMENT,
     Clock,
     LocalPortChecker,
     ManagedInstanceGateway,
@@ -30,8 +31,6 @@ from aws_connect.domain.errors import (
     TargetNotConnectedError,
 )
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession, validate_local_port
-
-PORT_FORWARD_DOCUMENT = "AWS-StartPortForwardingSessionToRemoteHost"
 
 
 @dataclass(frozen=True, slots=True)

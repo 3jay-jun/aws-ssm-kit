@@ -83,6 +83,17 @@ class SessionHostDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class DriveRuntimeDiagnostic:
+    rclone_path: Path
+    rclone_available: bool
+    winfsp_available: bool
+
+    @property
+    def ready(self) -> bool:
+        return self.rclone_available and self.winfsp_available
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeDiagnostics:
     database: DatabaseDiagnostic
     data_protection: DataProtectionDiagnostic
@@ -90,6 +101,7 @@ class RuntimeDiagnostics:
     session_manager_plugin: PluginDiagnostic
     session_host: SessionHostDiagnostic
     profile: ProfileDiagnostic
+    s3_drive: DriveRuntimeDiagnostic | None = None
 
     @property
     def ready(self) -> bool:
@@ -103,11 +115,23 @@ class RuntimeDiagnostics:
             and plugin.environment_ready
             and self.session_host.exists
             and self.session_host.argument_boundary_safe
+            and (self.s3_drive is None or self.s3_drive.ready)
         )
 
     def to_payload(self) -> dict[str, object]:
         plugin = self.session_manager_plugin
         return {
+            "s3_drive": (
+                {
+                    "rclone_path": str(self.s3_drive.rclone_path),
+                    "rclone_available": self.s3_drive.rclone_available,
+                    "winfsp_available": self.s3_drive.winfsp_available,
+                    "ready": self.s3_drive.ready,
+                    "guidance": "Install WinFsp and provide the packaged rclone.exe.",
+                }
+                if self.s3_drive
+                else None
+            ),
             "database": {
                 "path": str(self.database.path),
                 "exists": self.database.exists,

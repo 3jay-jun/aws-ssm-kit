@@ -123,9 +123,21 @@ try {
 }
 
 $packageRoot = Join-Path $buildRoot "aws-connect"
+ $driveVendor = Join-Path $repositoryRoot 'vendor/rclone'
+ $driveManifestPath = Join-Path $driveVendor 'manifest.json'
+ if (-not (Test-Path -LiteralPath $driveManifestPath)) {
+     throw 'Prepare rclone with scripts/setup-drive-runtime.ps1 before packaging S3 drives.'
+ }
+ $driveManifest = Get-Content -LiteralPath $driveManifestPath -Raw | ConvertFrom-Json
+ $driveBinary = Join-Path $driveVendor 'rclone.exe'
+ if ((Get-FileHash -LiteralPath $driveBinary -Algorithm SHA256).Hash -ne $driveManifest.sha256) {
+     throw 'rclone binary checksum mismatch.'
+ }
 Copy-Item -LiteralPath (Join-Path $pyinstallerDist "aws-connect") -Destination $packageRoot -Recurse
+Copy-Item -LiteralPath $driveBinary -Destination (Join-Path $packageRoot 'rclone.exe')
 Copy-Item -LiteralPath $pluginPath -Destination (Join-Path $packageRoot "session-manager-plugin.exe")
 $licenses = New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "licenses")
+Copy-Item -LiteralPath (Join-Path $driveVendor 'README.txt') -Destination (Join-Path $licenses 'rclone-README.txt')
 Copy-Item -LiteralPath $licensePath -Destination (Join-Path $licenses "session-manager-plugin-LICENSE")
 Copy-Item -LiteralPath $noticePath -Destination (Join-Path $licenses "session-manager-plugin-NOTICE")
 & uv run --no-sync python (Join-Path $repositoryRoot "tools/generate_third_party_notices.py") `

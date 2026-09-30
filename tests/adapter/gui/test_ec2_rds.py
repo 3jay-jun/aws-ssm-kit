@@ -691,6 +691,24 @@ def test_rds_profile_change_refreshes_saved_sessions_and_shutdown_stops_owned_tu
     assert completed == [True]
 
 
+def test_rds_shutdown_waits_for_inflight_start_before_stopping_all() -> None:
+    from PySide6.QtTest import QTest
+
+    _app()
+    saved = FakeSavedSessions()
+    tunnels = FakeTunnels(saved)
+    page = RdsPage(saved, tunnels, FakeEc2(), ImmediateRunner(), lambda *_: None, lambda *_: True)
+    completed = []
+    page._starting = True
+    page.shutdown(lambda: completed.append(True))
+    assert tunnels.stop_all_calls == 0
+    assert not page.isEnabled()
+    page._starting = False
+    QTest.qWait(100)
+    assert tunnels.stop_all_calls == 1
+    assert completed == [True]
+
+
 def test_rds_clone_confirms_new_name_and_never_updates_original() -> None:
     _app()
     ec2 = FakeEc2()
@@ -787,7 +805,13 @@ def test_main_window_close_cleans_gui_tunnels_and_feature_pages_fit_1024x720() -
     window.rds_page.stop_operation("rds-operation")
     assert tunnels.stop_calls == ["rds-operation"]
 
+    window._tray = Mock()
     window.close()
+    app.processEvents()
+
+    assert tunnels.stop_all_calls == 0
+    assert window.isHidden()
+    window.request_quit()
     app.processEvents()
 
     assert tunnels.stop_all_calls == 1

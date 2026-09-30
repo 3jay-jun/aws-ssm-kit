@@ -32,7 +32,7 @@ QFrame#navigation QPushButton:hover { background: #e2e8f0; }
 QFrame#navigation QPushButton:checked { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
 QFrame#navigation QPushButton:focus { border-color: #2563eb; }
 QStackedWidget#workspace { background: #f7fafe; border: 0; }
-QWidget#dashboard, QWidget#ec2_page, QWidget#rds_page, QWidget#secrets_page, QWidget#s3_page, QWidget#logs_page, QWidget#secret_page_content, QWidget#s3_page_content { background: #f7fafe; }
+QWidget#dashboard, QWidget#ec2_page, QWidget#rds_page, QWidget#secrets_page, QWidget#s3_page, QWidget#logs_page, QWidget#secret_page_content, QWidget#s3_page_content, QWidget#s3_drives_page { background: #f7fafe; }
 QLabel#section_title, QLabel#feature_heading, QLabel#profile_editor_title, QLabel#managed_log_detail_title, QLabel#rds_editor_title, QLabel#s3_section_title { font-size: __SECTION_TITLE_SIZE__px; font-weight: 700; }
 QLabel#page_title { color: #172033; font-size: __PAGE_TITLE_SIZE__px; font-weight: 700; }
 QFrame#feature_card, QFrame#tunnel_summary, QFrame#content_card, QFrame#session_list_card, QFrame#editor_card, QFrame#catalog_card, QFrame#result_card, QFrame#managed_log_card, QFrame[role="card"] { background: #ffffff; border: 1px solid #dce3ed; border-radius: 14px; }
@@ -90,7 +90,7 @@ QLabel#notice { padding: 12px 14px; }
 QLabel#secret_notice, QLabel#managed_log_notice { padding: 12px 14px; }
 QLabel#codebox { min-height: 260px; padding: 17px; border-radius: 10px; background: #f1f5f9; color: #263344; font-family: 'Consolas'; font-size: 13px; }
 QLabel#s3_drop_zone { min-height: 28px; padding: 10px; border: 1px dashed #93a4ba; border-radius: 12px; background: #ffffff; color: #64748b; font-weight: 700; }
-QScrollArea#s3_browser_scroll { background: transparent; border: 0; }
+QScrollArea#connection_editor_scroll, QScrollArea#s3_browser_scroll { background: transparent; border: 0; }
 QTableWidget#s3_upload_sources::item { padding: 4px; }
 QTableWidget#s3_upload_sources QHeaderView::section { padding: 8px 4px; }
 QTableWidget#s3_objects QPushButton[action_button="true"], QPushButton#rds_session_more, QPushButton#ec2_more { min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; border: 0; background: transparent; padding: 0; }
@@ -115,7 +115,7 @@ QPushButton#s3_recent_path { text-align: left; border: 0; color: #52688f; }
 QWidget#s3_sources_header { background: transparent; }
 QProgressBar { min-height: 8px; max-height: 8px; border: 0; border-radius: 4px; background: #e3e9f1; }
 QProgressBar::chunk { border-radius: 4px; background: #2563eb; }
-QScrollArea#rds_editor_details_scroll, QWidget#rds_editor_details { border: 0; background: #ffffff; }
+QScrollArea#rds_editor_details_scroll, QWidget#rds_editor_details, QWidget#connection_editor_fields { border: 0; background: #ffffff; }
 QWidget#s3_breadcrumb { background: white; }
 QWidget#s3_breadcrumb QToolButton { min-height: 22px; padding: 0; border: 0; background: transparent; color: #2563eb; font-weight: 400; }
 QWidget#s3_breadcrumb QLabel { color: #2563eb; }
@@ -123,7 +123,7 @@ QDialog#profile_dialog { background: #ffffff; border: 1px solid #dce3ed; }
 QFrame#profile_dialog_header { background: #ffffff; border: 0; border-bottom: 1px solid #e2e8f0; }
 QFrame#profile_list_panel { min-width: 270px; max-width: 270px; background: #f8fafc; border: 0; border-right: 1px solid #e2e8f0; }
 QListWidget#profile_list { background: #f8fafc; }
-QListWidget#profile_list::item, QListWidget#rds_sessions::item, QListWidget#secret_catalog::item { padding: 0; border-radius: 0; }
+QListWidget#profile_list::item, QListWidget#rds_sessions::item, QListWidget#secret_catalog::item, QListWidget[compact="true"]::item { padding: 0; border-radius: 0; }
 QFrame#compact_list_row { background: transparent; border: 0; border-bottom: 1px solid #e2e8f0; }
 QFrame#compact_list_row[last_row="true"] { border-bottom: 0; }
 QLabel#compact_row_title { background: transparent; font-weight: 700; }
@@ -159,8 +159,8 @@ QMenu#ec2_target_menu::item:selected { background: #eff6ff; }
 """.replace("__CHECK_MARK__", gui_asset_path("common-check.svg"))
 
 APP_STYLE += """
-QWidget#rds_page QFrame#status_dot[active="false"] { background: #7b88a5; }
-QListWidget#rds_sessions QFrame#compact_list_row { padding: 4px 0; }
+QWidget#rds_page QFrame#status_dot[active="false"], QListWidget[compact="true"] QFrame#status_dot[active="false"] { background: #7b88a5; }
+QListWidget#rds_sessions QFrame#compact_list_row, QListWidget[compact="true"] QFrame#compact_list_row { padding: 4px 0; }
 QListWidget#rds_sessions QFrame#compact_list_row[connected="true"] { background: #edf7ff; }
 QLabel#rds_connection_label { font-weight: 700; background: transparent; }
 QFrame#rds_connection_card { border: 0; border-radius: 10px; background: #edf7ff; }

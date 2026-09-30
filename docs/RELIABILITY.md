@@ -31,6 +31,9 @@
 - EC2 external terminal sessions transfer ownership to the user after the helper reports the
   real Plugin PID; GUI shutdown does not terminate them. GUI-owned RDS tunnels remain subject
   to `stop_all`, which attempts every owned tunnel even when an earlier cleanup fails.
+  RDS port-forwarding Plugin processes use CREATE_NO_WINDOW with detached stdio.
+  Closing the GUI to tray keeps tunnels alive; explicit quit waits for in-flight starts
+  (cancelling pending MFA), then invokes the existing process/SSM cleanup for all profiles.
 - The external terminal helper lets the already-started Plugin receive console `Ctrl+C` but ignores
   that signal itself, so interrupting a remote foreground command does not close the EC2 shell.
 - Profile deletion queries both EC2 and RDS ownership sources before confirmation. Active deletion

@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
+from threading import RLock
 
 from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
@@ -150,14 +151,27 @@ class S3Service:
         self._sessions = sessions
         self._gateway = gateway
         self._activity_logs = activity_logs
+        self._bucket_catalog: dict[tuple[int, str], list[str]] = {}
+        self._bucket_lock = RLock()
+
+    def cached_buckets(self, profile: str | int | None = None) -> list[str] | None:
+        selected = self._profiles.resolve(profile)
+        with self._bucket_lock:
+            value = self._bucket_catalog.get((selected.require_id(), selected.region))
+            return list(value) if value is not None else None
 
     @logged_operation("s3", "list_buckets", completion=True)
-    def list_buckets(self, profile: str | int | None = None) -> list[str]:
-        """Return the optional catalog; direct Bucket input never depends on it."""
-
+    def list_buckets(self, profile: str | int | None = None, *, refresh: bool = True) -> list[str]:
+        """Share successful catalogs across views; explicit refresh still goes to AWS."""
         selected = self._profiles.resolve(profile)
-        credentials = self._sessions.require_credentials(selected.require_id())
-        return self._gateway.list_buckets(credentials, selected.region)
+        key = (selected.require_id(), selected.region)
+        with self._bucket_lock:
+            if not refresh and key in self._bucket_catalog:
+                return list(self._bucket_catalog[key])
+            credentials = self._sessions.require_credentials(selected.require_id())
+            value = self._gateway.list_buckets(credentials, selected.region)
+            self._bucket_catalog[key] = list(value)
+            return list(value)
 
     @logged_operation("s3", "list_objects", completion=False, target_parameter="bucket")
     def list_objects(

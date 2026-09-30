@@ -22,6 +22,7 @@ from aws_connect.domain.execution_log import (
     ExecutionPhase,
     ExecutionResult,
 )
+from aws_connect.domain.s3_drive import S3Drive
 from aws_connect.domain.s3_location import S3Location
 from aws_connect.domain.saved_secret import SavedSecret, SecretLookupMode
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
@@ -193,6 +194,23 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 )
 
 
+MIGRATIONS += (
+    (
+        12,
+        """
+    CREATE TABLE s3_drives (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL REFERENCES aws_profiles(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, bucket TEXT NOT NULL, prefix TEXT NOT NULL DEFAULT '',
+        letter TEXT NOT NULL, local_prefix TEXT NOT NULL DEFAULT '',
+        UNIQUE(profile_id, name)
+    );
+    CREATE INDEX s3_drives_by_profile ON s3_drives(profile_id, name);
+""",
+    ),
+)
+
+
 class SqliteProfileStore:
     """Short-transaction SQLite adapter with FK enforcement and busy timeout."""
 
@@ -212,6 +230,56 @@ class SqliteProfileStore:
     @property
     def path(self) -> Path:
         return self._path
+
+    def list_drives(self, profile_id: int | None = None) -> builtins.list[S3Drive]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM s3_drives WHERE (? IS NULL OR profile_id=?) ORDER BY name",
+                (profile_id, profile_id),
+            ).fetchall()
+        return [S3Drive(**dict(row)) for row in rows]
+
+    def get_drive(self, drive_id: int) -> S3Drive | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM s3_drives WHERE id=?", (drive_id,)).fetchone()
+        return S3Drive(**dict(row)) if row else None
+
+    def save_drive(self, drive: S3Drive) -> S3Drive:
+        values = (
+            drive.profile_id,
+            drive.name,
+            drive.bucket,
+            drive.prefix,
+            drive.letter,
+            drive.local_prefix,
+        )
+        try:
+            with self._connect() as connection:
+                if drive.id is None:
+                    cursor = connection.execute(
+                        "INSERT INTO s3_drives(profile_id,name,bucket,prefix,letter,local_prefix) "
+                        "VALUES(?,?,?,?,?,?)",
+                        values,
+                    )
+                    drive_id = int(cursor.lastrowid or 0)
+                else:
+                    cursor = connection.execute(
+                        "UPDATE s3_drives SET profile_id=?,name=?,bucket=?,prefix=?,letter=?,"
+                        "local_prefix=? WHERE id=? AND profile_id=?",
+                        (*values, drive.id, drive.profile_id),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ConfigurationError("drive.not_found", "Drive update target missing")
+                    drive_id = drive.id
+        except sqlite3.Error as error:
+            raise ConfigurationError(
+                "drive.storage.failed", "Check drive name and profile"
+            ) from error
+        return S3Drive(drive_id, *values)
+
+    def delete_drive(self, drive_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM s3_drives WHERE id=?", (drive_id,))
 
     @property
     def expected_schema_version(self) -> int:

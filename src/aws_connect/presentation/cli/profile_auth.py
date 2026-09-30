@@ -55,6 +55,17 @@ def operation_payload(result: OperationResult[AuthenticationStatus]) -> dict[str
 def render(payload: dict[str, Any], *, output: str) -> str:
     if output == "json":
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if "s3_drives" in payload:
+        return (
+            "\n".join(
+                f"{item['drive']['id']}: {item['drive']['name']} "
+                f"{item['drive']['letter']}: {item['state']} {item['message_code']}"
+                for item in payload["s3_drives"]
+            )
+            or "No saved S3 drives."
+        )
+    if "s3_drive" in payload:
+        return f"Saved S3 drive {payload['s3_drive']['id']} ({payload['s3_drive']['name']})."
     if "profiles" in payload:
         profiles = payload["profiles"]
         return (

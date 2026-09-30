@@ -98,3 +98,13 @@ workflow runs the complete check gate, builds and smoke-tests the production ZIP
 the ZIP plus its SHA-256 sidecar to the matching GitHub Release. It never downloads or substitutes
 a Session Manager Plugin; the exact reviewed LFS object in the triggering commit is the only
 accepted production input, for both main builds and tagged releases.
+# S3 drive runtime
+
+Run `scripts/setup-drive-runtime.ps1` before packaging. It downloads pinned rclone,
+verifies the archive checksum, and prepares the executable plus upstream notices.
+The build verifies the executable manifest hash and places rclone.exe beside the app.
+WinFsp Core is a separate machine installation requiring administrator consent;
+the application never installs a kernel driver silently. Install from
+[official WinFsp releases](https://github.com/winfsp/winfsp/releases/tag/v2.1).
+Missing rclone and missing WinFsp produce distinct actionable messages.
+

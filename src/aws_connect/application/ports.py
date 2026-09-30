@@ -122,6 +122,9 @@ class PluginDiagnostic:
     environment_ready: bool
 
 
+PORT_FORWARD_DOCUMENT = "AWS-StartPortForwardingSessionToRemoteHost"
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class PluginInvocation:
     session: StartedSsmSession

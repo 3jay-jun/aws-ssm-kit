@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
-    QWidgetAction,
 )
 
 from aws_connect.application.authenticated_operation import AuthenticatedOperationCoordinator
@@ -55,6 +54,7 @@ from aws_connect.domain.errors import ApplicationError, AwsPermissionError, Conf
 from aws_connect.domain.s3_location import S3Location
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner, MfaCodeProvider
 from aws_connect.presentation.gui.icons import gui_icon, set_button_icon
+from aws_connect.presentation.gui.menu_actions import menu_action
 from aws_connect.presentation.gui.page_layout import PAGE_SPACING, apply_page_layout, page_heading
 from aws_connect.presentation.gui.s3_search import S3SearchDialog
 from aws_connect.presentation.gui.table_selection import add_check_all_header
@@ -361,27 +361,7 @@ class S3Page(QWidget):
         button.clicked.connect(action)
         return button
 
-    def _menu_action(
-        self, menu: QMenu, text: str, icon: str, *, danger: bool = False
-    ) -> QWidgetAction:
-        action = QWidgetAction(menu)
-        action.setText(text)
-        button = QPushButton(text)
-        button.setObjectName("s3_menu_item")
-        button.setProperty("danger", danger)
-        set_button_icon(button, icon, color="#ff2638" if danger else None, size=18)
-        action.setDefaultWidget(button)
-        button.clicked.connect(action.trigger)
-        button.clicked.connect(menu.close)
-
-        def sync() -> None:
-            button.setEnabled(action.isEnabled())
-            button.setCheckable(action.isCheckable())
-            button.setChecked(action.isChecked())
-
-        action.changed.connect(sync)
-        menu.addAction(action)
-        return action
+    _menu_action = staticmethod(menu_action)
 
     def _danger_menu_action(self, menu: QMenu, text: str, callback: Callable[[], None]) -> None:
         self._menu_action(menu, text, "common-delete.svg", danger=True).triggered.connect(callback)

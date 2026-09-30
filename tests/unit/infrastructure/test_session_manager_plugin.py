@@ -1,10 +1,12 @@
 import json
 import subprocess
+from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
 import aws_connect.infrastructure.session_manager_plugin as plugin_module
-from aws_connect.application.ports import PluginInvocation, StartedSsmSession
+from aws_connect.application.ports import PORT_FORWARD_DOCUMENT, PluginInvocation, StartedSsmSession
 from aws_connect.infrastructure.masking import REDACTED
 from aws_connect.infrastructure.session_manager_plugin import (
     SessionManagerPlugin,
@@ -156,6 +158,36 @@ def test_external_launch_uses_distinct_terminal_process_boundary(tmp_path) -> No
     assert launched.wait() == external.exit_code
     assert received[0] == plugin.build_argv(invocation())
     assert not foreground.wait_calls
+
+
+def test_rds_uses_background_factory_and_keeps_managed_process_handle(tmp_path) -> None:
+    background = Mock(return_value=FakeProcess())
+    foreground, terminal = Mock(), Mock()
+    plugin = SessionManagerPlugin(
+        tmp_path / "session-manager-plugin.exe",
+        process_factory=foreground,
+        external_process_factory=terminal,
+        background_process_factory=background,
+    )
+    request = replace(invocation(), document_name=PORT_FORWARD_DOCUMENT)
+    process = plugin.launch(request)
+    background.assert_called_once_with(plugin.build_argv(request))
+    foreground.assert_not_called()
+    terminal.assert_not_called()
+    process.terminate()
+    assert background.return_value.terminated
+
+
+def test_background_plugin_has_no_console_or_inherited_stdio(monkeypatch) -> None:
+    popen = Mock(return_value=FakeProcess())
+    monkeypatch.setattr(plugin_module.subprocess, "Popen", popen)
+    plugin_module._start_background_process(["plugin.exe", "test-argument"])
+    options = popen.call_args.kwargs
+    assert options["shell"] is False
+    assert options["stdin"] == options["stdout"] == options["stderr"] == subprocess.DEVNULL
+    assert options["creationflags"] == (
+        subprocess.CREATE_NO_WINDOW if plugin_module.os.name == "nt" else 0
+    )
 
 
 def test_external_terminal_argv_is_shell_free_and_contains_no_session_secrets() -> None:

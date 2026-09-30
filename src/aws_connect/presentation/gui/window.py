@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
     QWidgetAction,
@@ -54,6 +55,7 @@ from aws_connect.application.profile_service import (
 from aws_connect.application.rds_endpoint_service import RdsEndpointService
 from aws_connect.application.rds_tunnel_operation import RdsTunnelOperationCoordinator
 from aws_connect.application.rds_tunnel_service import TunnelSessionService
+from aws_connect.application.s3_drive_service import S3DriveService
 from aws_connect.application.s3_service import S3LocationService, S3Service
 from aws_connect.application.secrets_service import SecretsService
 from aws_connect.application.settings_service import DiagnosticLogService, SettingsService
@@ -85,6 +87,7 @@ from aws_connect.presentation.gui.list_rows import (
 from aws_connect.presentation.gui.logs import LogsSettingsPage
 from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.s3 import S3Page
+from aws_connect.presentation.gui.s3_drives import S3DrivesPage
 from aws_connect.presentation.gui.secrets import SecretsPage
 from aws_connect.presentation.gui.styles import APP_STYLE, NAVIGATION_WIDTH
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
@@ -545,6 +548,7 @@ class MainWindow(QMainWindow):
         *,
         connection_lifecycle: ProfileConnectionLifecycleService,
         dashboard: DashboardService | None = None,
+        s3_drives: S3DriveService | None = None,
         authenticated_operations: AuthenticatedOperationCoordinator | None = None,
         task_runner: GuiTaskRunner | None = None,
         mfa_code_provider: MfaCodeProvider | None = None,
@@ -564,6 +568,8 @@ class MainWindow(QMainWindow):
         self._secrets = secrets
         self._s3_locations = s3_locations
         self._s3 = s3
+        self._s3_drives = s3_drives
+        self._tray: QSystemTrayIcon | None = None
         self._settings = settings
         self._activity_logs = activity_logs
         self._diagnostic_logs = diagnostic_logs
@@ -589,6 +595,21 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 720)
         self.resize(1424, 894)
         self._build_ui()
+        if s3_drives is not None and QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray = QSystemTrayIcon(gui_icon("logo.ico"), self)
+            self._tray.setToolTip(APPLICATION_NAME)
+            menu = QMenu(self)
+            menu.addAction("AWS-SSM-KIT 열기", self._show_from_tray)
+            menu.addAction("완전 종료", self.request_quit)
+            self._tray.setContextMenu(menu)
+            self._tray.activated.connect(
+                lambda reason: (
+                    self._show_from_tray()
+                    if reason == QSystemTrayIcon.ActivationReason.DoubleClick
+                    else None
+                )
+            )
+            self._tray.show()
         self.pages.currentChanged.connect(
             lambda index: self._load_dashboard_recent() if index == 0 else None
         )
@@ -620,6 +641,7 @@ class MainWindow(QMainWindow):
         self.secrets_page: SecretsPage | None = None
         self.s3_page: S3Page | None = None
         self.logs_page: LogsSettingsPage | None = None
+        self.s3_drives_page: S3DrivesPage | None = None
         if self._ec2 is not None:
             self.ec2_page = Ec2Page(
                 self._ec2,
@@ -693,6 +715,16 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.logs_page.refresh)
         else:
             self.pages.addWidget(self._placeholder("실행 로그"))
+        if self._s3_drives is not None:
+            self.s3_drives_page = S3DrivesPage(
+                self._s3_drives,
+                self._s3,
+                self._runner,
+                self._authenticated_operations,
+                self._mfa_code_provider,
+            )
+            self.s3_drives_page.error_raised.connect(self._show_error)
+            self.pages.addWidget(self.s3_drives_page)
         body.addWidget(self.pages, 1)
         app_layout.addLayout(body, 1)
         root_layout.addWidget(app_shell, 1)
@@ -820,7 +852,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(label)
         group = QButtonGroup(navigation)
         group.setExclusive(True)
-        entries = (
+        entries: tuple[tuple[str, str], ...] = (
             ("tab-dashboard.svg", "대시보드"),
             ("tab-ec2.svg", "EC2 접속"),
             ("tab-rds.svg", "RDS 터널"),
@@ -828,6 +860,8 @@ class MainWindow(QMainWindow):
             ("tab-s3.svg", "S3 파일"),
             ("tab-log.svg", "실행 로그"),
         )
+        if self._s3_drives is not None:
+            entries += (("tab-s3.svg", "S3 마운트"),)
         for index, (icon_filename, title) in enumerate(entries):
             button = QPushButton(title)
             button.setObjectName(f"nav_{index}")
@@ -879,6 +913,8 @@ class MainWindow(QMainWindow):
             next((item for item in profiles if item.is_default), None),
         )
         self.profile_dialog.set_profiles(profiles, selected.id if selected else None)
+        if self.s3_drives_page is not None:
+            self.s3_drives_page.set_profile(selected.id if selected else None)
         if selected is None:
             self._active_profile_id = None
             self._apply_header(empty_authentication_header())
@@ -1103,6 +1139,8 @@ class MainWindow(QMainWindow):
             self.secrets_page.set_profile(profile_id)
         if self.s3_page is not None:
             self.s3_page.set_profile(profile_id)
+        if self.s3_drives_page is not None:
+            self.s3_drives_page.set_profile(profile_id)
 
     def _prefill_rds_endpoint(self, host: str, port: int) -> None:
         if self.rds_page is None:
@@ -1189,7 +1227,7 @@ class MainWindow(QMainWindow):
         if self._activity_logs is None:
             return
         activity_logs = self._activity_logs
-        targets = ("dashboard", "ec2", "rds", "secrets", "s3", "logs")
+        targets = ("dashboard", "ec2", "rds", "secrets", "s3", "logs", "s3_drives")
         current = self.pages.currentIndex()
         target = targets[current] if 0 <= current < len(targets) else "window"
 
@@ -1231,12 +1269,32 @@ class MainWindow(QMainWindow):
         if self._closing:
             event.ignore()
             return
-        self._closing = True
         event.ignore()
+        if self._tray is not None:
+            self.hide()
+            return
+        self.request_quit()
+
+    def _show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def request_quit(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
 
         def finish() -> None:
             self._allow_close = True
+            if self._tray is not None:
+                self._tray.hide()
             QTimer.singleShot(0, self.close)
+
+        def failed(error: ApplicationError) -> None:
+            self._closing = False
+            self._show_from_tray()
+            self._show_error(error)
 
         def stop_tunnels() -> None:
             if self.rds_page is None:
@@ -1244,10 +1302,16 @@ class MainWindow(QMainWindow):
             else:
                 self.rds_page.shutdown(finish)
 
-        if self.s3_page is None:
-            stop_tunnels()
+        def stop_transfers() -> None:
+            if self.s3_page is None:
+                stop_tunnels()
+            else:
+                self.s3_page.shutdown(stop_tunnels)
+
+        if self.s3_drives_page is None:
+            stop_transfers()
         else:
-            self.s3_page.shutdown(stop_tunnels)
+            self.s3_drives_page.shutdown(stop_transfers, failed)
 
 
 def _confirm_profile_delete(parent: QWidget, _profile_id: int) -> bool:
@@ -1277,6 +1341,7 @@ def _confirm_active_profile_delete(parent: QWidget, active: ProfileConnections) 
         "활성 연결 종료 후 프로필 삭제",
         (
             f"EC2 세션 {active.ec2_count}개와 RDS 터널 {active.rds_count}개가 실행 중입니다.\n"
+            f"S3 마운트 {active.s3_drive_count}개도 안전하게 정리합니다.\n"
             "모든 연결을 종료한 뒤 프로필을 삭제할까요?"
         ),
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,

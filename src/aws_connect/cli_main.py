@@ -47,6 +47,7 @@ from aws_connect.presentation.cli.s3 import (
     upload_plan_payload,
     upload_result_payload,
 )
+from aws_connect.presentation.cli.s3_drives import add_drive_parser, execute_drive
 from aws_connect.presentation.cli.secrets import secret_payload, secrets_payload
 from aws_connect.presentation.cli.system_info import render_doctor
 
@@ -251,6 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--overwrite", action="store_true", help="Allow confirmed replacement of existing objects"
     )
     _output(upload)
+    add_drive_parser(subparsers)
     return parser
 
 
@@ -363,6 +365,23 @@ def _record_cli_event(
 
 
 def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, Any]:
+    if args.command == "s3-drive":
+        drives = app.s3_drives
+        if drives is None:
+            raise RuntimeError("S3 drive service is not configured")
+        return execute_drive(
+            args,
+            drives,
+            lambda selector: app.profiles.resolve(selector).require_id(),
+            lambda drive_id: _run_authenticated_long(
+                app,
+                drives.get(drive_id).profile_id,
+                lambda context: drives.connect(drive_id, context),
+                getattr(args, "mfa_stdin", False),
+            ),
+            input,
+            print,
+        )
     if args.command == "dashboard":
         from dataclasses import asdict
 

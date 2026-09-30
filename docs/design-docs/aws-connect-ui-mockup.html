@@ -161,6 +161,7 @@
           <button data-page="rds"><span class="ico">⇄</span><span>RDS 터널</span></button>
           <button data-page="secrets"><span class="ico">◈</span><span>Secrets</span></button>
           <button data-page="s3"><span class="ico">↑</span><span>S3 파일</span></button>
+          <button data-page="s3-drives"><span class="ico">▣</span><span>S3 마운트</span></button>
           <button data-page="logs"><span class="ico">≡</span><span>실행 로그</span></button>
         </nav>
       </aside>
@@ -177,6 +178,35 @@
           </tbody></table></div>
           <div class="notice" style="margin-top:18px;border:1px solid #d7e5f7;background:#f9fcff"><span style="color:#00a166">✔</span> 선택한 인스턴스: i-example-web · example-web · 마지막 연결 성공 (오늘 10:24)</div>
         </section>
+
+        <section class="page" data-panel="s3-drives">
+  <div class="page-head"><div><h1>S3 마운트</h1><p class="sub">S3 연결을 저장하고 Windows 탐색기에서 사용합니다.</p></div></div>
+  <div class="split" style="grid-template-columns:280px minmax(0,1fr);gap:16px">
+    <div class="card session-list"><button class="btn primary">+ 새 연결</button><input aria-label="저장된 마운트 검색" placeholder="이름 또는 Bucket 검색">
+      <div class="session selected"><strong>프로젝트 파일</strong><button class="btn" title="이름 수정 · 마운트 복제 · 마운트 삭제" style="float:right">⋮</button><div class="sub">s3://example-assets/brand/project/<br>S:&#92;Brand · 연결되지 않음</div></div>
+      <div class="session"><strong>디자인 자료</strong><button class="btn" title="마운트 작업" style="float:right">⋮</button><div class="sub">s3://example-design/<br>T:&#92; · 연결됨</div></div>
+    </div>
+    <div class="card" style="padding:20px;display:flex;flex-direction:column;gap:16px;min-width:0">
+      <h2>프로젝트 파일</h2><p class="sub">연결되지 않음</p>
+      <div style="display:grid;gap:14px;overflow:auto">
+        <div class="field"><label>마운트 이름</label><input value="프로젝트 파일"></div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px">
+          <div style="display:grid;gap:14px"><h2>S3 위치</h2>
+            <div class="field"><label>S3 Bucket</label><div style="display:flex;gap:8px"><select style="flex:1"><option>example-assets</option></select><button class="btn" title="Bucket 목록 갱신">↻</button></div></div>
+            <div class="field"><label>S3 Prefix · 선택</label><input value="brand/project"></div>
+          </div>
+          <div style="display:grid;gap:14px"><h2>Windows 위치</h2>
+            <div class="field"><label>드라이브 문자</label><select><option>S:</option></select></div>
+            <div class="field"><label>드라이브 내 Prefix · 선택</label><input value="Brand"></div>
+          </div>
+        </div>
+        <p class="sub">S: · 사용 가능</p><div class="notice">s3://example-assets/brand/project/ → S:&#92;Brand <span style="float:right">연결되지 않음</span></div>
+        <p class="sub">Bucket 목록을 조회할 수 없어도 이름을 직접 입력할 수 있습니다.</p>
+      </div>
+      <div class="actions" style="margin-top:auto"><button class="btn" disabled>탐색기에서 열기</button><span style="flex:1"></span><button class="btn" title="저장" disabled>▣</button><button class="btn primary" title="연결">▶</button><button class="btn" title="연결 해제" disabled>■</button></div>
+    </div>
+  </div><p class="sub" style="margin-top:16px">창을 닫아도 연결은 유지됩니다. 트레이에서 완전 종료하면 안전하게 해제합니다.</p>
+</section>
 
         <section class="page" data-panel="rds">
           <div class="page-head"><div><h1>RDS 터널</h1><p class="sub">PuTTY 세션처럼 연결 정보를 저장하고 다시 사용할 수 있습니다.</p></div></div>

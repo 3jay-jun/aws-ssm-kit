@@ -19,7 +19,12 @@ from typing import Protocol
 from uuid import uuid4
 
 from aws_connect import APPLICATION_NAME
-from aws_connect.application.ports import PluginDiagnostic, PluginInvocation, SessionProcess
+from aws_connect.application.ports import (
+    PORT_FORWARD_DOCUMENT,
+    PluginDiagnostic,
+    PluginInvocation,
+    SessionProcess,
+)
 from aws_connect.domain.errors import PluginExecutionError
 from aws_connect.infrastructure.data_protection import protect_current_user_bytes
 from aws_connect.infrastructure.masking import mask
@@ -144,12 +149,16 @@ class SessionManagerPlugin:
         *,
         process_factory: ProcessFactory | None = None,
         external_process_factory: ProcessFactory | None = None,
+        background_process_factory: ProcessFactory | None = None,
         version_reader: VersionReader | None = None,
         windows_environment: bool | None = None,
     ) -> None:
         self._path = path.resolve()
         self._process_factory = process_factory or _start_process
         self._external_process_factory = external_process_factory or _start_terminal_process
+        self._background_process_factory = (
+            background_process_factory or process_factory or _start_background_process
+        )
         self._version_reader = version_reader or _read_version
         self._windows_environment = (
             os.name == "nt" if windows_environment is None else windows_environment
@@ -196,6 +205,8 @@ class SessionManagerPlugin:
         argv = self.build_argv(invocation)
         try:
             factory = self._external_process_factory if external_terminal else self._process_factory
+            if not external_terminal and invocation.document_name == PORT_FORWARD_DOCUMENT:
+                factory = self._background_process_factory
             return _SessionProcessAdapter(factory(argv))
         except OSError as error:
             raise PluginExecutionError(
@@ -255,6 +266,18 @@ class SessionManagerPlugin:
 def _start_process(argv: Sequence[str]) -> PluginProcess:
     # Inherited stdio deliberately keeps the interactive session in the current console.
     return subprocess.Popen(list(argv), shell=False)  # noqa: S603  # nosec B603
+
+
+def _start_background_process(argv: Sequence[str]) -> PluginProcess:
+    """Keep port forwarding owned by the app without creating a Windows console."""
+    return subprocess.Popen(  # noqa: S603  # nosec B603
+        list(argv),
+        shell=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
 
 
 def _start_terminal_process(argv: Sequence[str]) -> PluginProcess:

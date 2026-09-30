@@ -169,3 +169,16 @@ CREATE TABLE execution_logs (
 ALTER TABLE aws_profiles
         ADD COLUMN session_duration_hours INTEGER NOT NULL DEFAULT 12;
 ```
+
+## Migration 12
+
+```sql
+CREATE TABLE s3_drives (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER NOT NULL REFERENCES aws_profiles(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, bucket TEXT NOT NULL, prefix TEXT NOT NULL DEFAULT '',
+        letter TEXT NOT NULL, local_prefix TEXT NOT NULL DEFAULT '',
+        UNIQUE(profile_id, name)
+    );
+    CREATE INDEX s3_drives_by_profile ON s3_drives(profile_id, name);
+```

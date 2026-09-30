@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -32,6 +33,7 @@ def _services() -> tuple[S3LocationService, S3Service, Mock, Mock]:
         b"a",
         b"b",
     )
+
     profiles = Mock()
     profiles.resolve.return_value = profile
     sessions = Mock()
@@ -49,6 +51,23 @@ def _services() -> tuple[S3LocationService, S3Service, Mock, Mock]:
         store,
         gateway,
     )
+
+
+def test_bucket_catalog_reuse_refresh_and_profile_isolation() -> None:
+    _, service, _, gateway = _services()
+    assert service.cached_buckets(7) is None
+    first = service.list_buckets(7)
+    first.clear()
+    assert service.list_buckets(7, refresh=False) == ["alpha-bucket", "test-upload-bucket"]
+    assert gateway.list_buckets.call_count == 1
+    gateway.list_buckets.return_value = ["updated-bucket"]
+    assert service.list_buckets(7) == ["updated-bucket"]
+    gateway.list_buckets.side_effect = ConfigurationError("aws.access_denied", "denied")
+    with pytest.raises(ConfigurationError):
+        service.list_buckets(7)
+    assert service.cached_buckets(7) == ["updated-bucket"]
+    service._profiles.resolve.return_value = replace(service._profiles.resolve.return_value, id=8)
+    assert service.cached_buckets(8) is None
 
 
 def test_saved_location_crud_delegates_to_profile_scoped_store() -> None:

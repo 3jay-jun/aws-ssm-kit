@@ -65,5 +65,12 @@ def render_doctor(service: DoctorService, *, output: str) -> str:
             f"[{diagnostics.profile.session_state}]",
             f"Region: {diagnostics.profile.region or 'not configured'} "
             f"[{diagnostics.profile.region_access}]",
+            (
+                "S3 drives: "
+                f"rclone={'available' if diagnostics.s3_drive.rclone_available else 'missing'}, "
+                f"WinFsp={'available' if diagnostics.s3_drive.winfsp_available else 'missing'}"
+                if diagnostics.s3_drive
+                else "S3 drives: not configured"
+            ),
         )
     )

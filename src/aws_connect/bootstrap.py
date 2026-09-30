@@ -23,6 +23,7 @@ from aws_connect.application.profile_service import ProfileService
 from aws_connect.application.rds_endpoint_service import RdsEndpointService
 from aws_connect.application.rds_tunnel_operation import RdsTunnelOperationCoordinator
 from aws_connect.application.rds_tunnel_service import RdsTunnelService, TunnelSessionService
+from aws_connect.application.s3_drive_service import S3DriveService
 from aws_connect.application.s3_service import S3LocationService, S3Service
 from aws_connect.application.secrets_service import SecretsService
 from aws_connect.application.settings_service import DiagnosticLogService, SettingsService
@@ -54,6 +55,7 @@ from aws_connect.infrastructure.managed_logs import (
     StructuredActivityEventWriter,
 )
 from aws_connect.infrastructure.private_file_access import WindowsPrivateFileAccess
+from aws_connect.infrastructure.rclone_drive_mount import RcloneDriveMount
 from aws_connect.infrastructure.runtime_diagnostics import LocalRuntimeDiagnosticProbe
 from aws_connect.infrastructure.session_manager_plugin import SessionManagerPlugin
 from aws_connect.infrastructure.sqlite_profile_store import SqliteProfileStore
@@ -80,6 +82,7 @@ class ApplicationServices:
     dashboard: DashboardService | None = None
     authenticated_operations: AuthenticatedOperationCoordinator | None = None
     connection_lifecycle: ProfileConnectionLifecycleService | None = None
+    s3_drives: S3DriveService | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +143,13 @@ def build_doctor_service(data_directory: Path | None = None) -> DoctorService:
     return _build_local_foundation(data_directory).doctor
 
 
+def drive_executable_path() -> Path:
+    root = application_directory()
+    return (
+        root / "rclone.exe" if getattr(sys, "frozen", False) else root / "vendor/rclone/rclone.exe"
+    )
+
+
 def _build_local_foundation(data_directory: Path | None = None) -> _LocalFoundation:
     paths = runtime_paths(data_directory)
     private_file_access = WindowsPrivateFileAccess()
@@ -167,7 +177,16 @@ def _build_local_foundation(data_directory: Path | None = None) -> _LocalFoundat
     )
     settings.bind_execution_log(activity_logs)
     legacy_import = LegacyIniImportService(store, store, protector)
-    doctor = DoctorService(LocalRuntimeDiagnosticProbe(store, protector, plugin, settings, clock))
+    doctor = DoctorService(
+        LocalRuntimeDiagnosticProbe(
+            store,
+            protector,
+            plugin,
+            settings,
+            clock,
+            drive_executable_path(),
+        )
+    )
     return _LocalFoundation(
         paths,
         store,
@@ -226,6 +245,17 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
     )
     s3_locations = S3LocationService(profiles, store)
     s3 = S3Service(profiles, sessions, s3_gateway, activity_logs=local.activity_logs)
+    drive_executable = drive_executable_path()
+    s3_drives = S3DriveService(
+        profiles,
+        sessions,
+        store,
+        RcloneDriveMount(
+            drive_executable,
+            local.paths.data / "s3-drive-cache",
+            WindowsPrivateFileAccess(),
+        ),
+    )
     tunnel_sessions = TunnelSessionService(profiles, store)
     rds_endpoints = RdsEndpointService(profiles, sessions, Boto3RdsEndpointGateway())
     tunnel_service = RdsTunnelService(
@@ -260,6 +290,7 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
         secrets=secrets,
         s3_locations=s3_locations,
         s3=s3,
+        s3_drives=s3_drives,
         activity_logs=local.activity_logs,
         dashboard=DashboardService(
             profiles,
@@ -271,5 +302,7 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
             secrets_gateway,
             s3_gateway,
         ),
-        connection_lifecycle=ProfileConnectionLifecycleService(profiles, store, ec2, rds_tunnels),
+        connection_lifecycle=ProfileConnectionLifecycleService(
+            profiles, store, ec2, rds_tunnels, s3_drives
+        ),
     )
