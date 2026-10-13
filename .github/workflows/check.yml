@@ -35,6 +35,12 @@ jobs:
       - name: Bootstrap
         shell: pwsh
         run: ./scripts/bootstrap.ps1
+      - name: Prepare offline mount runtimes and installer compiler
+        shell: pwsh
+        run: |
+          ./scripts/setup-drive-runtime.ps1
+          ./scripts/setup-winfsp-runtime.ps1
+          ./scripts/setup-installer-tools.ps1
       - name: Create explicitly marked smoke-test vendor
         shell: pwsh
         run: ./scripts/create-test-vendor.ps1 -OutputDirectory ./build/test-vendor
@@ -51,6 +57,11 @@ jobs:
       - name: Package smoke
         shell: pwsh
         run: ./scripts/test-package.ps1 -ZipPath '${{ steps.package.outputs.zip }}' -AllowTestVendorPackage
+      - name: Build TEST-ONLY Setup
+        shell: pwsh
+        run: |
+          $output = @(./scripts/build-installer.ps1 -PackageDirectory ./build/package/aws-connect)
+          ./scripts/test-installer.ps1 -SetupPath ([string]$output[-1])
       - name: Upload TEST-ONLY package evidence
         uses: actions/upload-artifact@v4
         with:
@@ -58,6 +69,8 @@ jobs:
           path: |
             ${{ steps.package.outputs.zip }}
             ${{ steps.package.outputs.zip }}.sha256
+            dist/*TEST-ONLY*Setup.exe
+            dist/*TEST-ONLY*Setup.exe.sha256
           if-no-files-found: error
           retention-days: 3
       - name: Upload package build diagnostics

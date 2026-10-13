@@ -33,6 +33,7 @@ from aws_connect.application.system_info import (
     StaticSystemInfoService,
     SystemInfoService,
 )
+from aws_connect.application.winfsp_runtime import WinFspRuntimeService
 from aws_connect.infrastructure.aws_identity_gateway import Boto3IdentityGateway
 from aws_connect.infrastructure.aws_rds_gateway import Boto3RdsEndpointGateway
 from aws_connect.infrastructure.aws_remote_secret_gateway import (
@@ -60,6 +61,7 @@ from aws_connect.infrastructure.rclone_drive_mount import RcloneDriveMount
 from aws_connect.infrastructure.runtime_diagnostics import LocalRuntimeDiagnosticProbe
 from aws_connect.infrastructure.session_manager_plugin import SessionManagerPlugin
 from aws_connect.infrastructure.sqlite_profile_store import SqliteProfileStore
+from aws_connect.infrastructure.winfsp_installer import WINFSP_ARTIFACT, WindowsWinFspInstaller
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,7 @@ class ApplicationServices:
     authenticated_operations: AuthenticatedOperationCoordinator | None = None
     connection_lifecycle: ProfileConnectionLifecycleService | None = None
     s3_drives: S3DriveService | None = None
+    winfsp_runtime: WinFspRuntimeService | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,16 @@ def build_system_info_service() -> SystemInfoService:
     """Compose the application service used by both presentation adapters."""
 
     return StaticSystemInfoService()
+
+
+def build_winfsp_runtime_service() -> WinFspRuntimeService:
+    """Compose only runtime adapters: never open profile DB, DPAPI, or AWS sessions."""
+    return WinFspRuntimeService(
+        WindowsWinFspInstaller(
+            application_directory() / "prerequisites" / WINFSP_ARTIFACT,
+            user_data_directory() / "runtime",
+        )
+    )
 
 
 def user_data_directory() -> Path:
@@ -187,6 +200,7 @@ def _build_local_foundation(data_directory: Path | None = None) -> _LocalFoundat
             settings,
             clock,
             drive_executable_path(),
+            build_winfsp_runtime_service(),
         )
     )
     return _LocalFoundation(
@@ -300,6 +314,7 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
         s3_locations=s3_locations,
         s3=s3,
         s3_drives=s3_drives,
+        winfsp_runtime=build_winfsp_runtime_service(),
         activity_logs=local.activity_logs,
         dashboard=DashboardService(
             profiles,

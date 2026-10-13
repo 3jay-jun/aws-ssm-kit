@@ -69,6 +69,7 @@ from aws_connect.application.s3_drive_service import S3DriveService
 from aws_connect.application.s3_service import S3LocationService, S3Service
 from aws_connect.application.secrets_service import SecretsService
 from aws_connect.application.settings_service import DiagnosticLogService, SettingsService
+from aws_connect.application.winfsp_runtime import WinFspRuntimeService
 from aws_connect.domain.aws_profile import (
     DEFAULT_SESSION_DURATION_HOURS,
     SESSION_DURATION_HOURS,
@@ -680,6 +681,7 @@ class MainWindow(QMainWindow):
         connection_lifecycle: ProfileConnectionLifecycleService,
         dashboard: DashboardService | None = None,
         s3_drives: S3DriveService | None = None,
+        winfsp_runtime: WinFspRuntimeService | None = None,
         authenticated_operations: AuthenticatedOperationCoordinator | None = None,
         task_runner: GuiTaskRunner | None = None,
         mfa_code_provider: MfaCodeProvider | None = None,
@@ -700,6 +702,7 @@ class MainWindow(QMainWindow):
         self._s3_locations = s3_locations
         self._s3 = s3
         self._s3_drives = s3_drives
+        self._winfsp_runtime = winfsp_runtime
         self._tray: QSystemTrayIcon | None = None
         self._settings = settings
         self._activity_logs = activity_logs
@@ -837,7 +840,11 @@ class MainWindow(QMainWindow):
             and self._diagnostic_logs is not None
         ):
             self.logs_page = LogsSettingsPage(
-                self._settings, self._activity_logs, self._diagnostic_logs, self._runner
+                self._settings,
+                self._activity_logs,
+                self._diagnostic_logs,
+                self._runner,
+                runtime=self._winfsp_runtime,
             )
             self.logs_page.error_raised.connect(self._show_error)
             self.logs_page.notice_raised.connect(self._notify)
@@ -852,6 +859,7 @@ class MainWindow(QMainWindow):
                 self._runner,
                 self._authenticated_operations,
                 self._mfa_code_provider,
+                runtime=self._winfsp_runtime,
             )
             self.s3_drives_page.error_raised.connect(self._show_error)
             self.pages.addWidget(self.s3_drives_page)
@@ -1449,6 +1457,12 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def request_quit(self) -> None:
+        if any(
+            page is not None and hasattr(page, "runtime_setup") and page.runtime_setup._busy
+            for page in (self.s3_drives_page, self.logs_page)
+        ):
+            self._notify("WinFsp 설치를 관측 중입니다. 설치 완료 후 완전 종료해 주세요.")
+            return
         if self._closing:
             return
         self._closing = True

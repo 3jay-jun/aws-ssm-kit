@@ -104,3 +104,14 @@
 - The common sanitizer applies before both sinks and after SQLite reads. Metadata is bounded to 8 KiB input and allowlists profile/region/instance/bucket/key/file size/ports/retry data; the shared sensitive-key policy still redacts key fields.
 - AWS after-call observers retain only service, action and Request ID, never response payloads. Only explicit permission codes produce PERMISSION; network/timeouts remain separate. Required IAM actions use API-to-permission mapping where names differ.
 - GUI detail copy uses only the sanitized DTO projection. Python diagnostic tracebacks remain available with central masking applied to formatted exception/stack text. No raw traceback is placed in SQLite.
+
+## WinFsp runtime installation (2026-10-13)
+
+Runtime commands accept no arbitrary executable, MSI path or download URL. Only the bundled payload
+matching the compiled runtime metadata is installed after hash/signer verification. Paths passed to
+PowerShell are stdin data; scripts are fixed and UTF-8 encoded. MSI parameters use Windows argument
+quoting. Verification holds a read handle denying payload replacement until Installer finishes.
+GUI and CLI call the same service, and only Windows Installer receives runas elevation. Runtime CLI
+bypasses profile/AWS/DPAPI initialization. No credentials or real resource IDs enter build artifacts,
+installation diagnostics or release evidence. Removing the app does not remove shared drivers or
+user data. App/Setup code signing is outside this change; do not label them signed releases.

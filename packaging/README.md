@@ -80,31 +80,97 @@ start GUI/CLI, and register/connect the first approved non-production profile wi
 - Pull requests run `.github/workflows/check.yml`: check/test and the existing
   explicitly marked TEST-ONLY packaging smoke job. These packages are test evidence only.
 - Pushes to `main` run `.github/workflows/release.yml`: check/test, production build with
-  `./vendor/session-manager-plugin`, package smoke, then upload the ZIP and `.sha256` as
+  `./vendor/session-manager-plugin`, package smoke, then upload ZIP/Setup and checksums as
   an Actions artifact. No GitHub Release is created for `main`.
-- `v*` tag pushes run the same production pipeline and publish the existing GitHub Release.
+- `v*` tag pushes build candidates; manual VM verification and the protected publication workflow are required for GitHub Release publication.
 
 Download the latest successful `main` build from **Actions > release > latest successful
 main push run > Artifacts**. Select
-`aws-connect-<version>-windows-x64-main-<run_number>-<run_attempt>` (retained for 30 days).
-The artifact contains `aws-connect-<version>-windows-x64.zip` and
-`aws-connect-<version>-windows-x64.zip.sha256`; run identifiers affect only the artifact
+`aws-connect-candidate-<run_id>` (retained for 30 days).
+The artifact contains the ZIP, Setup, their `.sha256` sidecars and `release-candidate.json`;
+run identifiers affect only the artifact
 name, not the filenames produced by `build-package.ps1`. Failed checks or package smoke
 prevent upload/publication. Production builds never opt into TEST-ONLY vendor inputs.
 
 The approved `vendor/session-manager-plugin` input is versioned with Git LFS. A `vX.Y.Z` tag
 whose version exactly matches `pyproject.toml` triggers `.github/workflows/release.yml`. The
-workflow runs the complete check gate, builds and smoke-tests the production ZIP, and publishes
-the ZIP plus its SHA-256 sidecar to the matching GitHub Release. It never downloads or substitutes
+workflow runs the complete check gate and builds ZIP/Setup candidates. Publication requires
+the separate protected verification workflow below. It never downloads or substitutes
 a Session Manager Plugin; the exact reviewed LFS object in the triggering commit is the only
 accepted production input, for both main builds and tagged releases.
-# S3 drive runtime
+## Integrated installer and Portable ZIP
 
-Run `scripts/setup-drive-runtime.ps1` before packaging. It downloads pinned rclone,
-verifies the archive checksum, and prepares the executable plus upstream notices.
-The build verifies the executable manifest hash and places rclone.exe beside the app.
-WinFsp Core is a separate machine installation requiring administrator consent;
-the application never installs a kernel driver silently. Install from
-[official WinFsp releases](https://github.com/winfsp/winfsp/releases/tag/v2.1).
-Missing rclone and missing WinFsp produce distinct actionable messages.
+Both formats use the same verified application folder. `rclone.exe` is bundled;
+`prerequisites/` contains the pinned, signed WinFsp MSI, metadata and license.
 
+```powershell
+./scripts/setup-drive-runtime.ps1
+./scripts/setup-winfsp-runtime.ps1
+./scripts/setup-installer-tools.ps1
+./scripts/build-package.ps1 -VendorDirectory ./vendor/session-manager-plugin
+./scripts/build-installer.ps1 -PackageDirectory ./build/package/aws-connect
+./scripts/test-package.ps1 -ZipPath ./dist/aws-connect-1.0.2-windows-x64.zip -ExpectedWinFspState ready
+./scripts/test-installer.ps1 -SetupPath ./dist/aws-connect-1.0.2-windows-x64-Setup.exe
+```
+
+Use the version from VERSION.txt in artifact names. Setup installs for the whole PC,
+lets users choose C/D and other folders, creates Start Menu and optional desktop shortcuts,
+and offers WinFsp setup. Skipping/failing WinFsp still completes app installation.
+There is no automatic elevated GUI launch. ZIP users install WinFsp from the S3 mount
+or diagnostics controls. The application remains unelevated; only msiexec uses UAC.
+Existing WinFsp replacements require explicit confirmation and closed mounts.
+Neither uninstall nor upgrade deletes per-user profiles, DPAPI entropy, logs or VFS cache;
+shared WinFsp is retained. Quit from the tray and close user-owned EC2 terminals before
+upgrading/uninstalling. ZIP upgrades should extract into a new folder.
+
+Offline runtime commands bypass profile/AWS/DB initialization:
+
+```powershell
+aws_connect_cli.exe runtime winfsp inspect --output json
+aws_connect_cli.exe runtime winfsp install --output json
+# Only after confirming replacement of the shared driver:
+aws_connect_cli.exe runtime winfsp install --confirm-replace --output json
+```
+
+The original doctor `status`/`ready` contract is retained. `core_ready` reports the base
+application; `features.s3_mount` and `s3_drive.winfsp_state/version` report mount readiness.
+Missing WinFsp permits other features. Reboot-required installations block mount use until
+boot identity changes. No automatic reboot or forced MSI termination is performed. GUI
+warns after 15 minutes and continues observing the same operation; CLI waits for its final
+result so payload locks are retained. Complete quit is deferred while GUI observes installation.
+
+Inno Setup 6.7.3 is checksum/signature pinned; review its commercial usage guidance at
+[Inno Setup](https://jrsoftware.org/isinfo.php). The app/Setup itself is currently unsigned;
+the upstream WinFsp MSI signature is verified before execution.
+
+### Candidates and verified publication
+
+`release.yml` creates ZIP/Setup candidates and checksums for main/tag runs. It no longer
+publishes on tag push. CI builds Inno tooling and prepares both offline runtimes.
+`publish-verified.yml` requires a successful tagged candidate run and manual Windows 10/11
+VM evidence. Configure the repository `release` environment with required reviewers before
+using it for production. The workflow checks the source run, tag commit, artifact hashes,
+and every required VM case, then publishes those exact bytes without rebuilding.
+Never approve an environment request before its candidate has passed the VM checklist.
+
+The evidence JSON shape is:
+
+```json
+{
+  "commit": "candidate commit",
+  "reviewer": "verification owner",
+  "files": {"candidate.zip": "sha256", "candidate-Setup.exe": "sha256"},
+  "systems": {
+    "windows10": {"os_build": "actual build", "initial_winfsp": "missing", "cases": {}},
+    "windows11": {"os_build": "actual build", "initial_winfsp": "missing", "cases": {}}
+  }
+}
+```
+
+Both `cases` objects must contain `passed` for: offline_install,
+zip_core_without_winfsp, uac_cancel, alternate_admin, reboot, upgrade,
+active_connection_guard, uninstall_data_preserved, s3_read_connect_disconnect.
+Record actual evidence, not placeholders. `test-installer.ps1` by default checks integrity
+only. `-ExecuteOnTestVm` performs installation exclusively on an approved disposable VM;
+interactive UAC/cancellation, reboot and data-preservation cases still require recorded results.
+Clean VM verification is a release prerequisite, not replaced by local builds or mocked tests.

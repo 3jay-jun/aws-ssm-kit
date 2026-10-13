@@ -17,6 +17,7 @@ from aws_connect.application.system_info import (
     RuntimeDiagnostics,
     SessionHostDiagnostic,
 )
+from aws_connect.application.winfsp_runtime import WinFspRuntimeService
 from aws_connect.infrastructure.session_manager_plugin import (
     external_terminal_argv,
     session_host_path,
@@ -34,6 +35,7 @@ class LocalRuntimeDiagnosticProbe:
         settings: SettingsService,
         clock: Clock,
         drive_executable: Path | None = None,
+        winfsp_runtime: WinFspRuntimeService | None = None,
     ) -> None:
         self._store = store
         self._protector = protector
@@ -41,6 +43,7 @@ class LocalRuntimeDiagnosticProbe:
         self._settings = settings
         self._clock = clock
         self._drive_executable = drive_executable
+        self._winfsp_runtime = winfsp_runtime
 
     def inspect(self) -> RuntimeDiagnostics:
         configured = self._settings.get()
@@ -78,6 +81,7 @@ class LocalRuntimeDiagnosticProbe:
                 # readiness state is explicit; ``auth validate`` is the reproducible live probe.
                 region_access="session_ready" if session_ready else "authentication_required",
             )
+        runtime = self._winfsp_runtime.inspect() if self._winfsp_runtime else None
         return RuntimeDiagnostics(
             database,
             data_protection,
@@ -86,7 +90,11 @@ class LocalRuntimeDiagnosticProbe:
             _session_host_diagnostic(),
             profile,
             DriveRuntimeDiagnostic(
-                self._drive_executable, self._drive_executable.is_file(), winfsp_available()
+                self._drive_executable,
+                self._drive_executable.is_file(),
+                runtime.ready if runtime else winfsp_available(),
+                str(runtime.state) if runtime else "unknown",
+                runtime.version if runtime else None,
             )
             if self._drive_executable
             else None,

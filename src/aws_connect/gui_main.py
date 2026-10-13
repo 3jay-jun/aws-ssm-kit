@@ -40,6 +40,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         authenticated_operations=services.authenticated_operations,
         dashboard=services.dashboard,
         s3_drives=services.s3_drives,
+        winfsp_runtime=services.winfsp_runtime,
         connection_lifecycle=connection_lifecycle,
     )
     window.show()

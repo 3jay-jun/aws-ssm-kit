@@ -40,6 +40,7 @@ from aws_connect.application.settings_service import (
     SettingsService,
     UpdateSettingsRequest,
 )
+from aws_connect.application.winfsp_runtime import WinFspRuntimeService
 from aws_connect.domain.app_settings import AppSettings
 from aws_connect.presentation.gui.icons import gui_icon, icon_text, set_button_icon, status_badge
 from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
@@ -49,6 +50,7 @@ from aws_connect.presentation.gui.view_models import (
     ActivityLogRowViewModel,
     build_activity_log_row_view_model,
 )
+from aws_connect.presentation.gui.winfsp_setup import WinFspSetupWidget
 
 
 class LogsSettingsPage(QWidget):
@@ -63,12 +65,15 @@ class LogsSettingsPage(QWidget):
         activity_logs: ActivityLogService,
         diagnostic_logs: DiagnosticLogService,
         runner: GuiTaskRunner,
+        *,
+        runtime: WinFspRuntimeService | None = None,
     ) -> None:
         super().__init__()
         self._settings = settings
         self._activity_logs = activity_logs
         self._diagnostic_logs = diagnostic_logs
         self._runner = runner
+        self._runtime = runtime
         self._entries: list[ManagedLogEntry] = []
         self._refresh_generation = 0
         self._build_ui()
@@ -89,6 +94,10 @@ class LogsSettingsPage(QWidget):
         self.open_button.clicked.connect(self.open_log_folder)
         page_head.addWidget(self.open_button, alignment=Qt.AlignmentFlag.AlignTop)
         layout.addLayout(page_head)
+        if self._runtime is not None:
+            self.runtime_setup = WinFspSetupWidget(self._runtime, self._runner)
+            self.runtime_setup.error_raised.connect(self.error_raised.emit)
+            layout.addWidget(self.runtime_setup)
 
         filters = QHBoxLayout()
         filters.setSpacing(14)

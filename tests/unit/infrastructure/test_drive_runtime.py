@@ -31,6 +31,15 @@ def test_winfsp_probes_both_registry_views(tmp_path, monkeypatch):
 
     monkeypatch.setattr(winreg, "OpenKey", open_key)
     monkeypatch.setattr(winreg, "QueryValueEx", lambda *_: (str(tmp_path), winreg.REG_SZ))
+    from aws_connect.infrastructure import winfsp_installer
+
+    monkeypatch.setattr(winfsp_installer, "_file_version", lambda *_: "2.1.25156")
+    monkeypatch.setattr(winfsp_installer, "_driver_present", lambda: True)
+    monkeypatch.setattr(
+        winfsp_installer.WindowsWinFspInstaller,
+        "inspect",
+        lambda self: winfsp_installer.inspect_winfsp(),
+    )
     assert winfsp_available()
     assert len(calls) == 2
 

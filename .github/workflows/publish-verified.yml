@@ -1,0 +1,45 @@
+name: publish-verified
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        type: string
+        description: Successful release.yml run with the tested tag artifacts
+        required: true
+      evidence_json:
+        type: string
+        description: Manual Windows 10/11 VM evidence bound to candidate hashes
+        required: true
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Fetch original candidate and verify manual evidence
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+          VM_EVIDENCE: ${{ inputs.evidence_json }}
+        run: |
+          $environment = (& gh api "repos/$env:GITHUB_REPOSITORY/environments/release" | Out-String) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not @($environment.protection_rules | Where-Object {$_.type -eq 'required_reviewers' -and $_.reviewers.Count -gt 0}).Count) { throw 'Configure required reviewers on the release environment before publication.' }
+          if ($env:CANDIDATE_RUN -notmatch '^\d+$') { throw 'Invalid run id.' }
+          $run = (& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:CANDIDATE_RUN" | Out-String) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.conclusion -ne 'success' -or $run.event -ne 'push' -or $run.path -ne '.github/workflows/release.yml') { throw 'Invalid candidate workflow run.' }
+          & gh run download $env:CANDIDATE_RUN -R $env:GITHUB_REPOSITORY -n "aws-connect-candidate-$env:CANDIDATE_RUN" -D ./candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed.' }
+          Set-Content -LiteralPath ./vm-evidence.json -Value $env:VM_EVIDENCE -Encoding utf8
+          $tag = (& uv run --no-project python ./tools/verify_release_evidence.py ./candidate ./vm-evidence.json --run-id $env:CANDIDATE_RUN | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Manual evidence validation failed.' }
+          $metadata = Get-Content ./candidate/release-candidate.json -Raw | ConvertFrom-Json
+          $tagCommit = (& gh api "repos/$env:GITHUB_REPOSITORY/commits/$tag" --jq .sha | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $metadata.commit -cne $run.head_sha -or $tagCommit -cne $run.head_sha) { throw 'Tag/candidate provenance mismatch.' }
+          $assets = @($metadata.files | ForEach-Object { "./candidate/$($_.name)"; "./candidate/$($_.name).sha256" })
+          & gh release create $tag @assets ./candidate/release-candidate.json ./vm-evidence.json --verify-tag --generate-notes --title "aws-ssm-kit $tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Publication failed.' }

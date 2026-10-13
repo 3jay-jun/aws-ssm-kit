@@ -135,3 +135,16 @@
   native/RDS managed-session cleanup policy is unchanged. EC2 records each reaped outcome once.
 - EC2 startup polling uses existing asynchronous listing every 5 seconds, bounded to 10 minutes;
   it stops at running+SSM Online, errors, timeout, or profile/region changes.
+
+## Offline WinFsp installation (2026-10-13)
+
+One application runtime service is shared by GUI and runtime CLI, composed independently of profile
+DB/DPAPI/AWS initialization. Native file version and registry driver type determine readiness.
+Existing doctor ready semantics remain; core_ready and feature readiness distinguish optional mounting.
+Pinned MSI hash and Authenticode signer are checked while holding a deny-write/delete file handle.
+A machine mutex prevents duplicate installation, and live rclone processes defer shared-driver changes.
+Only msiexec is elevated. COM is initialized on the installing worker. The GUI continues observing
+long installs, defers complete quit, and never terminates Installer. Reboot markers use boot identity;
+elevated Setup records a machine marker, an ordinary caller records a per-user runtime marker.
+Profiles, logs and recovery caches are preserved across app upgrade/uninstall; shared WinFsp is retained.
+Production publication requires exact candidate hashes, two-OS manual evidence and protected approval.

@@ -100,6 +100,8 @@ $buildRoot = Join-Path $repositoryRoot "build/package"
 $pyinstallerDist = Join-Path $buildRoot "pyinstaller-dist"
 $pyinstallerWork = Join-Path $buildRoot "pyinstaller-work"
 if (Test-Path -LiteralPath $buildRoot) {
+    $resolvedBuild = (Resolve-Path -LiteralPath $buildRoot).Path
+    if (-not $resolvedBuild.StartsWith($repositoryRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Build directory escapes repository.' }
     Remove-Item -LiteralPath $buildRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $pyinstallerDist, $pyinstallerWork, $outputRoot | Out-Null
@@ -135,9 +137,14 @@ $packageRoot = Join-Path $buildRoot "aws-connect"
  }
 Copy-Item -LiteralPath (Join-Path $pyinstallerDist "aws-connect") -Destination $packageRoot -Recurse
 Copy-Item -LiteralPath $driveBinary -Destination (Join-Path $packageRoot 'rclone.exe')
+& (Join-Path $PSScriptRoot 'setup-winfsp-runtime.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'WinFsp preparation failed.' }
+$winfspVendor = Join-Path $repositoryRoot 'vendor/winfsp'
+Copy-Item -LiteralPath $winfspVendor -Destination (Join-Path $packageRoot 'prerequisites') -Recurse
 Copy-Item -LiteralPath $pluginPath -Destination (Join-Path $packageRoot "session-manager-plugin.exe")
 $licenses = New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "licenses")
 Copy-Item -LiteralPath (Join-Path $driveVendor 'README.txt') -Destination (Join-Path $licenses 'rclone-README.txt')
+Copy-Item -LiteralPath (Join-Path $winfspVendor 'LICENSE.txt') -Destination (Join-Path $licenses 'winfsp-LICENSE.txt')
 Copy-Item -LiteralPath $licensePath -Destination (Join-Path $licenses "session-manager-plugin-LICENSE")
 Copy-Item -LiteralPath $noticePath -Destination (Join-Path $licenses "session-manager-plugin-NOTICE")
 & uv run --no-sync python (Join-Path $repositoryRoot "tools/generate_third_party_notices.py") `

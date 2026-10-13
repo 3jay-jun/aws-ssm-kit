@@ -24,19 +24,10 @@ def available_drive_letters() -> set[str]:
 def winfsp_available() -> bool:
     if os.name != "nt":
         return False
-    import winreg
+    from aws_connect.infrastructure.winfsp_installer import WindowsWinFspInstaller
 
-    for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WinFsp", 0, winreg.KEY_READ | view
-            ) as key:
-                directory, _ = winreg.QueryValueEx(key, "InstallDir")
-            if (Path(directory) / "bin" / "winfsp-x64.dll").is_file():
-                return True
-        except OSError:
-            continue
-    return False
+    state = Path(os.environ.get("LOCALAPPDATA", "")) / "AWSConnect/runtime"
+    return WindowsWinFspInstaller(Path(), state).inspect().ready
 
 
 class _BasicLimits(ctypes.Structure):

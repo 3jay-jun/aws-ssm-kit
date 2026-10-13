@@ -47,9 +47,10 @@ def verify(root: Path) -> list[str]:
     errors = [
         f"missing required path: {path}" for path in REQUIRED_PATHS if not (root / path).exists()
     ]
-    for document in sorted(root.rglob("*.md")):
-        if any(part in {".git", ".venv"} for part in document.parts):
-            continue
+    documents = [*root.glob("*.md")]
+    for directory in ("docs", "packaging"):
+        documents.extend((root / directory).rglob("*.md"))
+    for document in sorted(documents):
         for target in local_markdown_links(document):
             if not target.exists():
                 errors.append(f"broken link: {document.relative_to(root)} -> {target}")

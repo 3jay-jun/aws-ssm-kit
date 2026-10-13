@@ -87,6 +87,30 @@ def mapped_error_types_for_gui() -> frozenset[type[ApplicationError]]:
 
 
 _MESSAGES: dict[str, tuple[str, str]] = {
+    "runtime.winfsp.unsupported": (
+        "WinFsp 버전을 확인하세요",
+        "지원하는 WinFsp 2.x 설치 상태를 확인하세요.",
+    ),
+    "runtime.winfsp.confirm_required": (
+        "교체 확인이 필요합니다",
+        "공용 WinFsp를 사용하는 마운트를 해제하고 업데이트/복구를 확인하세요.",
+    ),
+    "runtime.winfsp.payload_missing": (
+        "설치 파일을 열 수 없습니다",
+        "동봉된 prerequisites 폴더를 확인하거나 전체 배포 파일을 다시 받으세요.",
+    ),
+    "runtime.winfsp.verification_failed": (
+        "설치 파일 검증에 실패했습니다",
+        "공식 배포 파일을 다시 받으세요. 설치는 실행하지 않았습니다.",
+    ),
+    "runtime.winfsp.observe_failed": (
+        "WinFsp 상태를 확인할 수 없습니다",
+        "환경 진단을 다시 실행하고 Windows 설치 상태를 확인하세요.",
+    ),
+    "runtime.winfsp.start_failed": (
+        "WinFsp 설치를 시작할 수 없습니다",
+        "Windows 관리자 승인 및 설치 권한을 확인하세요.",
+    ),
     "drive.runtime.rclone_missing": (
         "rclone 실행 파일이 없습니다",
         "배포 폴더의 rclone.exe가 필요합니다. "

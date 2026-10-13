@@ -87,6 +87,8 @@ class DriveRuntimeDiagnostic:
     rclone_path: Path
     rclone_available: bool
     winfsp_available: bool
+    winfsp_state: str = "unknown"
+    winfsp_version: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -105,6 +107,10 @@ class RuntimeDiagnostics:
 
     @property
     def ready(self) -> bool:
+        return self.core_ready and (self.s3_drive is None or self.s3_drive.ready)
+
+    @property
+    def core_ready(self) -> bool:
         plugin = self.session_manager_plugin
         return (
             self.database.ready
@@ -115,17 +121,31 @@ class RuntimeDiagnostics:
             and plugin.environment_ready
             and self.session_host.exists
             and self.session_host.argument_boundary_safe
-            and (self.s3_drive is None or self.s3_drive.ready)
         )
 
     def to_payload(self) -> dict[str, object]:
         plugin = self.session_manager_plugin
         return {
+            "core_ready": self.core_ready,
+            "features": {
+                "s3_mount": {
+                    "ready": self.s3_drive.ready if self.s3_drive else False,
+                    "reason": (
+                        "rclone_missing"
+                        if self.s3_drive and not self.s3_drive.rclone_available
+                        else self.s3_drive.winfsp_state
+                        if self.s3_drive
+                        else "runtime_missing"
+                    ),
+                }
+            },
             "s3_drive": (
                 {
                     "rclone_path": str(self.s3_drive.rclone_path),
                     "rclone_available": self.s3_drive.rclone_available,
                     "winfsp_available": self.s3_drive.winfsp_available,
+                    "winfsp_state": self.s3_drive.winfsp_state,
+                    "winfsp_version": self.s3_drive.winfsp_version,
                     "ready": self.s3_drive.ready,
                     "guidance": "Install WinFsp and provide the packaged rclone.exe.",
                 }

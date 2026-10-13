@@ -48,3 +48,12 @@ GUI logs and dashboard recent work query SQLite; rotating Python logs remain dia
 DashboardService composes existing read-only gateway methods with profile/region-scoped execution
 history. DashboardPage consumes its typed permission DTO and the shared recent-log projection;
 it never reads feature widgets. CLI `dashboard --profile ID` uses the same application service.
+
+## Offline mount runtime and distribution
+
+WinFspRuntimeService owns installation state and confirmation policy; the Windows adapter owns
+registry/version inspection, payload verification, file locks and MSI elevation. Bootstrap wires
+the same service into GUI and CLI. `runtime winfsp` commands bypass profile/DB/AWS initialization.
+The compiled `RUNTIME_SPEC` is the pinned payload authority; packaging metadata is derived from it.
+Setup and Portable ZIP share one verified application folder. Packaging and publication gates are
+documented in [packaging/README.md](packaging/README.md).

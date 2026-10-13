@@ -29,6 +29,7 @@ from aws_connect.application.authenticated_operation import AuthenticatedOperati
 from aws_connect.application.operations import OperationContext
 from aws_connect.application.s3_drive_service import S3DriveService
 from aws_connect.application.s3_service import S3Service
+from aws_connect.application.winfsp_runtime import WinFspRuntimeService
 from aws_connect.domain.errors import ApplicationError, ConfigurationError
 from aws_connect.domain.s3_drive import DriveState, DriveStatus, S3Drive
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner, MfaCodeProvider
@@ -39,6 +40,7 @@ from aws_connect.presentation.gui.list_rows import set_compact_list_row, update_
 from aws_connect.presentation.gui.menu_actions import menu_action
 from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.tasks import GuiTaskRunner, TaskHandle
+from aws_connect.presentation.gui.winfsp_setup import WinFspSetupWidget
 
 _STATE_TEXT = {
     DriveState.DISCONNECTED: "연결되지 않음",
@@ -59,9 +61,12 @@ class S3DrivesPage(QWidget):
         runner: GuiTaskRunner,
         authenticated: AuthenticatedOperationCoordinator | None,
         mfa: MfaCodeProvider,
+        *,
+        runtime: WinFspRuntimeService | None = None,
     ) -> None:
         super().__init__()
         self._service = service
+        self._runtime_ready = runtime is None
         self._s3 = s3
         self._runner = runner
         self._authenticated = (
@@ -88,6 +93,11 @@ class S3DrivesPage(QWidget):
             page_heading("S3 마운트", "S3 연결을 저장하고 Windows 탐색기에서 사용합니다.")
         )
         content = QHBoxLayout()
+        if runtime is not None:
+            self.runtime_setup = WinFspSetupWidget(runtime, runner)
+            self.runtime_setup.error_raised.connect(self.error_raised.emit)
+            self.runtime_setup.readiness_changed.connect(self._runtime_changed)
+            layout.addWidget(self.runtime_setup)
         content.setSpacing(16)
         self.session_card = QFrame()
         self.session_card.setObjectName("session_list_card")
@@ -284,6 +294,10 @@ class S3DrivesPage(QWidget):
         self.refresh()
         if self.isVisible():
             self._ensure_buckets()
+
+    def _runtime_changed(self, ready: bool) -> None:
+        self._runtime_ready = ready
+        self._actions()
 
     def refresh(self) -> None:
         if self._loading or self._shutdown is not None:
@@ -483,7 +497,8 @@ class S3DrivesPage(QWidget):
                     and (
                         selected is not None
                         if stopping
-                        else bool(self.name.text().strip() and self.bucket.currentText().strip())
+                        else self._runtime_ready
+                        and bool(self.name.text().strip() and self.bucket.currentText().strip())
                     )
                 )
             )

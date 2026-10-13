@@ -5,6 +5,7 @@ import getpass
 import json
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import asdict
 from typing import Any, Protocol, cast
 
 from aws_connect.application.execution_context import execution_scope
@@ -19,6 +20,7 @@ from aws_connect.bootstrap import (
     ApplicationServices,
     build_application_services,
     build_doctor_service,
+    build_winfsp_runtime_service,
 )
 from aws_connect.domain.aws_profile import SESSION_DURATION_HOURS
 from aws_connect.domain.errors import ApplicationError, CredentialValidationError
@@ -70,6 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(prog="aws-connect-cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    runtime = subparsers.add_parser(
+        "runtime", help="Offline runtime setup without profile initialization"
+    )
+    runtime.add_argument("component", choices=("winfsp",))
+    runtime.add_argument("action", choices=("inspect", "install"))
+    runtime.add_argument("--confirm-replace", action="store_true")
+    runtime.add_argument("--output", choices=("json",), default="json")
     dashboard = subparsers.add_parser("dashboard", help="Read-only dashboard permission checks")
     dashboard.add_argument("--profile", type=int, required=True)
     _output(dashboard)
@@ -265,6 +274,26 @@ def main(
 
     _configure_utf8_stdio()
     args = build_parser().parse_args(argv)
+    if args.command == "runtime":
+        try:
+            runtime_service = build_winfsp_runtime_service()
+            if args.action == "inspect":
+                status = runtime_service.inspect()
+                print(json.dumps({**asdict(status), "ready": status.ready}))
+                return 0
+            installed = runtime_service.install(confirm_replace=args.confirm_replace)
+            print(json.dumps(asdict(installed)))
+            return {
+                "ready": 0,
+                "installed": 0,
+                "reboot_required": 3010,
+                "cancelled": 1602,
+                "busy": 1618,
+                "pending": 258,
+            }.get(installed.outcome, 1)
+        except ApplicationError as error:
+            print(json.dumps({"error": error.message_code}), file=sys.stderr)
+            return map_error(error).exit_code
     if args.command == "doctor":
         try:
             print(render_doctor(build_doctor_service(), output=args.output))

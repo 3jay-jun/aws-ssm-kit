@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('ready','missing','either')] [string] $ExpectedWinFspState = 'either',
     [Parameter(Mandatory)] [string] $ZipPath,
     [switch] $AllowTestVendorPackage
 )
@@ -131,9 +132,13 @@ try {
         throw "Packaged CLI doctor failed ($($doctor.ExitCode)): $(Get-Content -LiteralPath $stderrPath -Raw)"
     }
     $doctorPayload = Get-Content -LiteralPath $stdoutPath -Raw | ConvertFrom-Json
-    if ($doctorPayload.status -ne "ready") {
+    if (-not $doctorPayload.core_ready) {
         throw "Packaged CLI doctor was not ready: $(Get-Content -LiteralPath $stdoutPath -Raw)"
     }
+    if ($ExpectedWinFspState -eq 'ready' -and -not $doctorPayload.features.s3_mount.ready) { throw 'S3 mount runtime is not ready.' }
+    if ($ExpectedWinFspState -eq 'missing' -and $doctorPayload.features.s3_mount.ready) { throw 'Expected WinFsp missing test environment.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'rclone.exe'))) { throw 'Packaged rclone missing.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'prerequisites/manifest.json'))) { throw 'Packaged WinFsp metadata missing.' }
     $secretsHelp = & $cli secrets get --help 2>&1
     if ($LASTEXITCODE -ne 0 -or ($secretsHelp | Out-String) -notmatch '--reveal') {
         throw "Packaged CLI is missing the Phase 7 secrets get contract."

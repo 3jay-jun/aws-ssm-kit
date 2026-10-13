@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aws-connect"
-version = "1.0.1"
+version = "1.0.2"
 description = "Portable Windows client for AWS SSM, RDS tunnels, Secrets Manager, and S3"
 requires-python = ">=3.12,<3.13"
 dependencies = [
