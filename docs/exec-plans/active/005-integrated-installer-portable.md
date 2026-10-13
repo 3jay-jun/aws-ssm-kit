@@ -328,6 +328,22 @@ VM 검증: Windows 10/11 x64, WinFsp 없음/설치됨/구버전, C/D·한글/공
 - 최종 `./scripts/verify-docs.ps1` → exit 0. 로컬 배포 후보와 VM/공개 미검증 구분을 유지한다.
 - 다음 실행: 위 지정 메시지로 커밋한 뒤 origin/main에 정상 push하고 원격 HEAD 일치를 확인한다.
 
+### CI documentation repair — 2026-10-13
+
+- `1ae91d0` 커밋을 origin/main에 push했고 원격 HEAD 일치를 확인했다. 이후 사용자 CI 로그에서
+  001 계획이 참조하는 `004-rds-session-duration.md` 누락으로 documentation 단계 실패를 확인했다.
+- 원인: 이전 선별 커밋에서 004를 제외했지만 001의 링크는 이미 tracked였다. 로컬 파일 존재만
+  확인하는 검사는 이 미추적 문서를 읽어 통과했다. 004는 필요한 repository knowledge이므로 포함한다.
+- SSOT 검색: `004-rds-session-duration` 및 `git ls-files docs/exec-plans/active`로 참조/누락 확인.
+  문서 검사를 완화하거나 링크를 제거하지 않았다. 앱/설치/런타임 로직 변경 없음.
+- `UV_PROJECT_ENVIRONMENT=.venv-ship-1.0.2`, `UV_CACHE_DIR=.uv-cache`에서
+  `./scripts/verify-docs.ps1` → exit 0, generated docs current; 004 detect-secrets → 0.
+- `git checkout-index --all --prefix=.test-ci-doc-index-20261013/` 후 해당 폴더의
+  `tools/verify_docs.py`를 Python으로 실행 → exit 0. 미추적 파일 없는 CI 유사 snapshot에서도
+  링크 검사 통과; `.qa-s3-drives/ci-document-index-fix.log`.
+- 다음: 위 두 계획 문서를 포함한 수정 커밋을 main에 정상 push하고 Actions 재실행을 확인한다.
+  변경은 문서만이므로 런타임 부수효과는 없다. clean VM/정식 공개 게이트는 그대로 유지한다.
+
 | Review | 상태 | 결정 및 결과 |
 |---|---|---|
 | Eng / plan-eng-review | 대화형 검토 완료 | 범위 유지; 권한/공용 드라이버/진단 호환성/VM 공개 게이트 보완 확정 |
