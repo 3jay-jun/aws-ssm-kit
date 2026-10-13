@@ -15,22 +15,36 @@ APP_STYLE = """
 * { color: #172033; font-family: 'Malgun Gothic'; font-size: __BODY_SIZE__px; }
 QMainWindow, QWidget#prototype_background { background: #e9eef5; }
 QFrame#app_shell { background: #f8fafc; border: 0; border-radius: 0; }
-QFrame#authentication_header { background: #ffffff; border: 0; border-bottom: 1px solid #dce3ed; }
 QWidget#brand_panel { background: transparent; }
 QLabel#brand_logo { background: transparent; }
-QWidget#profile_summary { background: transparent; border-left: 1px solid #e2e8f0; }
-QLabel#profile_name { font-size: 15px; font-weight: 700; }
 QLabel#header_caption, QLabel#page_subtitle, QLabel#feature_subtitle, QLabel#feature_description, QLabel#helper_text, QLabel#profile_sequence, QLabel#active_tunnel_summary, QLabel#session_meta { color: #64748b; }
 QLabel#header_caption { font-size: 12px; }
 QLabel#auth_state { color: #067647; font-size: 13px; font-weight: 700; }
-QPushButton#profile_button, QPushButton#refresh_button { min-width: 40px; max-width: 40px; min-height: 40px; max-height: 40px; padding: 0; border: 1px solid #d7dee9; border-radius: 11px; background: #ffffff; font-size: 20px; }
-QPushButton#profile_button:hover, QPushButton#refresh_button:hover { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
 QFrame#navigation { background: #f1f5f9; border: 0; border-right: 1px solid #dde4ee; }
 QLabel#navigation_label { color: #64748b; font-size: 12px; font-weight: 600; letter-spacing: 2px; }
 QFrame#navigation QPushButton { min-height: 36px; padding: 0 11px; border: 2px solid transparent; border-radius: 10px; background: transparent; color: #475569; text-align: left; font-weight: 400; outline: 0; }
 QFrame#navigation QPushButton:hover { background: #e2e8f0; }
 QFrame#navigation QPushButton:checked { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
 QFrame#navigation QPushButton:focus { border-color: #2563eb; }
+QFrame#sidebar_profile { min-height: 52px; max-height: 52px; background: #ffffff; border: 1px solid #d7dee9; border-radius: 12px; outline: 0; }
+QFrame#sidebar_profile:hover { border-color: #94a3b8; background: #f8fafc; }
+QFrame#sidebar_profile:focus { border: 2px solid #94a3b8; }
+QLabel#sidebar_profile_icon { background: #eff6ff; border-radius: 10px; }
+QLabel#sidebar_profile_name { color: #172033; font-size: 13px; font-weight: 700; }
+QLabel#sidebar_profile_status { color: #64748b; font-size: 11px; }
+QLabel#sidebar_profile_status[authenticated="true"] { color: #067647; }
+QLabel#sidebar_profile_chevron { background: transparent; }
+QMenu#profile_selector_menu { min-width: 188px; background: #ffffff; border: 1px solid #d7dee9; border-radius: 12px; padding: 7px; }
+QMenu#profile_selector_menu::item { min-height: 22px; padding: 8px 12px 8px 9px; margin: 1px 0; border-radius: 7px; color: #334155; }
+QMenu#profile_selector_menu::item:selected { background: #eff6ff; color: #1d4ed8; }
+QMenu#profile_selector_menu::item:disabled { color: #94a3b8; }
+QMenu#profile_selector_menu::separator { height: 1px; margin: 6px 4px; background: #e2e8f0; }
+QMenu#profile_selector_menu::indicator { width: 0; height: 0; border: 0; background: transparent; image: none; }
+QMenu#profile_selector_menu::icon { padding-left: 2px; }
+QFrame#navigation QPushButton#nav_s3:checked { background: transparent; color: #475569; font-weight: 400; }
+QFrame#navigation QPushButton#nav_s3[active="true"] { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
+QFrame#navigation QPushButton#nav_s3 { padding-right: 32px; }
+QWidget#s3_navigation_children QPushButton { min-height: 32px; max-height: 32px; }
 QStackedWidget#workspace { background: #f7fafe; border: 0; }
 QWidget#dashboard, QWidget#ec2_page, QWidget#rds_page, QWidget#secrets_page, QWidget#s3_page, QWidget#logs_page, QWidget#secret_page_content, QWidget#s3_page_content, QWidget#s3_drives_page { background: #f7fafe; }
 QLabel#section_title, QLabel#feature_heading, QLabel#profile_editor_title, QLabel#managed_log_detail_title, QLabel#rds_editor_title, QLabel#s3_section_title { font-size: __SECTION_TITLE_SIZE__px; font-weight: 700; }

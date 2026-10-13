@@ -1,6 +1,12 @@
 # Security Rules
 
 - Protect long-lived credentials and session tokens with Windows DPAPI.
+- After a successful identity-verified STS refresh, export only the temporary credentials to the
+  current user's standard AWS shared credentials file under both `[aws-connect-{profile_id}]` and
+  `[default]`. Preserve unrelated profiles, replace the file atomically, apply current-user-only
+  access, and treat any parse, write, replace, or ACL failure as a visible authentication failure.
+  This plaintext export is the explicit interoperability exception to DPAPI-only persistence;
+  never export the long-lived profile credentials.
 - Protect each application data/log directory with a non-inherited Windows DACL containing one
   inheritable full-control ACE for the current user. A SQLite database/sidecar or managed log
   created later may carry that ACE as inherited, but its effective DACL must still contain no
@@ -16,6 +22,8 @@
   named pipe. Authenticate each launch with an independent 256-bit key; put only its
   current-user DPAPI ciphertext in the helper command line and create no key file.
 - Apply one central masking policy before serialization and logging.
+- Execution history allows the non-sensitive `reason` metadata field for RDS `max_duration`
+  termination; existing masking and length bounds still apply.
 - Validate identity against the configured Account and IAM user before reusing a token.
 - Keep an MFA-deferred feature callable only in bounded process memory with its representation
   suppressed. Never serialize, persist, or log the callable, its captured request, or MFA code;

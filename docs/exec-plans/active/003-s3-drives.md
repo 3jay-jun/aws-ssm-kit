@@ -13,7 +13,8 @@
 - 프로필 인증은 SessionGuard 및 AuthenticatedOperationCoordinator를 재사용한다.
 - 별도 드라이브 테이블은 기존 S3Location 검증을 재사용한다. 기존 파일 탭 저장 위치와
   생명주기는 다르므로 위치 레코드를 암묵적으로 만들거나 삭제하지 않는다.
-- 미전송/불명확한 캐시를 보존하며 편집·삭제·프로필 삭제·완전 종료를 막는다.
+- 미전송/불명확한 캐시를 보존하며 편집·삭제·프로필 삭제를 막는다.
+  2026-10-12 사용자 후속 요구에 따라 연결 정리가 끝나면 캐시를 보존한 채 완전 종료한다.
 - CLI 연결도 전경 프로세스가 소유한다. 연결을 유지하는 동안 명령을 받을 수 있어야 한다.
 
 ## 순서 / 수용 기준
@@ -147,3 +148,94 @@ SQLite migration, 상태 폴링이 추가된다. 앱 완전 종료 시 안전 �
   `.qa-s3-drives/check-rds-background.log`. 전체 배포 검증 통과로 주장하지 않는다.
 - DESIGN/RELIABILITY 갱신. 다음 단계: 앱 재시작으로 반영, EXE 배포 시 재빌드.
   기존 전체 문서/배포 게이트는 QA-001 및 최초 계획의 잔여 항목으로 남긴다.
+
+## 2026-10-07 S3 마운트 시작/취소/종료 단일 버튼
+- 수용 기준: RDS와 같이 우측 고정 위치의 단일 40px 아이콘 버튼을 사용한다.
+  미연결은 파란 시작, 연결 작업 중은 빨간 취소, 연결됨/오류 정리는 빨간 종료.
+  취소 요청 후와 안전 해제 중에는 중복 실행을 차단하며 편집 취소는 별도 유지한다.
+- 검색: graft ask S3DrivesPage/TaskHandle/AuthenticatedGuiRunner, skeleton,
+  rg connect_button/disconnect_button/cancel_button/_task/_busy. RDS는 시작/종료만
+  전환하고 시작 중 취소는 지원하지 않음을 확인했다. S3의 기존 cancel/disconnect,
+  공통 set_button_icon, TaskHandle/OperationContext와 캐시 보호 서비스를 재사용했다.
+- 변경: connection_button 하나에 상태별 동작을 연결한다. 기존 connect/disconnect
+  속성은 RDS처럼 같은 버튼의 별칭으로 유지. 비인증 경로에도 기존 cancellation token을
+  전달하고 즉시 완료한 작업의 handle이 남지 않도록 한다. 오류 상태는 안전 정리 우선.
+- DESIGN과 HTML 목업을 동기화했다. 새 라이브러리/도메인 추상화/DB 변경 없음.
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui tests/unit/application/test_s3_drives.py tests/unit/infrastructure/test_rclone_drive_mount.py --no-cov -q --basetemp=.test-mount-toggle-regression -o cache_dir=.test-cache-mount-toggle` → 168 passed.
+- 오류 복구 테스트 추가 후 `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_s3_drives.py --no-cov -q --basetemp=.test-mount-toggle-final -o cache_dir=.test-cache-mount-toggle` → 16 passed.
+- `.venv/Scripts/python.exe -m ruff check src/aws_connect/presentation/gui/s3_drives.py tests/adapter/gui/test_s3_drives.py`, 동일 파일 `ruff format --check` → passed.
+  테스트 import 순서 추가 오류는 ruff check --fix로 수정 후 통과.
+- `.venv/Scripts/python.exe -m mypy` → 97 files passed;
+  `.venv/Scripts/python.exe tools/architecture_check.py` → passed;
+  `.venv/Scripts/python.exe -m bandit -q src/aws_connect/presentation/gui/s3_drives.py` → exit 0;
+  `.venv/Scripts/detect-secrets.exe scan src/aws_connect/presentation/gui/s3_drives.py tests/adapter/gui/test_s3_drives.py` → results {}.
+- `./scripts/check.ps1` → 기존 vendor/graft 문서 링크 오류로 documentation 실패.
+  증거 `.mount-toggle-check.log`, 기존 QA-001 유지. 전체 배포 게이트 통과 아님.
+- 사이드이펙트: 기존 협력적 취소와 안전 해제 진입점만 변경한다. 프로세스 강제 종료,
+  캐시 삭제, 추가 AWS 호출, 타이머/포트/DB/의존성 변경 없음. 실제 AWS 마운트 미실행.
+- 다음 단계: 개발 앱 재시작 확인, 배포 EXE는 재빌드 필요. 문서 전체 게이트는 QA-001 후속.
+
+## 2026-10-12 실제 연결 없는 오류의 정지/초기화
+- 사용자 결과: 드라이브가 없는 오류에서 정지하면 잔여 소유 프로세스/제어 비밀/lease를
+  정리하고 미연결/파란 시작으로 돌아가 같은 저장 설정으로 재연결한다.
+- SSOT 검색: `graft map`, graft_find_code("S3DriveService stop disconnect failed error
+  session rclone flush"), `rg`의 disconnect/cache.pending/DriveState.ERROR/flush 검색으로
+  기존 RcloneDriveMount.disconnect/status, cache_is_dirty, S3DriveService._stop,
+  GUI toggle_connection 및 공통 오류 매핑을 확인했다. Python 3.12/PySide6 유지.
+- 원인: 소유 프로세스가 없어도 pending.json을 연결 오류로 표시했고, 정지에서
+  assert_editable을 호출하거나 죽은 프로세스 정리 후 cache.pending을 무조건 던졌다.
+- 결정: 화면에서 오류만 숨기는 대안은 잔여 프로세스를 보존하므로 배제하고 기존
+  어댑터 해제 경로를 확장했다. 죽은/마운트하지 못한/실제 드라이브가 사라진 소유
+  자식을 Windows Job으로 종료 후 대기한다. 드라이브 해제 관측 대기는 공통 함수로 재사용.
+- 연결 소유자가 없으면 복구 캐시는 미연결로 표시한다. 깨끗한 pending 표시만 삭제하고
+  dirty/불명확한 캐시와 대상 binding은 보존한다. 다른 앱의 lease는 초기화할 수 없다.
+  실제 연결은 기존 업로드 drain/안전 unmount를 유지한다. 당시 shutdown의 _stop에
+  assert_editable을 추가했으나 아래 종료 후속 요청으로 제거했다. 삭제/프로필 삭제 보호는 유지한다.
+- 제품/RELIABILITY/DESIGN 계약 갱신. 기존 사용자 수정은 유지했다.
+
+### 검증 명령/결과
+- `.venv/Scripts/python.exe -m pytest tests/unit/infrastructure/test_rclone_drive_mount.py tests/unit/application/test_s3_drives.py tests/adapter/cli/test_s3_drives_cli.py tests/adapter/gui/test_s3_drives.py --no-cov -q --basetemp=.test-mount-error-reset -o cache_dir=.test-cache-mount-error-reset` → 59 passed.
+- `.venv/Scripts/python.exe -m pytest tests/unit/infrastructure/test_rclone_drive_mount.py tests/unit/application/test_s3_drives.py tests/adapter/cli/test_s3_drives_cli.py tests/adapter/gui/test_s3_drives.py tests/adapter/gui/test_shell.py tests/architecture tests/adapter/test_error_mapper_completeness.py --no-cov -q --basetemp=.test-mount-error-reset-final -o cache_dir=.test-cache-mount-error-reset` → 92 passed.
+  사망/드라이브 부재/마운트 전 실패/프로세스 없는 복구 표시의 clean/dirty 조합,
+  반복 정지, 같은 설정 재연결, 타 소유권, 프로세스 종료 timeout, GUI 오류→시작 버튼,
+  실제 연결 업로드 보호 및 완전 종료/삭제 보호를 검증했다. AWS 호출 없음.
+- `.venv/Scripts/python.exe -m ruff check src tests tools` → passed.
+- `.venv/Scripts/python.exe -m ruff format --check src/aws_connect/infrastructure/rclone_drive_mount.py src/aws_connect/application/s3_drive_service.py tests/unit/infrastructure/test_rclone_drive_mount.py tests/unit/application/test_s3_drives.py tests/adapter/gui/test_s3_drives.py` → 5 files already formatted.
+- `.venv/Scripts/python.exe -m mypy` → 97 source files passed.
+- `.venv/Scripts/python.exe tools/architecture_check.py` → passed;
+  `.venv/Scripts/lint-imports.exe` → 2 kept, 0 broken.
+- `.venv/Scripts/python.exe -m bandit -q src/aws_connect/infrastructure/rclone_drive_mount.py src/aws_connect/application/s3_drive_service.py` → exit 0 (기존 nosec 주석 경고).
+- `.venv/Scripts/detect-secrets.exe scan src/aws_connect/infrastructure/rclone_drive_mount.py src/aws_connect/application/s3_drive_service.py tests/unit/infrastructure/test_rclone_drive_mount.py tests/unit/application/test_s3_drives.py tests/adapter/gui/test_s3_drives.py` → Flagged files: 0.
+- `./scripts/check.ps1 *> .mount-error-reset-check.log` → documentation failed (exit 1),
+  기존 .vendor-license-source/graft 링크 오류(QA-001). 전체 게이트 통과로 주장하지 않는다.
+- `graft build` → success, 174 cards; 5 changed files parsed, 169 cache replayed.
+- 사이드이펙트: 실제 드라이브 없는 잔여 소유 자식 프로세스를 종료하고 포트/lease를
+  해제한다. 캐시 데이터 삭제/추가 AWS 호출/DB migration/의존성 변경 없음.
+- 다음 단계: 개발 앱 재시작으로 반영 확인. 배포 EXE는 재빌드 필요.
+  최초 계획 전체의 잔여 검증과 QA-001 문서 게이트는 별도 후속으로 유지한다.
+
+## 2026-10-12 종료 차단 후속 수정
+- 사용자 지적대로 앞선 구현은 연결 정리가 성공해도 복구 캐시가 있으면 종료를 막았다.
+  기준 변경: 실제 연결 없는 오류는 정리 후 캐시/저장 설정을 보존한 채 종료한다.
+- SSOT 검색: graft_find_code("S3DriveService shutdown _stop profile_deletion S3DrivesPage shutdown"),
+  rg shutdown/_stop/assert_editable/cache.pending. 기존 공통 _stop, GUI 종료 callback 재사용.
+- 선택: _stop의 추가 캐시 편집 검사를 제거(추천: 종료와 데이터 삭제 책임 분리).
+  대안인 GUI 예외 무시는 실제 연결 정리 실패까지 숨기므로 배제했다.
+  delete/profile_deletion/save의 기존 assert_editable은 유지한다. 살아 있는 연결의
+  안전 해제 실패와 자식 종료 실패는 성공으로 처리하지 않는다.
+- 제품/RELIABILITY 및 본 계획의 기준을 동기화했다. 001의 사전 협의는 당시 기록이며
+  현재 종료 계약은 제품 요구사항과 본 후속 기준을 따른다.
+- `.venv/Scripts/python.exe -m pytest tests/unit/application/test_s3_drives.py tests/unit/infrastructure/test_rclone_drive_mount.py tests/adapter/gui/test_s3_drives.py tests/adapter/gui/test_shell.py tests/adapter/cli/test_s3_drives_cli.py tests/architecture --no-cov -q --basetemp=.test-mount-error-exit -o cache_dir=.test-cache-mount-error-exit` → 96 passed.
+  실제 어댑터의 죽은/드라이브 없는/프로세스 없는 dirty 캐시 종료, GUI 종료 callback,
+  타이머 중지, 파일 보존, 종료 후 새 연결 차단, 삭제/편집/프로필 삭제 보호 검증.
+- `.venv/Scripts/python.exe -m ruff check src tests tools` → passed;
+  `.venv/Scripts/python.exe -m mypy` → 97 source files passed;
+  `.venv/Scripts/python.exe tools/architecture_check.py` → passed.
+- `.venv/Scripts/python.exe -m ruff format --check src/aws_connect/application/s3_drive_service.py tests/unit/application/test_s3_drives.py tests/unit/infrastructure/test_rclone_drive_mount.py tests/adapter/gui/test_s3_drives.py` → 4 files already formatted.
+- `.venv/Scripts/python.exe -m bandit -q src/aws_connect/application/s3_drive_service.py` → exit 0.
+- `.venv/Scripts/detect-secrets.exe scan src/aws_connect/application/s3_drive_service.py tests/unit/application/test_s3_drives.py tests/unit/infrastructure/test_rclone_drive_mount.py tests/adapter/gui/test_s3_drives.py` → Flagged files: 0.
+- `./scripts/check.ps1 *> .mount-error-exit-check.log` → documentation failed (exit 1),
+  기존 vendor/graft 링크 오류 QA-001. 전체 게이트 통과로 주장하지 않는다.
+- 사이드이펙트: 연결 소유권 정리가 끝나면 미전송 캐시를 디스크에 보존한 채 앱 종료를
+  허용한다. 새 프로세스/포트/DB/의존성/AWS 작업 없음. 다음 실행에서 같은 설정으로 복구.
+- 다음 단계: 개발 앱 재시작, 배포 EXE 재빌드. 기존 QA-001/전체 실환경 게이트는 별도 후속.

@@ -18,6 +18,7 @@ _METADATA_FIELDS = frozenset(
         "file_size",
         "local_port",
         "remote_port",
+        "reason",
         "retryable",
         "attempt",
         "skipped_count",

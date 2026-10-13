@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from threading import Lock
 
 from aws_connect.application.operations import OperationCancelled, OperationContext, OperationState
@@ -18,10 +19,15 @@ from aws_connect.domain.aws_profile import PlainCredentials
 from aws_connect.domain.errors import ApplicationError, PluginExecutionError
 
 
+class SessionEndReason(StrEnum):
+    MAX_DURATION = "max_duration"
+
+
 @dataclass(frozen=True, slots=True)
 class SsmRunResult:
     session_id: str
     plugin_exit_code: int
+    end_reason: SessionEndReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +70,7 @@ class ForegroundSsmSessionRunner:
         document_name: str | None = None,
         parameters: Mapping[str, Sequence[str]] | None = None,
         context: OperationContext | None = None,
+        timeout_seconds: float | None = None,
     ) -> SsmRunResult:
         context = context or OperationContext()
         context.raise_if_cancelled()
@@ -78,7 +85,11 @@ class ForegroundSsmSessionRunner:
         try:
             context.raise_if_cancelled()
             context.report("running", "session.running", target=target)
-            exit_code = self._plugin.run(invocation)
+            end_reason = None
+            if timeout_seconds is None:
+                exit_code = self._plugin.run(invocation)
+            else:
+                exit_code, end_reason = self._run_bounded(invocation, timeout_seconds)
             if exit_code != 0:
                 raise self._plugin_error(
                     "plugin.exit.nonzero", f"Session Manager Plugin exited with {exit_code}"
@@ -90,7 +101,33 @@ class ForegroundSsmSessionRunner:
         except Exception as error:
             raise PluginExecutionError("session.end.failed", type(error).__name__) from error
         context.report("completed", "session.completed", completed=1, total=1, target=target)
-        return SsmRunResult(started.session_id, exit_code)
+        return SsmRunResult(started.session_id, exit_code, end_reason)
+
+    def _run_bounded(
+        self, invocation: PluginInvocation, timeout_seconds: float
+    ) -> tuple[int, SessionEndReason | None]:
+        process = self._plugin.launch(invocation)
+        try:
+            return process.wait(timeout=timeout_seconds), None
+        except TimeoutError:
+            _exit_code, error = _stop_process(process)
+            if error is not None:
+                raise error from None
+            return 0, SessionEndReason.MAX_DURATION
+        except BaseException as primary:
+            _exit_code, cleanup = _stop_process(process)
+            if cleanup is not None:
+                if isinstance(primary, ApplicationError):
+                    raise _with_cleanup_failure(primary, cleanup) from primary
+                if isinstance(primary, (KeyboardInterrupt, OperationCancelled)):
+                    raise PluginExecutionError(
+                        "session.cancel.cleanup_failed", cleanup.technical_cause
+                    ) from primary
+                raise PluginExecutionError(
+                    "plugin.wait.failed",
+                    f"{type(primary).__name__}; {cleanup.technical_cause}",
+                ) from primary
+            raise
 
     def _raise_after_end(
         self,
@@ -207,7 +244,7 @@ class ManagedSsmSessionRunner:
                 process_error = PluginExecutionError(
                     "plugin.status.failed", f"{type(primary).__name__}: {primary}"
                 )
-                _exit_code, cleanup_error = self._stop_process(owned)
+                _exit_code, cleanup_error = _stop_process(owned.process)
                 end_error = self._capture_end_error(owned)
                 self._owned.pop(operation_id, None)
                 return self._snapshot(
@@ -250,7 +287,7 @@ class ManagedSsmSessionRunner:
                 )
             naturally_finished = exit_code is not None
             if exit_code is None:
-                exit_code, stop_error = self._stop_process(owned)
+                exit_code, stop_error = _stop_process(owned.process)
                 process_error = _combine_errors(process_error, stop_error)
             end_error = self._capture_end_error(owned)
             self._owned.pop(operation_id, None)
@@ -302,33 +339,6 @@ class ManagedSsmSessionRunner:
         if cleanup is not None:
             primary.add_note(f"EndSession failed ({type(cleanup).__name__})")
         raise primary
-
-    @staticmethod
-    def _stop_process(
-        owned: _OwnedSession,
-    ) -> tuple[int | None, PluginExecutionError | None]:
-        try:
-            owned.process.terminate()
-            try:
-                return owned.process.wait(timeout=5), None
-            except TimeoutError:
-                owned.process.kill()
-                return owned.process.wait(timeout=5), None
-        except Exception as primary:
-            recovery_notes: list[str] = []
-            try:
-                owned.process.kill()
-            except Exception as error:
-                recovery_notes.append(f"kill failed ({type(error).__name__})")
-            exit_code: int | None = None
-            try:
-                exit_code = owned.process.wait(timeout=5)
-            except Exception as error:
-                recovery_notes.append(f"wait failed ({type(error).__name__})")
-            detail = f"{type(primary).__name__}: {primary}"
-            if recovery_notes:
-                detail += "; " + "; ".join(recovery_notes)
-            return exit_code, PluginExecutionError("plugin.stop.failed", detail)
 
     def _capture_end_error(self, owned: _OwnedSession) -> PluginExecutionError | None:
         try:
@@ -418,3 +428,30 @@ def _combine_errors(
         aws_action=primary.aws_action,
         correlation_id=primary.correlation_id,
     )
+
+
+def _stop_process(
+    process: SessionProcess,
+) -> tuple[int | None, PluginExecutionError | None]:
+    try:
+        process.terminate()
+        try:
+            return process.wait(timeout=5), None
+        except TimeoutError:
+            process.kill()
+            return process.wait(timeout=5), None
+    except Exception as primary:
+        recovery_notes: list[str] = []
+        try:
+            process.kill()
+        except Exception as error:
+            recovery_notes.append(f"kill failed ({type(error).__name__})")
+        exit_code: int | None = None
+        try:
+            exit_code = process.wait(timeout=5)
+        except Exception as error:
+            recovery_notes.append(f"wait failed ({type(error).__name__})")
+        detail = f"{type(primary).__name__}: {primary}"
+        if recovery_notes:
+            detail += "; " + "; ".join(recovery_notes)
+        return exit_code, PluginExecutionError("plugin.stop.failed", detail)

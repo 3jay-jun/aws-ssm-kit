@@ -1,11 +1,15 @@
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, call
 
 import pytest
 
-from aws_connect.application.rds_tunnel_service import TunnelSessionService
+from aws_connect.application.rds_tunnel_service import (
+    SaveTunnelSessionRequest,
+    TunnelSessionService,
+)
 from aws_connect.domain.aws_profile import AwsProfile, SessionCredentials
 from aws_connect.domain.errors import ConfigurationError
 from aws_connect.domain.s3_location import S3Location
@@ -25,6 +29,57 @@ def profile(name: str) -> AwsProfile:
         b"encrypted-a",
         b"encrypted-b",
     )
+
+
+def test_v12_tunnel_migrates_to_default_duration_and_enforces_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import aws_connect.infrastructure.sqlite_profile_store as module
+
+    database = tmp_path / "v12.db"
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "MIGRATIONS", tuple(item for item in MIGRATIONS if item[0] <= 12))
+        legacy = SqliteProfileStore(database)
+        owner = legacy.create(profile("legacy"))
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                """INSERT INTO tunnel_sessions
+                (profile_id, name, host, remote_port, local_port, target_mode,
+                 created_at, updated_at)
+                VALUES (?, 'db', 'db.internal', 3306, 13306, 'select', ?, ?)""",
+                (owner.id, datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()),
+            )
+        assert legacy.current_schema_version() == 12
+    upgraded = SqliteProfileStore(database)
+    assert upgraded.current_schema_version() == 13
+    assert upgraded.list_tunnels(owner.require_id())[0].session_duration_hours == 12
+    for invalid in (36, 2, 0, None):
+        with sqlite3.connect(database) as connection, pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE tunnel_sessions SET session_duration_hours=?", (invalid,))
+    assert SqliteProfileStore(database).current_schema_version() == 13
+
+
+def test_saved_duration_roundtrip_update_rename_and_clone(tmp_path: Path) -> None:
+    store = SqliteProfileStore(tmp_path / "state.db")
+    owner = store.create(profile("duration"))
+    profiles = Mock()
+    profiles.resolve.return_value = owner
+    service = TunnelSessionService(profiles, store)
+    request = SaveTunnelSessionRequest(
+        owner.id, "db", "db.internal", 3306, 13306, TargetMode.SELECT
+    )
+    created = service.create(request)
+    assert created.session_duration_hours == 12
+    for hours in (1, 8, 12, 24):
+        updated = service.update(
+            replace(request, tunnel_id=created.id, session_duration_hours=hours)
+        )
+        assert updated.session_duration_hours == hours
+        assert service.show(created.require_id()).session_duration_hours == hours
+        assert service.list()[0].session_duration_hours == hours
+    assert service.update(replace(request, tunnel_id=created.id)).session_duration_hours == 24
+    assert service.rename(created.require_id(), "renamed").session_duration_hours == 24
+    assert service.clone(created.require_id(), "copy").session_duration_hours == 24
 
 
 def test_migrations_crud_default_and_cascade(tmp_path) -> None:
@@ -137,7 +192,7 @@ def test_versioned_settings_migration_persists_and_deletes_values(tmp_path) -> N
     database = tmp_path / "state.db"
     store = SqliteProfileStore(database)
 
-    assert store.current_schema_version() == store.expected_schema_version == 11
+    assert store.current_schema_version() == store.expected_schema_version == 13
     assert store.get_setting("log.level") is None
     store.put_setting("log.level", "WARNING")
     store.put_setting("log.level", "ERROR")
@@ -285,7 +340,7 @@ def test_saved_secret_v7_migration_applies_snapshot_defaults(tmp_path) -> None:
     store = SqliteProfileStore(database)
     migrated = store.get_saved_secret_by_identifier(int(profile_id or 0), "db/legacy")
 
-    assert store.current_schema_version() == store.expected_schema_version == 11
+    assert store.current_schema_version() == store.expected_schema_version == 13
     assert migrated is not None
     assert migrated.value == ""
     assert migrated.lookup_mode is SecretLookupMode.DIRECT

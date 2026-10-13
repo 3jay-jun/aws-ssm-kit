@@ -11,9 +11,17 @@ visual geometry, colors, spacing, icons, and state presentation.
 - The central GUI error mapper owns dialogs, toasts, field errors, and recovery actions.
 - UI tests use fake services; business rules belong in Application tests.
 - The canonical visual-comparison viewport is 1424 × 894 with a full-window shell and no
-  outer inset; the logo region and navigation share a 220 px width; 1024 × 720 is the no-overlap responsive gate with keyboard-accessible actions.
+  outer inset or global top header; the logo, profile selector, and navigation share a 220 px
+  sidebar; 1024 × 720 is the no-overlap responsive gate with keyboard-accessible actions.
+- The sidebar profile selector is the only global authentication control. It displays only the
+  profile name, authentication state, and remaining token time; account/user details stay in the
+  profile dialog. S3 file/mount routes share one accordion and activity history stays at the bottom.
 - Shared GUI style tokens and reusable page/card/button/status helpers are the visual SSOT; feature
   pages must not redefine conflicting colors, spacing, radii, or primary/danger button semantics.
+- RDS duration choices come from the tunnel domain, not the profile authentication constants.
+  The existing 2-second worker poll observes all owned profiles; only the displayed rows are
+  filtered by current profile. Poll requests cannot overlap. Expiration is a typed terminal
+  reason rendered through the existing notice signal, never an error dialog on clean cleanup.
 - `tools/render_gui.py` renders every real Qt page with isolated local state and no AWS calls for
   deterministic desktop and responsive visual QA.
 - The S3 page performs file selection/drop on the GUI thread but runs preflight, listing, and upload

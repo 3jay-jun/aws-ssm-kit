@@ -72,6 +72,12 @@ class CredentialProtector(Protocol):
     def unprotect(self, value: bytes) -> str: ...
 
 
+class SharedCredentialsWriter(Protocol):
+    """Publish temporary credentials for other AWS SDKs and tools."""
+
+    def write(self, profile_id: int, credentials: PlainCredentials) -> None: ...
+
+
 class IdentityGateway(Protocol):
     def get_identity(self, credentials: PlainCredentials, region: str) -> AwsIdentity: ...
 

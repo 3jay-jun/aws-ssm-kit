@@ -96,6 +96,34 @@ def test_pending_blocks_delete_edit_profile_and_shutdown(drives):
     assert store.get(saved.profile_id) is not None
 
 
+def test_reset_allows_reconnect_but_pending_cache_still_blocks_destructive_operations(drives):
+    service, saved, _, store, mount, _ = drives
+    mount.assert_editable.side_effect = ConfigurationError("drive.cache.pending", "Unsent data")
+    service.disconnect(saved.id)
+    service.connect(saved.id, OperationContext())
+    service.shutdown()
+    for operation in (
+        lambda: service.delete(saved.id),
+        lambda: service.save(replace(saved, letter="T")),
+    ):
+        with pytest.raises(ConfigurationError, match="drive.cache.pending"):
+            operation()
+    with pytest.raises(ConfigurationError), service.profile_deletion(saved.profile_id):
+        store.delete(saved.profile_id)
+    assert store.get_drive(saved.id) == saved
+    assert store.get(saved.profile_id) is not None
+
+
+def test_shutdown_rejects_new_connections_after_preserving_recovery_cache(drives):
+    service, saved, _, _, mount, _ = drives
+    mount.assert_editable.side_effect = ConfigurationError("drive.cache.pending", "Unsent data")
+    service.shutdown()
+    mount.disconnect.assert_called_once_with(saved)
+    mount.assert_editable.assert_not_called()
+    with pytest.raises(ConfigurationError, match="drive.closing"):
+        service.connect(saved.id, OperationContext())
+
+
 def test_shutdown_attempts_other_drives_after_failure_and_can_retry(drives):
     service, saved, other, store, mount, _ = drives
     second = service.save(S3Drive(None, other.id, "second", "test-bucket", "", "T"))

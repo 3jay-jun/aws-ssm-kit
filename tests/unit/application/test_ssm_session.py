@@ -5,7 +5,7 @@ import pytest
 
 from aws_connect.application.operations import OperationCancelled
 from aws_connect.application.ports import PluginDiagnostic, StartedSsmSession
-from aws_connect.application.ssm_session import ForegroundSsmSessionRunner
+from aws_connect.application.ssm_session import ForegroundSsmSessionRunner, SessionEndReason
 from aws_connect.domain.aws_profile import PlainCredentials
 from aws_connect.domain.errors import PluginExecutionError
 
@@ -22,6 +22,58 @@ def build() -> tuple[ForegroundSsmSessionRunner, Mock, Mock, PlainCredentials]:
     plugin.run.return_value = 0
     credentials = PlainCredentials("ACCESSKEYTEST0001", "test-secret-value-long", "token")
     return ForegroundSsmSessionRunner(gateway, plugin), gateway, plugin, credentials
+
+
+@pytest.mark.parametrize("kill_required", [False, True])
+def test_foreground_timeout_stops_process_and_ends_once(kill_required: bool) -> None:
+    runner, gateway, plugin, credentials = build()
+    process = plugin.launch.return_value
+    process.wait.side_effect = (
+        [TimeoutError(), TimeoutError(), -9] if kill_required else [TimeoutError(), -15]
+    )
+    result = runner.run(credentials, "ap-northeast-2", "i-0123456789abcdef0", timeout_seconds=3600)
+    assert result.end_reason is SessionEndReason.MAX_DURATION
+    assert result.plugin_exit_code == 0
+    assert process.wait.call_args_list[0].kwargs == {"timeout": 3600}
+    process.terminate.assert_called_once()
+    assert process.kill.call_count == int(kill_required)
+    gateway.end_session.assert_called_once()
+    plugin.run.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["terminate", "end"])
+def test_foreground_timeout_cleanup_failure_is_not_success(failure: str) -> None:
+    runner, gateway, plugin, credentials = build()
+    process = plugin.launch.return_value
+    process.wait.side_effect = [TimeoutError(), -9]
+    if failure == "terminate":
+        process.terminate.side_effect = OSError("stop failed")
+    else:
+        gateway.end_session.side_effect = OSError("end failed")
+    with pytest.raises(PluginExecutionError) as caught:
+        runner.run(credentials, "ap-northeast-2", "i-0123456789abcdef0", timeout_seconds=3600)
+    assert caught.value.message_code == (
+        "plugin.stop.failed" if failure == "terminate" else "session.end.failed"
+    )
+    gateway.end_session.assert_called_once()
+
+
+@pytest.mark.parametrize("outcome", [0, 7, KeyboardInterrupt(), OSError("wait failed")])
+def test_bounded_foreground_preserves_exit_and_interruption(outcome: object) -> None:
+    runner, gateway, plugin, credentials = build()
+    process = plugin.launch.return_value
+    process.wait.side_effect = [outcome, -15]
+    if outcome == 0:
+        result = runner.run(credentials, "ap-northeast-2", "i-0123456789abcdef0", timeout_seconds=1)
+        assert result.end_reason is None
+        process.terminate.assert_not_called()
+    else:
+        expected = (
+            KeyboardInterrupt if isinstance(outcome, KeyboardInterrupt) else PluginExecutionError
+        )
+        with pytest.raises(expected):
+            runner.run(credentials, "ap-northeast-2", "i-0123456789abcdef0", timeout_seconds=1)
+    gateway.end_session.assert_called_once()
 
 
 def test_remote_host_request_is_shared_by_sdk_and_plugin() -> None:

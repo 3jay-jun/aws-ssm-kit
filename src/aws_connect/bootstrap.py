@@ -40,6 +40,7 @@ from aws_connect.infrastructure.aws_remote_secret_gateway import (
 )
 from aws_connect.infrastructure.aws_s3_gateway import Boto3S3Gateway
 from aws_connect.infrastructure.aws_secrets_gateway import Boto3SecretsGateway
+from aws_connect.infrastructure.aws_shared_credentials import AwsSharedCredentialsWriter
 from aws_connect.infrastructure.aws_ssm_gateway import (
     Boto3Ec2MetadataGateway,
     Boto3ManagedInstanceGateway,
@@ -105,6 +106,7 @@ class _LocalFoundation:
     legacy_import: LegacyIniImportService
     doctor: DoctorService
     activity_logs: ActivityLogService
+    private_file_access: WindowsPrivateFileAccess
 
 
 def build_system_info_service() -> SystemInfoService:
@@ -198,6 +200,7 @@ def _build_local_foundation(data_directory: Path | None = None) -> _LocalFoundat
         legacy_import,
         doctor,
         activity_logs,
+        private_file_access,
     )
 
 
@@ -211,7 +214,13 @@ def build_application_services(data_directory: Path | None = None) -> Applicatio
     clock = local.clock
     profiles = ProfileService(store, protector, gateway)
     authentication = AuthenticationService(
-        profiles, store, protector, gateway, clock, activity_logs=local.activity_logs
+        profiles,
+        store,
+        protector,
+        gateway,
+        clock,
+        activity_logs=local.activity_logs,
+        shared_credentials=AwsSharedCredentialsWriter(file_access=local.private_file_access),
     )
     sessions = authentication.session_guard
     managed_instances = Boto3ManagedInstanceGateway()

@@ -12,6 +12,8 @@ from aws_connect.domain.errors import ConfigurationError
 
 _HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 _INSTANCE_ID = re.compile(r"^i-[0-9a-fA-F]{8,17}$")
+TUNNEL_SESSION_DURATION_HOURS = (1, 8, 12, 24)
+DEFAULT_TUNNEL_SESSION_DURATION_HOURS = 12
 
 
 class TargetMode(StrEnum):
@@ -36,8 +38,10 @@ class TunnelSession:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     last_used_at: datetime | None = None
+    session_duration_hours: int = DEFAULT_TUNNEL_SESSION_DURATION_HOURS
 
     def __post_init__(self) -> None:
+        validate_session_duration_hours(self.session_duration_hours)
         normalized_name = self.name.strip()
         normalized_host = self.host.strip()
         if not normalized_name:
@@ -76,6 +80,13 @@ class TunnelSession:
             )
             raise _configuration(code)
         return candidate
+
+
+def validate_session_duration_hours(value: int) -> None:
+    if type(value) is not int or value not in TUNNEL_SESSION_DURATION_HOURS:
+        raise ConfigurationError(
+            "rds.session.duration.invalid", "세션 유지 시간은 1, 8, 12, 24시간 중 선택하세요."
+        )
 
 
 def validate_local_port(port: int) -> None:

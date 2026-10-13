@@ -653,3 +653,24 @@ def test_ec2_terminal_completion_logs_success_and_real_failure_separately(histor
         (ExecutionResult.SUCCESS, ExecutionLevel.INFO),
         (ExecutionResult.FAILURE, ExecutionLevel.ERROR),
     }
+
+
+def test_rds_expiration_stop_reason_survives_history_storage(history) -> None:
+    from tests.unit.application.test_rds_tunnel_service import duration_service
+
+    from aws_connect.application.rds_tunnel_service import StartTunnelRequest
+
+    logs, store, _path = history
+    service, _gateway, _process = duration_service()
+    service._activity_logs = logs
+    service.start_managed(StartTunnelRequest(4, 7))
+    service._clock.now.return_value += timedelta(hours=1)
+    service.active_tunnels()
+    service.active_tunnels()
+    entries = store.query_execution_logs(ExecutionLogFilter(), 100)
+    completed = [
+        item for item in entries if item.action == "stop" and item.phase is ExecutionPhase.COMPLETED
+    ]
+    assert len(completed) == 1
+    assert completed[0].result is ExecutionResult.SUCCESS
+    assert json.loads(completed[0].metadata_json)["reason"] == "max_duration"

@@ -1,5 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from threading import Event
 from unittest.mock import Mock, call
 
 import pytest
@@ -13,6 +16,7 @@ from aws_connect.application.operations import (
     OperationResult,
     OperationState,
 )
+from aws_connect.application.ports import PluginDiagnostic, StartedSsmSession
 from aws_connect.application.rds_tunnel_operation import RdsTunnelOperationCoordinator
 from aws_connect.application.rds_tunnel_service import (
     PORT_FORWARD_DOCUMENT,
@@ -25,10 +29,13 @@ from aws_connect.application.rds_tunnel_service import (
 )
 from aws_connect.application.ssm_session import (
     ManagedSsmSession,
+    ManagedSsmSessionRunner,
+    SessionEndReason,
     SsmRunResult,
 )
 from aws_connect.domain.aws_profile import AwsProfile, PlainCredentials
 from aws_connect.domain.errors import (
+    ConfigurationError,
     CredentialValidationError,
     PluginExecutionError,
     PortAlreadyInUseError,
@@ -103,6 +110,141 @@ def test_session_service_crud_resolves_profile_and_preserves_domain() -> None:
     assert service.list("dev") == [created]
 
 
+def test_duration_create_update_omit_rename_and_clone() -> None:
+    profiles, store = Mock(), Mock()
+    profiles.resolve.return_value = profile()
+    service = TunnelSessionService(profiles, store)
+    store.create_tunnel.side_effect = lambda value: replace(value, id=4)
+    store.update_tunnel.side_effect = lambda value: value
+    request = SaveTunnelSessionRequest("dev", "db", "db.internal", 5432, 15432, TargetMode.SELECT)
+    assert service.create(request).session_duration_hours == 12
+    source = service.create(replace(request, session_duration_hours=8))
+    store.get_tunnel.return_value = source
+    assert service.update(replace(request, tunnel_id=4)).session_duration_hours == 8
+    assert (
+        service.update(
+            replace(request, tunnel_id=4, session_duration_hours=24)
+        ).session_duration_hours
+        == 24
+    )
+    assert service.rename(4, "renamed", "dev").session_duration_hours == 8
+    assert service.clone(4, "copy", "dev").session_duration_hours == 8
+
+
+def duration_service() -> tuple[RdsTunnelService, Mock, Mock]:
+    service, _sessions, _store, gateway, _runner = build_tunnel_service()
+    gateway.start_session.return_value = StartedSsmSession(
+        "ssm-test", "wss://test.invalid", "token"
+    )
+    plugin = Mock()
+    plugin.diagnose.return_value = PluginDiagnostic(
+        Path("plugin.exe"), True, "1.2.707.0", True, True
+    )
+    process = plugin.launch.return_value
+    process.pid = 9001
+    process.poll.return_value = None
+    process.wait.return_value = -15
+    service._managed_runner = ManagedSsmSessionRunner(gateway, plugin)
+    service._activity_logs = Mock()
+    service._saved.show.return_value = replace(tunnel(), session_duration_hours=1)
+    return service, gateway, process
+
+
+def test_expiry_boundary_reconnect_and_once_only_cleanup() -> None:
+    service, gateway, process = duration_service()
+    started_at = service._clock.now.return_value
+    first = service.start_managed(StartTunnelRequest(4, 7))
+    service._clock.now.return_value = started_at + timedelta(hours=1, microseconds=-1)
+    assert service.active_tunnels()[0].handle.state is OperationState.RUNNING
+    service._clock.now.return_value = started_at + timedelta(hours=1)
+    ended = service.active_tunnels()[0]
+    assert ended.handle.end_reason is SessionEndReason.MAX_DURATION
+    assert ended.error is None
+    assert service.active_tunnels() == []
+    assert service.stop_all() == []
+    process.terminate.assert_called_once()
+    gateway.end_session.assert_called_once()
+    stops = [
+        entry.kwargs
+        for entry in service._activity_logs.record.call_args_list
+        if entry.kwargs.get("message_code") == "rds.stop.completed"
+    ]
+    assert len(stops) == 1
+    assert '"reason": "max_duration"' in stops[0]["metadata_json"]
+    second = service.start_managed(StartTunnelRequest(4, 7))
+    assert second.handle.operation_id != first.handle.operation_id
+    assert service.active_tunnels()[0].handle.state is OperationState.RUNNING
+    service._clock.now.return_value = started_at + timedelta(days=1)
+    assert service.active_tunnels()[0].handle.end_reason is SessionEndReason.MAX_DURATION
+    assert gateway.end_session.call_count == 2
+
+
+@pytest.mark.parametrize("boundary", ["terminate", "end"])
+def test_expiration_retains_typed_cleanup_failure(boundary: str) -> None:
+    service, gateway, process = duration_service()
+    service.start_managed(StartTunnelRequest(4, 7))
+    service._clock.now.return_value += timedelta(hours=1)
+    if boundary == "terminate":
+        process.terminate.side_effect = OSError("failure")
+    else:
+        gateway.end_session.side_effect = OSError("failure")
+    ended = service.active_tunnels()[0]
+    assert ended.handle.state is OperationState.FAILED
+    assert ended.error.message_code == (
+        "plugin.stop.failed" if boundary == "terminate" else "session.end.failed"
+    )
+    assert service.active_tunnels() == []
+    gateway.end_session.assert_called_once()
+
+
+@pytest.mark.parametrize("winner", ["expiry", "manual", "shutdown"])
+def test_expiry_manual_shutdown_race_has_one_cleanup_owner(winner: str) -> None:
+    service, gateway, process = duration_service()
+    started = service.start_managed(StartTunnelRequest(4, 7))
+    operation_id = started.handle.operation_id
+    service._clock.now.return_value += timedelta(hours=1)
+    entered, release = Event(), Event()
+
+    def terminate() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    process.terminate.side_effect = terminate
+    actions = {
+        "expiry": service.active_tunnels,
+        "manual": lambda: service.stop(operation_id),
+        "shutdown": service.stop_all,
+    }
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        first = executor.submit(actions[winner])
+        assert entered.wait(5)
+        others = [executor.submit(action) for name, action in actions.items() if name != winner]
+        release.set()
+        first.result(timeout=5)
+        for future in others:
+            try:
+                future.result(timeout=5)
+            except ConfigurationError as error:
+                # Explicit stop after another owner completed has no active operation.
+                assert error.message_code == "rds.tunnel.operation.not_found"
+    process.terminate.assert_called_once()
+    gateway.end_session.assert_called_once()
+    assert service._managed == {}
+
+
+def test_foreground_duration_reason_and_history_use_configured_value() -> None:
+    service, _sessions, _store, _gateway, runner = build_tunnel_service()
+    service._activity_logs = Mock()
+    service._saved.show.return_value = replace(tunnel(), session_duration_hours=8)
+    runner.run.return_value = SsmRunResult("ssm-test", 0, SessionEndReason.MAX_DURATION)
+    result = service.start(StartTunnelRequest(4, 7))
+    assert runner.run.call_args.kwargs["timeout_seconds"] == 8 * 3600
+    assert result.handle.end_reason is SessionEndReason.MAX_DURATION
+    assert result.handle.state is OperationState.SUCCEEDED
+    records = service._activity_logs.record.call_args_list
+    assert any(item.kwargs.get("metadata_json") == '{"reason": "max_duration"}' for item in records)
+
+
 def test_session_clone_reuses_create_with_independent_identity_and_usage_history() -> None:
     profiles = Mock()
     profiles.resolve.return_value = profile()
@@ -171,6 +313,7 @@ def test_fixed_and_selected_target_start_native_parameters(mode, selected, targe
         document_name=PORT_FORWARD_DOCUMENT,
         parameters=parameters,
         context=runner.run.call_args.kwargs["context"],
+        timeout_seconds=43200,
     )
     assert result.handle.state is OperationState.SUCCEEDED
     assert result.target_instance_id == target
@@ -298,8 +441,12 @@ def test_stop_all_attempts_every_gui_owned_tunnel_before_reporting_failure() -> 
     service, _sessions, _store, _managed_instances, _runner = build_tunnel_service()
     service._managed_runner = Mock()
     service._managed = {
-        "operation-one": _ManagedTunnel(tunnel(), "i-0123456789abcdef0", 1, "ssm-one"),
-        "operation-two": _ManagedTunnel(tunnel(), "i-0123456789abcdef0", 2, "ssm-two"),
+        "operation-one": _ManagedTunnel(
+            tunnel(), "i-0123456789abcdef0", 1, "ssm-one", datetime(2026, 9, 11, tzinfo=UTC)
+        ),
+        "operation-two": _ManagedTunnel(
+            tunnel(), "i-0123456789abcdef0", 2, "ssm-two", datetime(2026, 9, 11, tzinfo=UTC)
+        ),
     }
     failure = PluginExecutionError("plugin.stop.failed", "test cleanup failure")
     service.stop = Mock(  # type: ignore[method-assign]
@@ -327,7 +474,9 @@ def test_terminal_tunnel_failure_is_returned_once_then_metadata_is_released() ->
         "operation-rds", 5, "ssm-rds", OperationState.FAILED, 8, failure
     )
     service._managed = {
-        "operation-rds": _ManagedTunnel(tunnel(), "i-0123456789abcdef0", 5, "ssm-rds")
+        "operation-rds": _ManagedTunnel(
+            tunnel(), "i-0123456789abcdef0", 5, "ssm-rds", datetime(2026, 9, 11, tzinfo=UTC)
+        )
     }
 
     terminal = service.active_tunnels(7)
@@ -343,7 +492,9 @@ def test_tunnel_status_exception_becomes_one_terminal_result_and_releases_metada
     service._managed_runner = Mock()
     service._managed_runner.status.side_effect = failure
     service._managed = {
-        "operation-rds": _ManagedTunnel(tunnel(), "i-0123456789abcdef0", 5, "ssm-rds")
+        "operation-rds": _ManagedTunnel(
+            tunnel(), "i-0123456789abcdef0", 5, "ssm-rds", datetime(2026, 9, 11, tzinfo=UTC)
+        )
     }
 
     terminal = service.active_tunnels(7)

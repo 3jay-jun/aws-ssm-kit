@@ -74,6 +74,7 @@ class S3DrivesPage(QWidget):
         self._catalog_loading = False
         self._catalog_attempted: int | None = None
         self._task: TaskHandle | None = None
+        self._cancel_requested = False
         self._shutdown: Callable[[], None] | None = None
         self._shutdown_error: Callable[[ApplicationError], None] | None = None
         self._editing_id: int | None = None
@@ -211,11 +212,11 @@ class S3DrivesPage(QWidget):
         toolbar.setSpacing(8)
         self.edit_button = QPushButton("저장")
         self.edit_button.clicked.connect(self.save)
-        self.connect_button = QPushButton("연결")
-        self.connect_button.setProperty("variant", "primary")
-        self.connect_button.clicked.connect(self.connect_selected)
-        self.disconnect_button = QPushButton("연결 해제")
-        self.disconnect_button.clicked.connect(self.disconnect_selected)
+        self.connection_button = QPushButton()
+        self.connection_button.setProperty("variant", "primary")
+        self.connection_button.clicked.connect(self.toggle_connection)
+        self.connect_button = self.connection_button
+        self.disconnect_button = self.connection_button
         self.cancel_button = QPushButton("취소")
         self.cancel_button.clicked.connect(self.cancel)
         self.open_button = QPushButton("탐색기에서 열기")
@@ -224,8 +225,7 @@ class S3DrivesPage(QWidget):
         toolbar.addWidget(self.open_button)
         for button, icon, title in (
             (self.edit_button, "common-save.svg", "저장"),
-            (self.connect_button, "common-start.svg", "연결"),
-            (self.disconnect_button, "common-stop.svg", "연결 해제"),
+            (self.connection_button, "common-start.svg", "연결 시작"),
         ):
             button.setText("")
             button.setProperty("action_button", True)
@@ -241,8 +241,7 @@ class S3DrivesPage(QWidget):
         for button in (
             self.cancel_button,
             self.edit_button,
-            self.connect_button,
-            self.disconnect_button,
+            self.connection_button,
         ):
             toolbar.addWidget(button)
         editor.addLayout(toolbar)
@@ -460,20 +459,43 @@ class S3DrivesPage(QWidget):
         ):
             control.setEnabled(editable)
         self.edit_button.setEnabled(editable and self._dirty)
-        self.connect_button.setEnabled(
-            enabled
-            and state in (DriveState.DISCONNECTED, DriveState.ERROR)
-            and bool(self.name.text().strip() and self.bucket.currentText().strip())
+        stopping = self._task is not None or state is not DriveState.DISCONNECTED
+        set_button_icon(
+            self.connection_button,
+            "common-stop.svg" if stopping else "common-start.svg",
+            tooltip="연결 취소"
+            if self._task is not None
+            else "연결 종료"
+            if stopping
+            else "연결 시작",
+            color="#ffffff",
         )
-        self.disconnect_button.setEnabled(
-            enabled and selected is not None and state is not DriveState.DISCONNECTED
+        self.connection_button.setProperty("variant", "danger" if stopping else "primary")
+        self.connection_button.style().unpolish(self.connection_button)
+        self.connection_button.style().polish(self.connection_button)
+        self.connection_button.setEnabled(
+            self._shutdown is None
+            and not self._cancel_requested
+            and (
+                self._task is not None
+                or (
+                    enabled
+                    and (
+                        selected is not None
+                        if stopping
+                        else bool(self.name.text().strip() and self.bucket.currentText().strip())
+                    )
+                )
+            )
         )
         self.open_button.setEnabled(enabled and state is DriveState.CONNECTED)
         self.mapping_status.setText(_STATE_TEXT[state])
-        self.cancel_button.setVisible(self._busy or self._dirty)
-        self.cancel_button.setEnabled(self._task is not None or (enabled and self._dirty))
+        self.cancel_button.setVisible(not self._busy and self._dirty)
+        self.cancel_button.setEnabled(enabled and self._dirty)
         self.status.setText(
-            "작업 중…"
+            "연결 취소 중…"
+            if self._cancel_requested
+            else "작업 중…"
             if self._busy
             else "저장하지 않은 변경사항"
             if self._dirty
@@ -673,20 +695,40 @@ class S3DrivesPage(QWidget):
             return
         self._connect_drive(drive)
 
+    def toggle_connection(self) -> None:
+        """Keep start, cooperative cancellation and safe disconnect in one place."""
+        if self._shutdown is not None or self._cancel_requested:
+            return
+        if self._task is not None:
+            self.cancel()
+        elif not self._busy:
+            drive = self._selected()
+            if (
+                drive is not None
+                and self._items[drive.require_id()].state is not DriveState.DISCONNECTED
+            ):
+                self.disconnect_selected()
+            else:
+                self.connect_selected()
+
     def _connect_drive(self, drive: S3Drive) -> None:
         self._busy = True
         self._actions()
         if self._authenticated:
-            self._task = self._authenticated.submit_long(
+            handle = self._authenticated.submit_long(
                 drive.profile_id,
                 lambda context: self._service.connect(drive.require_id(), context),
                 self._done,
                 self._failed,
                 on_cancel=lambda: self._done(None),
             )
+            if self._busy:
+                self._task = handle
         else:
+            context = OperationContext()
+            self._task = TaskHandle(context.cancellation)
             self._runner.submit(
-                lambda: self._service.connect(drive.require_id(), OperationContext()),
+                lambda: self._service.connect(drive.require_id(), context),
                 self._done,
                 self._failed,
             )
@@ -722,14 +764,17 @@ class S3DrivesPage(QWidget):
             self._runner.submit(lambda: self._service.delete(drive_id), deleted, self._failed)
 
     def cancel(self) -> None:
-        if self._task:
+        if self._task and not self._cancel_requested:
+            self._cancel_requested = True
             self._task.cancel()
+            self._actions()
         elif not self._busy:
             self._fill(self._selected())
 
     def _done(self, _value: object) -> None:
         self._busy = False
         self._task = None
+        self._cancel_requested = False
         self._actions()
         if self._shutdown is not None:
             self._finish_shutdown()

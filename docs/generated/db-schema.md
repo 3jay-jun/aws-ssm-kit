@@ -182,3 +182,10 @@ CREATE TABLE s3_drives (
     );
     CREATE INDEX s3_drives_by_profile ON s3_drives(profile_id, name);
 ```
+
+## Migration 13
+
+```sql
+ALTER TABLE tunnel_sessions ADD COLUMN session_duration_hours INTEGER NOT NULL DEFAULT 12
+        CHECK (session_duration_hours IN (1, 8, 12, 24));
+```

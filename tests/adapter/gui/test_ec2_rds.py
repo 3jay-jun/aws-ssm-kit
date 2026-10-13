@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 from unittest.mock import Mock
 
@@ -20,6 +21,7 @@ from aws_connect.application.rds_tunnel_service import (
     TunnelHandle,
     TunnelOwner,
 )
+from aws_connect.application.ssm_session import SessionEndReason
 from aws_connect.domain.errors import ApplicationError, ConfigurationError, PluginExecutionError
 from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
 from aws_connect.presentation.gui.ec2_rds import Ec2Page, RdsPage
@@ -149,6 +151,8 @@ class FakeSavedSessions:
             request.local_port,
             request.target_mode,
             request.target_instance_id,
+            session_duration_hours=request.session_duration_hours
+            or self.item.session_duration_hours,
         )
         return self.item
 
@@ -454,6 +458,7 @@ def test_rds_complete_new_session_saves_fixed_relay_request() -> None:
             15432,
             TargetMode.FIXED,
             "i-0123456789abcdef0",
+            session_duration_hours=12,
         )
     ]
 
@@ -497,6 +502,7 @@ def test_rds_connection_saves_current_editor_values_before_starting() -> None:
     page.session_list.setCurrentRow(0)
     page.host.setText("edited.example.internal")
     page.local_port.setValue(15432)
+    page.session_duration.setCurrentIndex(page.session_duration.findData(8))
 
     # Changing the port disables connection until the debounced check completes.
     assert not page.connection_button.isEnabled()
@@ -506,6 +512,9 @@ def test_rds_connection_saves_current_editor_values_before_starting() -> None:
 
     assert saved.saved[-1].host == "edited.example.internal"
     assert saved.saved[-1].local_port == 15432
+    assert saved.saved[-1].session_duration_hours == 8
+    assert tunnels.active[0].tunnel.session_duration_hours == 8
+    assert not page.session_duration.isEnabled()
     assert tunnels.start_calls == [StartTunnelRequest(3, 1, None)]
 
 
@@ -855,6 +864,74 @@ def test_rds_endpoint_catalog_selects_host_and_port_without_expanding_editor() -
     endpoints.list.assert_called_once_with(1)
 
 
+def test_rds_saved_selection_and_catalog_reload_preserve_each_endpoint() -> None:
+    from dataclasses import replace
+
+    _app()
+    saved = FakeSavedSessions()
+    second = replace(saved.item, id=4, name="Second DB", host="second.internal", remote_port=5432)
+    missing = replace(saved.item, id=5, name="Unlisted DB", host="unlisted.internal")
+    custom_port = replace(saved.item, id=6, name="Custom port", remote_port=3307)
+    sessions = Mock(wraps=saved)
+    sessions.list.return_value = [saved.item, second, missing, custom_port]
+    endpoints = Mock()
+    endpoints.list.return_value = [
+        RdsEndpoint("first", saved.item.host, 3306, "mysql"),
+        RdsEndpoint("second", second.host, 5432, "postgres"),
+    ]
+    page = RdsPage(
+        sessions,
+        FakeTunnels(saved),  # type: ignore[arg-type]
+        FakeEc2(),  # type: ignore[arg-type]
+        ImmediateRunner(),  # type: ignore[arg-type]
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+        endpoints=endpoints,
+    )
+    page.set_profile(1)
+
+    for row, session, catalog_index in (
+        (1, second, 1),
+        (0, saved.item, 0),
+        (2, missing, -1),
+        (3, custom_port, -1),
+        (1, second, 1),
+    ):
+        page.session_list.setCurrentRow(row)
+        for reload_catalog in (False, True):
+            if reload_catalog:
+                page.reload_endpoints()
+            assert page.host.text() == session.host
+            assert page.remote_port.value() == session.remote_port
+            assert page.host_catalog.currentIndex() == catalog_index
+            assert page.host.isHidden() == (catalog_index >= 0)
+            assert not page._is_editor_dirty()
+            request = page._save_request()
+            assert request is not None
+            assert (request.host, request.remote_port) == (session.host, session.remote_port)
+
+    page.host.setText("edited.internal")
+    page.remote_port.setValue(15432)
+    page.reload_endpoints()
+    assert page.host.text() == "edited.internal"
+    assert page.remote_port.value() == 15432
+    assert page.host_catalog.currentIndex() == -1
+    assert not page.host.isHidden()
+    assert page._is_editor_dirty()
+
+    page.new_session(confirm_discard=False)
+    assert page.host_catalog.currentIndex() == -1
+    assert page.host.text() == ""
+    assert not page.host.isHidden()
+    page.host_catalog.setCurrentIndex(1)
+    assert (page.host.text(), page.remote_port.value()) == (second.host, second.remote_port)
+    page.prefill_endpoint(saved.item.host, 3306)
+    assert page.host_catalog.currentIndex() == 0
+    page.prefill_endpoint(missing.host, 3306)
+    assert page.host_catalog.currentIndex() == -1
+    assert not page.host.isHidden()
+
+
 def test_rds_draft_survives_polling_and_save_switches_to_update() -> None:
     _app()
     saved = FakeSavedSessions()
@@ -1053,4 +1130,144 @@ def test_ec2_start_completion_cannot_leak_to_another_profile():
     page.set_profile(2)
     callback(object())
     assert not page._starting_targets and not page._instance_timer.isActive()
+    page.close()
+
+
+def test_rds_duration_default_restore_dirty_expiry_and_reconnect() -> None:
+    _app()
+    saved = FakeSavedSessions()
+    saved.item = replace(saved.item, session_duration_hours=24)
+    tunnels = FakeTunnels(saved)
+    page = RdsPage(
+        saved,
+        tunnels,
+        FakeEc2(),
+        ImmediateRunner(),
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+        discard_confirmation=lambda _parent: False,
+    )
+    page.set_profile(1)
+    assert [page.session_duration.itemData(i) for i in range(page.session_duration.count())] == [
+        1,
+        8,
+        12,
+        24,
+    ]
+    assert page.session_duration.currentData() == 12
+    page.session_list.setCurrentRow(0)
+    assert page.session_duration.currentData() == 24
+    assert not page._is_editor_dirty()
+    page.session_duration.setCurrentIndex(page.session_duration.findData(1))
+    assert page._is_editor_dirty()
+    page.new_session()
+    assert page._selected_id == 3  # Declined discard of duration edit.
+    page.toggle_connection()
+    assert tunnels.active[0].tunnel.session_duration_hours == 1
+    assert not page.session_duration.isEnabled()
+    notices, errors, projections = [], [], []
+    page.notice_raised.connect(notices.append)
+    page.error_raised.connect(errors.append)
+    page.tunnels_changed.connect(projections.append)
+    ended = replace(
+        tunnels.active[0],
+        handle=replace(
+            tunnels.active[0].handle,
+            state=OperationState.CANCELLED,
+            end_reason=SessionEndReason.MAX_DURATION,
+        ),
+    )
+    tunnels.active = [ended]
+    page.refresh_active()
+    assert page.tunnel_state.text() == "세션 유지 시간 만료로 종료됨"
+    assert page.session_duration.isEnabled()
+    assert notices == ["개발 DB: 세션 유지 시간 만료로 종료됨"]
+    assert errors == []
+    assert projections[-1] == []
+    assert page.active_list.count() == 0
+    tunnels.active = []
+    page.refresh_active()
+    assert page.tunnel_state.text() == "세션 유지 시간 만료로 종료됨"
+    assert len(notices) == 1
+    page.toggle_connection()
+    assert page._selected_id not in page._expired_tunnels
+    assert not page.session_duration.isEnabled()
+    page.stop_selected()
+    page.new_session(confirm_discard=False)
+    assert page.session_duration.currentData() == 12
+    page.close()
+
+
+def test_rds_poll_keeps_other_profile_tunnels_expiring_and_serializes_refresh() -> None:
+    _app()
+    saved = FakeSavedSessions()
+    tunnels = FakeTunnels(saved)
+    page = RdsPage(
+        saved,
+        tunnels,
+        FakeEc2(),
+        ImmediateRunner(),
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+    )
+    page.set_profile(1)
+    page.session_list.setCurrentRow(0)
+    page.toggle_connection()
+    page.set_profile(2)
+    assert page._poll_timer.isActive()
+    assert not page._active
+    queued = QueuedRunner()
+    page._runner = queued
+    page.refresh_active()
+    page.refresh_active()
+    assert len(queued.pending) == 1
+    page._runner = ImmediateRunner()
+    page._poll_pending = False
+    ended = replace(
+        tunnels.active[0],
+        handle=replace(
+            tunnels.active[0].handle,
+            state=OperationState.CANCELLED,
+            end_reason=SessionEndReason.MAX_DURATION,
+        ),
+    )
+    tunnels.active = [ended]
+    page.refresh_active()
+    assert not page._poll_timer.isActive()
+    assert saved.item.require_id() in page._expired_tunnels
+    page.close()
+
+
+def test_rds_other_profile_cleanup_failure_still_surfaces() -> None:
+    _app()
+    saved = FakeSavedSessions()
+    tunnels = FakeTunnels(saved)
+    page = RdsPage(
+        saved,
+        tunnels,
+        FakeEc2(),
+        ImmediateRunner(),
+        lambda _parent, _arn: None,
+        lambda _parent, _id: True,
+    )
+    page.set_profile(1)
+    page.session_list.setCurrentRow(0)
+    page.toggle_connection()
+    page.set_profile(2)
+    errors = []
+    page.error_raised.connect(errors.append)
+    failure = ConfigurationError("session.end.failed", "cleanup failed")
+    tunnels.active = [
+        replace(
+            tunnels.active[0],
+            error=failure,
+            handle=replace(
+                tunnels.active[0].handle,
+                state=OperationState.FAILED,
+            ),
+        )
+    ]
+    page.refresh_active()
+    assert errors == [failure]
+    assert not page._poll_timer.isActive()
     page.close()

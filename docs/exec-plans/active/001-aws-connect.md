@@ -2586,3 +2586,89 @@ Phase 0에서 다음 항목을 확정해야 한다.
 - `./scripts/check.ps1` → 기존 vendor/graft 문서 링크 오류 실패; `.qa-common-style/secrets-compact-check.log`. 전체 게이트 통과 아님. `graft build` → CLI 미설치로 실행 불가; 생성 노드 수동 편집하지 않음.
 - 사이드이펙트: GUI 행 폭/텍스트 그리기만 변경, 추가 AWS 호출/DB migration/의존성/타이머 없음. 실제 AWS 조회는 실행하지 않았다.
 - 다음 단계: 실행 앱 재시작 확인, EXE 배포 시 재빌드. 기존 문서 게이트 QA-001은 별도 후속.
+
+## 2026-09-30 사이드바 중심 공통 셸 개편
+- SSOT 검색: `graft ask "GUI shell sidebar header current profile selector navigation S3 submenu activity logs refresh" --source`,
+  `graft skeleton window.py/test_shell.py`, `rg`의 현재 프로필/Account ID/IAM 사용자/토큰 만료/
+  S3 파일·마운트/실행 로그를 사용했다. 기존 인증 ViewModel, 프로필 선택·갱신 경로,
+  ProfileDialog, 페이지별 새로고침을 재사용하고 인증·도메인 규칙은 추가하지 않았다.
+- 전역 상단 헤더를 제거하고 로고·현재 프로필명·인증 상태·토큰 남은 시간을 220px
+  사이드바 상단으로 이동했다. 드롭다운에서 프로필 직접 전환, 인증 정보 확인, 인증 갱신을
+  제공하며 Account ID/IAM 사용자는 기존 상세 모달에서만 표시한다.
+- 메뉴를 홈/EC2/RDS/Secrets로 단순화하고 S3 파일·마운트를 자동 펼침/활성 상태가 있는
+  S3 아코디언으로 묶었다. 작업 기록은 최하단에 분리했으며 전역 사용자/새로고침/설정은 없다.
+  페이지 제목, 오류 안내, DESIGN/FRONTEND/HTML 목업도 같은 용어와 구조로 동기화했다.
+- 검증: `.venv/Scripts/python.exe -m pytest tests/adapter/gui --no-cov -q ...` → 134 passed;
+  `ruff check src tests tools`, 변경 파일 `ruff format --check`, `mypy`(96 files),
+  `tools/architecture_check.py` 통과. `graft build` 성공.
+- Qt fake 렌더 `.qa-sidebar-final/desktop`, `.qa-sidebar-final/small`의 홈/S3 및 전체 페이지를
+  1424×894/1024×720에서 확인했다. 홈의 펼침 S3가 활성처럼 보이던 QSS와 미지원 삼각 글리프를
+  보정한 뒤 S3 파일에서 부모/하위 메뉴 활성 상태를 재확인했다.
+- `scripts/check.ps1`은 기존 `.vendor-license-source`와 `graft`의 깨진 문서 링크(QA-001)로
+  documentation 단계에서 실패했다. 이번 변경 문서의 신규 깨진 링크는 출력에 없다.
+- 사이드이펙트: 공통 헤더 92px 제거로 모든 페이지의 세로 작업 공간이 늘고, 프로필 전환은
+  기존 검증 후 기능 데이터 갱신 호출만 사용한다. 추가 AWS 호출, 포트/프로세스, DB migration,
+  환경변수, 의존성 변화는 없다. 다음 단계는 개발 앱 재시작 확인이며 EXE 배포 시 재빌드한다.
+
+### 2026-09-30 프로필 선택/S3 아코디언 시각 보정
+- 사용자 캡처에서 프로필 카드의 강한 파란 포커스 테두리, 기본 QMenu 체크박스, 문자형
+  S3 `+/-`를 확인했다. 기존 `QMenu`, 인증 ViewModel, `common-*`/`chevron-down.svg`를 재사용했다.
+- 프로필 선택을 파란 아이콘 배경·프로필명·작은 상태 문구·chevron의 전용 접근성 카드로
+  교체했다. 메뉴는 카드 폭의 라운드 surface, 현재 항목 단일 체크 아이콘, 정보/갱신 SVG로
+  구성하며 네이티브 체크박스를 제거했다. 마우스뿐 아니라 Enter/Space 열기를 유지한다.
+- S3 부모는 텍스트를 `S3`로 고정하고 패키지 chevron을 paint하여 펼침은 아래, 접힘은 오른쪽으로
+  회전한다. 활성/펼침 상태 분리는 기존 계약을 유지한다.
+- 검증: GUI 134 passed, Ruff, 변경 파일 format, mypy 96 files, architecture 통과.
+  `.qa-sidebar-polish/desktop`, `small`, `profile-menu.png` 시각 확인. `scripts/check.ps1`은
+  기존 vendor/graft 문서 링크(QA-001)로 documentation 단계에서 동일하게 실패했다.
+- 사이드이펙트: paint는 12×8 chevron 하나에 한정되고 추가 타이머/AWS/DB/프로세스 변화가 없다.
+
+### 2026-09-30 AWS 공유 credentials 동기화
+- SSOT 검색: `aws_session_token`, `PlainCredentials`, `SessionGuard`, `put_session`,
+  `AuthenticationService.refresh`. 검증된 STS 세션 저장의 단일 지점인 refresh에 좁은
+  `SharedCredentialsWriter` 포트를 추가하고 Infrastructure 파일 어댑터를 조합했다.
+- 수용 기준: 토큰 발급 성공 시 `%USERPROFILE%\.aws\credentials`의
+  `[aws-connect-{profile_id}]`와 `[default]`를 같은 값으로 갱신하고 다른 섹션은 보존한다.
+  파싱/쓰기/ACL 실패는 typed 오류로 표시하며 앱 내부 신규 세션을 폐기한다.
+- 보안/사이드이펙트: 장기 키는 내보내지 않고 검증된 임시 키 3종만 평문 공유 파일에 기록한다.
+  같은 프로필의 외부 AWS 도구 기본 인증이 토큰 만료까지 변경된다. DB migration, AWS 추가 호출,
+  환경변수, 의존성, 포트/프로세스 변경은 없다.
+- 검증: 관련 집중 테스트 46 passed, 파일 어댑터/인증 테스트 28 passed. 전체 pytest는
+  591 passed, 1 skipped, coverage 86.47%이며 기존 SQLite schema 12/테스트 기대값 11 불일치
+  2건만 실패했다. Ruff, format, mypy(96 files), architecture, import-linter, Bandit,
+  critical branch coverage(5 files 100%), 변경 파일 secret scan, `graft build` 통과.
+- 표준 `scripts/check.ps1`은 코드 단계 전 기존 `.vendor-license-source` 및 `graft` 깨진 링크
+  QA-001로 documentation 단계에서 중단됐다. `git diff --check` 전체 실행도 기존 ACL 제한
+  `.pytest-tmp-*` 파일을 읽지 못했으며 변경 파일의 공백 오류는 확인되지 않았다.
+- 다음 단계: 앱에서 인증 갱신 후 `%USERPROFILE%\.aws\credentials`의 `[default]`와
+  `[aws-connect-{profile_id}]`를 확인한다. 배포 EXE에는 재빌드가 필요하다.
+
+### 2026-10-07 RDS 저장 엔드포인트 선택 표시 수정
+- 범위/수용 기준: 서로 다른 저장 터널의 Host/Remote Port를 선택 상자에 정확히 표시한다.
+  조회 목록에 없거나 포트가 다르면 저장값을 직접 입력란에 유지하고, 목록 재조회가
+  저장값/미저장 편집값을 덮어쓰지 않는다. 새 세션과 대시보드 prefill도 같은 동기화 사용.
+- 검색: graft map, graft ask "RdsPage tunnel selection saved endpoint populate form" --source,
+  ec2_rds.py/test_ec2_rds.py skeleton, rg endpoint/_select/setEditText/remote_host.
+  기존 _select_session은 숨긴 host만 갱신했고, _endpoints_loaded는 addItem signal로
+  첫 endpoint를 편집값에 적용했다. 기존 QSignalBlocker 패턴과 단일 표시 동기화 재사용.
+- 구현: GUI 표시 동기화만 변경. DESIGN의 저장값 우선 계약 명시. DB/서비스 변경 없음.
+- 검증: `.venv/Scripts/python.exe -m pytest tests/adapter/gui/test_ec2_rds.py --no-cov -q -o cache_dir=.test-cache-rds-endpoint --basetemp=.test-rds-endpoint` → 28 passed.
+- `.venv/Scripts/python.exe -m pytest tests/adapter/gui tests/adapter/cli/test_rds_cli.py tests/unit/application/test_rds_tunnel_service.py tests/unit/application/test_rds_endpoint_service.py --no-cov -q -o cache_dir=.test-cache-rds-regression --basetemp=.test-rds-regression` → 160 passed.
+- `.venv/Scripts/python.exe -m ruff check src/aws_connect/presentation/gui/ec2_rds.py tests/adapter/gui/test_ec2_rds.py` → passed (최초 줄 길이 오류 수정 후 재검증).
+  같은 파일 ruff format 적용. `.venv/Scripts/python.exe -m mypy` → 97 files passed.
+- `.venv/Scripts/python.exe tools/architecture_check.py` → passed;
+  `.venv/Scripts/python.exe -m bandit -q src/aws_connect/presentation/gui/ec2_rds.py` → exit 0;
+  `.venv/Scripts/python.exe -m detect_secrets scan src/aws_connect/presentation/gui/ec2_rds.py tests/adapter/gui/test_ec2_rds.py` → results {}.
+- `./scripts/check.ps1` → documentation failed (exit 1), 기존 vendor/graft 링크 오류 QA-001.
+  증거: `.rds-endpoint-check.log`. 전체 게이트 통과로 보고하지 않는다.
+- 사이드이펙트: GUI 표시/선택 signal 제어만 변경. 추가 AWS 호출, DB migration, 포트,
+  프로세스, 타이머, 의존성 변경 없음. 실제 AWS 및 사용자 저장 데이터 접근 없음.
+- 다음 단계: 개발 앱 재시작 후 확인. 배포 EXE 반영은 재빌드 필요. QA-001 후속 유지.
+
+
+### 2026-10-07 RDS 터널별 세션 유지 시간
+- 실행/검증 기록: [004-rds-session-duration.md](004-rds-session-duration.md).
+- 1/8/12/24시간(기본 12), migration 13, GUI/CLI 수명 집행 및 max_duration 작업 기록 구현.
+- 기존 RDS 엔드포인트 선택 수정과 사용자 작업 보존. 관련 194개/전체 648개 테스트 통과,
+  최종 GUI/서비스 회귀 57개 통과. 전체 게이트의 기존 QA-001 문서/format 문제는 유지.
+- 추가 적용: 앱 재시작 시 DB 자동 이관, 배포본은 EXE/ZIP 재빌드 필요. 실제 AWS 미실행.

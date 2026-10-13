@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import Mock
 
@@ -10,6 +11,7 @@ from aws_connect.application.rds_tunnel_service import (
     TunnelHandle,
     TunnelOwner,
 )
+from aws_connect.application.ssm_session import SessionEndReason
 from aws_connect.bootstrap import ApplicationServices
 from aws_connect.cli_main import build_parser, main
 from aws_connect.domain.errors import ConfigurationError, PortAlreadyInUseError
@@ -34,6 +36,97 @@ def saved() -> TunnelSession:
 
 def services() -> ApplicationServices:
     return ApplicationServices(Mock(), Mock(), Mock(), Mock(), Mock(), Mock(), Mock())
+
+
+@pytest.mark.parametrize("command", ["create", "update"])
+@pytest.mark.parametrize("hours", [None, 1, 8, 12, 24])
+def test_duration_cli_request_and_outputs(command: str, hours: int | None, capsys) -> None:
+    app = services()
+    existing = replace(saved(), session_duration_hours=8)
+    app.tunnel_sessions.show.return_value = existing
+    result = replace(
+        existing,
+        session_duration_hours=hours if hours is not None else 12 if command == "create" else 8,
+    )
+    getattr(app.tunnel_sessions, command).return_value = result
+    args = ["rds", "session", command]
+    if command == "update":
+        args.append("dev-db")
+    args += [
+        "--name",
+        "dev-db",
+        "--host",
+        "db.internal",
+        "--remote-port",
+        "3306",
+        "--local-port",
+        "13306",
+        "--target-mode",
+        "select",
+    ]
+    if hours is not None:
+        args += ["--session-duration-hours", str(hours)]
+    assert build_parser().parse_args(args).session_duration_hours == hours
+    assert main([*args, "--output", "json"], services=app) == 0
+    assert (
+        json.loads(capsys.readouterr().out)["session_duration_hours"]
+        == result.session_duration_hours
+    )
+    assert getattr(app.tunnel_sessions, command).call_args.args[0].session_duration_hours == hours
+    assert main(args, services=app) == 0
+    assert f"session_duration_hours: {result.session_duration_hours}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("hours", ["36", "0", "2", "bad"])
+def test_cli_rejects_invalid_tunnel_duration(hours: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "rds",
+                "session",
+                "create",
+                "--name",
+                "db",
+                "--host",
+                "db.internal",
+                "--remote-port",
+                "3306",
+                "--local-port",
+                "13306",
+                "--target-mode",
+                "select",
+                "--session-duration-hours",
+                hours,
+            ]
+        )
+
+
+@pytest.mark.parametrize("output", ["json", "text"])
+def test_cli_expiration_returns_success_with_reason(output: str, capsys) -> None:
+    app = services()
+    app.rds_tunnels.start.return_value = OperationResult(
+        "operation",
+        OperationState.SUCCEEDED,
+        TunnelConnectionResult(
+            saved(),
+            "i-0123456789abcdef0",
+            TunnelHandle(
+                "ssm-test",
+                TunnelOwner.FOREGROUND,
+                OperationState.SUCCEEDED,
+                end_reason=SessionEndReason.MAX_DURATION,
+            ),
+            0,
+        ),
+    )
+    assert main(["rds", "tunnel", "start", "dev-db", "--output", output], services=app) == 0
+    rendered = capsys.readouterr().out
+    if output == "json":
+        payload = json.loads(rendered)
+        assert payload["end_reason"] == "max_duration"
+        assert payload["plugin_exit_code"] == 0
+    else:
+        assert "end_reason: max_duration" in rendered
 
 
 def test_session_list_and_create_use_application_service(capsys) -> None:

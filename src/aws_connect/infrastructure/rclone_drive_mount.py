@@ -309,9 +309,14 @@ class RcloneDriveMount:
         mount = self._mounts.get(drive.require_id())
         if mount is None:
             try:
-                self.assert_editable(drive)
+                root = self._root(drive)
+                if root.exists():
+                    with self._lease(root):
+                        pass
             except ApplicationError as error:
                 return DriveStatus(drive, DriveState.ERROR, error.message_code)
+            # Recoverable cache is not a live connection. Editing/deletion still
+            # uses assert_editable; reconnect reuses the original cache binding.
             return DriveStatus(drive, DriveState.DISCONNECTED)
         if mount.state in (DriveState.CONNECTING, DriveState.DISCONNECTING):
             return DriveStatus(drive, mount.state)
@@ -339,13 +344,37 @@ class RcloneDriveMount:
     def disconnect(self, drive: S3Drive) -> None:
         mount = self._mounts.get(drive.require_id())
         if mount is None:
-            self.assert_editable(drive)
+            root = self._root(drive)
+            if root.exists():
+                with self._lease(root):
+                    self._clear_clean_pending(root)
             return
         with mount.lock:
             root = self._root(drive)
-            if mount.process.poll() is not None:
+            if (
+                mount.process.poll() is not None
+                or not mount.mounted
+                or drive.letter in self.available_letters()
+            ):
+                # A failed/absent mount has no filesystem to drain or unmount.
+                # Stop only our owned child, retaining dirty cache for reconnect.
+                mount.state = DriveState.DISCONNECTING
+                mount.job.close()
+                try:
+                    mount.process.wait(timeout=10)
+                    if mount.mounted:
+                        self._wait_for_drive_removal(drive)
+                    self._clear_clean_pending(root)
+                except ApplicationError as error:
+                    mount.state = DriveState.ERROR
+                    mount.error = error.message_code
+                    raise
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    mount.state = DriveState.ERROR
+                    mount.error = "drive.process.failed"
+                    raise _error("process.failed") from error
                 self._release(drive, mount)
-                raise _error("cache.pending")
+                return
             mount.state = DriveState.DISCONNECTING
             try:
                 if mount.mounted:
@@ -366,11 +395,7 @@ class RcloneDriveMount:
                         time.sleep(0.25)
                     self._call(mount, "mount/unmount", {"mountPoint": f"{drive.letter}:"})
                     mount.mounted = False
-                deadline = time.monotonic() + 10
-                while drive.letter not in self.available_letters():
-                    if time.monotonic() >= deadline:
-                        raise _error("observe.failed")
-                    time.sleep(0.1)
+                self._wait_for_drive_removal(drive)
                 # Writers can race the drain. Check persisted metadata AFTER unmount too.
                 if cache_is_dirty(root):
                     raise _error("cache.pending")
@@ -378,12 +403,27 @@ class RcloneDriveMount:
                 mount.process.wait(timeout=10)
                 if cache_is_dirty(root):
                     raise _error("cache.pending")
-                (root / "pending.json").unlink(missing_ok=True)
+                self._clear_clean_pending(root)
                 self._release(drive, mount)
             except (ApplicationError, OSError, subprocess.TimeoutExpired):
                 mount.state = DriveState.ERROR
                 mount.error = "drive.cache.pending"
                 raise _error("cache.pending") from None
+
+    def _wait_for_drive_removal(self, drive: S3Drive) -> None:
+        deadline = time.monotonic() + 10
+        while drive.letter not in self.available_letters():
+            if time.monotonic() >= deadline:
+                raise _error("observe.failed")
+            time.sleep(0.1)
+
+    def _clear_clean_pending(self, root: Path) -> None:
+        """Remove stale recovery metadata only when no unsent data is present."""
+        if not cache_is_dirty(root):
+            try:
+                (root / "pending.json").unlink(missing_ok=True)
+            except OSError as error:
+                raise _error("cache.pending") from error
 
     def _release(self, drive: S3Drive, mount: _Mount) -> None:
         mount.job.close()

@@ -118,7 +118,7 @@ class SecretsPage(QWidget):
         apply_page_layout(root)
         page_head = QHBoxLayout()
         heading_copy = page_heading(
-            "Secrets Manager", "현재 조회 방식으로 접근 가능한 Secrets Manager 항목을 표시합니다."
+            "Secrets", "현재 조회 방식으로 접근 가능한 Secrets Manager 항목을 표시합니다."
         )
         page_head.addLayout(heading_copy)
         page_head.addStretch()

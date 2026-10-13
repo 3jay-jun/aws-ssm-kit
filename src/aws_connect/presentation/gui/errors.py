@@ -32,7 +32,7 @@ def map_error(error: ApplicationError) -> GuiErrorViewModel:
 
     title, message = _MESSAGES.get(
         error.message_code,
-        ("작업을 완료하지 못했습니다", "잠시 후 다시 시도하거나 실행 로그를 확인하세요."),
+        ("작업을 완료하지 못했습니다", "잠시 후 다시 시도하거나 작업 기록을 확인하세요."),
     )
     if (
         isinstance(error, AwsPermissionError)
@@ -186,6 +186,10 @@ _MESSAGES: dict[str, tuple[str, str]] = {
         "MFA 장치 ARN이 올바르지 않습니다",
         "현재 계정의 MFA ARN을 입력하세요.",
     ),
+    "rds.session.duration.invalid": (
+        "세션 유지 시간이 올바르지 않습니다",
+        "1시간, 8시간, 12시간 또는 24시간을 선택하세요.",
+    ),
     "profile.session_duration.invalid": (
         "인증 유지 시간이 올바르지 않습니다",
         "1시간, 8시간, 12시간, 24시간 또는 36시간을 선택하세요.",
@@ -211,6 +215,18 @@ _MESSAGES: dict[str, tuple[str, str]] = {
         "AWS 사용자 정보가 일치하지 않습니다",
         "Account ID와 IAM 사용자, Access Key를 확인하세요.",
     ),
+    "credentials.shared_file.write_failed": (
+        "AWS 공용 인증정보를 저장하지 못했습니다",
+        "%USERPROFILE%\\.aws\\credentials 파일 권한과 형식을 확인한 뒤 다시 인증하세요.",
+    ),
+    "credentials.shared_file.profile.invalid": (
+        "AWS 공용 프로필을 만들 수 없습니다",
+        "프로필을 다시 저장한 뒤 인증을 갱신하세요.",
+    ),
+    "credentials.shared_file.session_token.required": (
+        "임시 인증정보가 완전하지 않습니다",
+        "토큰을 다시 발급받으세요.",
+    ),
     "mfa.code.invalid": ("MFA 코드가 올바르지 않습니다", "6자리 숫자를 입력하세요."),
     "mfa.code.rejected": ("MFA 인증에 실패했습니다", "새 MFA 코드를 발급받아 다시 시도하세요."),
     "mfa.challenge.expired": ("MFA 요청이 만료되었습니다", "토큰 재발급을 다시 시작하세요."),
@@ -232,7 +248,7 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "gui.task.unexpected": (
         "예상하지 못한 오류가 발생했습니다",
-        "앱은 계속 실행됩니다. 실행 로그를 확인한 뒤 다시 시도하세요.",
+        "앱은 계속 실행됩니다. 작업 기록을 확인한 뒤 다시 시도하세요.",
     ),
     "ec2.target.not_online": (
         "EC2가 온라인 상태가 아닙니다",
@@ -320,7 +336,7 @@ _MESSAGES: dict[str, tuple[str, str]] = {
     ),
     "secret.relay.command.status_unknown": (
         "SSM 명령 상태를 확인할 수 없습니다",
-        "실행 로그를 확인한 뒤 새 조회를 시작하세요.",
+        "작업 기록을 확인한 뒤 새 조회를 시작하세요.",
     ),
     "secret.relay.timeout": (
         "EC2 경유 조회 시간이 초과되었습니다",
@@ -384,6 +400,7 @@ _FIELD_BY_CODE: dict[str, str] = {
     "profile.account_id.invalid": "profile_account_input",
     "profile.user_id.invalid": "profile_user_input",
     "profile.session_duration.invalid": "profile_session_duration",
+    "rds.session.duration.invalid": "rds_session_duration",
     "profile.credentials.required": "profile_access_key_input",
     "profile.credentials.incomplete": "profile_access_key_input",
     "credentials.access_key.invalid": "profile_access_key_input",

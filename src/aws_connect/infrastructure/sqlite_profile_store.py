@@ -211,6 +211,17 @@ MIGRATIONS += (
 )
 
 
+MIGRATIONS += (
+    (
+        13,
+        """
+        ALTER TABLE tunnel_sessions ADD COLUMN session_duration_hours INTEGER NOT NULL DEFAULT 12
+        CHECK (session_duration_hours IN (1, 8, 12, 24));
+    """,
+    ),
+)
+
+
 class SqliteProfileStore:
     """Short-transaction SQLite adapter with FK enforcement and busy timeout."""
 
@@ -722,8 +733,9 @@ class SqliteProfileStore:
                 cursor = connection.execute(
                     """INSERT INTO tunnel_sessions
                     (profile_id, name, host, remote_port, local_port, target_mode,
-                     target_instance_id, created_at, updated_at, last_used_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     target_instance_id, created_at, updated_at, last_used_at,
+                     session_duration_hours)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session.profile_id,
                         session.name,
@@ -735,6 +747,7 @@ class SqliteProfileStore:
                         now,
                         now,
                         _optional_datetime_text(session.last_used_at),
+                        session.session_duration_hours,
                     ),
                 )
                 tunnel_id = int(cursor.lastrowid or 0)
@@ -751,7 +764,7 @@ class SqliteProfileStore:
             with self._connect() as connection:
                 cursor = connection.execute(
                     """UPDATE tunnel_sessions SET name=?, host=?, remote_port=?, local_port=?,
-                    target_mode=?, target_instance_id=?, updated_at=?
+                    target_mode=?, target_instance_id=?, session_duration_hours=?, updated_at=?
                     WHERE id=? AND profile_id=?""",
                     (
                         session.name,
@@ -760,6 +773,7 @@ class SqliteProfileStore:
                         session.local_port,
                         session.target_mode.value,
                         session.target_instance_id,
+                        session.session_duration_hours,
                         _now_text(),
                         tunnel_id,
                         session.profile_id,
@@ -1011,6 +1025,7 @@ def _profile(row: sqlite3.Row) -> AwsProfile:
 def _tunnel(row: sqlite3.Row) -> TunnelSession:
     return TunnelSession(
         id=int(row["id"]),
+        session_duration_hours=int(row["session_duration_hours"]),
         profile_id=int(row["profile_id"]),
         name=str(row["name"]),
         host=str(row["host"]),

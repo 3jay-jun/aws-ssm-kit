@@ -96,6 +96,7 @@ def render(payload: dict[str, Any], *, output: str) -> str:
             else "\n".join(
                 f"{item['id']}: {item['name']} localhost:{item['local_port']} -> "
                 f"{item['host']}:{item['remote_port']} ({item['target_mode']})"
+                f"; session_duration_hours: {item['session_duration_hours']}"
                 for item in sessions
             )
         )
@@ -139,11 +140,14 @@ def render(payload: dict[str, Any], *, output: str) -> str:
         return (
             f"Tunnel {payload['session_id']} closed: localhost:{tunnel['local_port']} -> "
             f"{tunnel['host']}:{tunnel['remote_port']} via {payload['target_instance_id']}."
+            f" session_duration_hours: {tunnel['session_duration_hours']}"
+            + (f"; end_reason: {payload['end_reason']}" if payload.get("end_reason") else "")
         )
     if "target_mode" in payload:
         return (
             f"{payload['name']}: localhost:{payload['local_port']} -> "
             f"{payload['host']}:{payload['remote_port']} ({payload['target_mode']})"
+            f"; session_duration_hours: {payload['session_duration_hours']}"
         )
     if "session_id" in payload:
         return f"Session {payload['session_id']} closed ({payload['instance_id']})."

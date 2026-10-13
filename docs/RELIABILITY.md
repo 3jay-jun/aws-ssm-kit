@@ -1,5 +1,12 @@
 # Reliability Rules
 
+- S3 mount stop resets failed connections when no owned filesystem remains: stop the owned
+  child, wait for drive removal, release its lease/control secret, and remove only clean
+  recovery metadata. Dirty/unknown cache and its target binding survive for reconnect.
+  An unowned cache is disconnected (not a connection error); another owner's lease remains
+  an error. Edit, delete, and profile deletion still reject pending cache. Complete shutdown
+  may preserve recovery cache once owned processes/drives have stopped; retained cache alone
+  never blocks exit. Failure to stop a live owned connection still blocks exit.
 - Every long-running operation exposes explicit state, progress, cancellation, and ownership.
 - `AuthenticatedOperationCoordinator` is the Application-layer SSOT for EC2, RDS, Secrets,
   and S3 recovery: MFA resumes the exact original request at most once after successful refresh.
@@ -18,6 +25,16 @@
   discards only the cached temporary session and creates an MFA challenge. Protected long-lived
   profile credentials remain unchanged, and the original feature request resumes exactly once.
 - SQLite uses a busy timeout, short transactions, and versioned migrations.
+- Migration 13 adds tunnel duration with NOT NULL DEFAULT 12 and a 1/8/12/24 CHECK.
+  RDS lifetime begins at each successful plugin launch. Only the deadline is held in memory;
+  restart does not restore running state. GUI polls all owned profiles every 2 seconds and
+  compares the UTC clock, including elapsed sleep time. Normal scheduling tolerance is about
+  2 seconds, plus process/EndSession cleanup latency. No extra scheduler thread is introduced.
+- RDS poll, manual stop and shutdown serialize ownership/cleanup with the same lock. A terminal
+  snapshot is returned once; subsequent explicit stop of an absent operation remains not-found.
+  Bounded CLI foreground waits reuse the managed process terminate/kill helper, then EndSession.
+  Unbounded EC2 foreground execution is unchanged. Clean expiration returns `max_duration` and
+  records stop metadata `reason=max_duration`; cleanup failures retain their typed errors.
 - Check local port availability before starting the Session Manager Plugin.
 - On cancel, failure, or normal exit, owned plugin processes and SSM sessions are cleaned up.
 - A managed SSM runner retains temporary credentials only while its process is running. Launch or

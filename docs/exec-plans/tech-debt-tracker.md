@@ -12,3 +12,12 @@
 | QA-002 | Resolved 2026-09-18 | Existing S3 tests | 2026-09-17 전체 pytest에서 test_s3.py의 selected_files_and_folders_download_to_one_selected_root 및 upload_sources_accumulate_remove_clear_and_switch_single_action 실패 확인. | 신규 S3 표 UI 계약 반영 후 해당 테스트 포함 S3 80 passed, 1 skipped | Phase 9 S3 후속 검증 |
 | QA-003 | Resolved 2026-09-21 | Qt full-suite isolation | 테스트마다 top-level QWidget 및 자식 timer를 DeferredDelete로 정리하고 QApplication 수명을 session fixture로 유지. RDS→S3 충돌 재현 후 해결 확인. | GUI 117 passed, 전체 528 passed/1 skipped로 native crash 없이 종료 | Phase 9 CI 수정; `.test-ci-full-final.log` |
 | QA-004 | Resolved 2026-09-21 | RDS static scan | 안내 widget 초기화 assert 2건을 기존 Secrets 방식의 명시적 RuntimeError로 교체. | 전체 Bandit exit 0 | Phase 9 CI 수정 |
+
+
+## QA-001 recheck — 2026-10-07 RDS duration
+- Owner remains Phase 9 follow-up. `004-rds-session-duration.md` records current evidence:
+  check.ps1 documentation still fails on vendor/graft links; full format has one unchanged
+  mixed-line-ending file, `src/aws_connect/infrastructure/aws_identity_gateway.py`.
+- Feature tests and independent static/security gates pass; these unrelated gate failures are
+  not hidden or repaired by changing user work. Next: fix the existing gate scope/line endings
+  and rerun the full check before declaring repository release readiness.

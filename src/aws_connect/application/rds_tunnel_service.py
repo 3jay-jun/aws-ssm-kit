@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
-from threading import Lock
+from threading import RLock
 
 from aws_connect.application.activity_log_service import ActivityLogService, record_success
 from aws_connect.application.authentication_service import SessionGuard
@@ -22,6 +23,7 @@ from aws_connect.application.ssm_session import (
     ForegroundSsmSessionRunner,
     ManagedSsmSession,
     ManagedSsmSessionRunner,
+    SessionEndReason,
 )
 from aws_connect.domain.aws_profile import AwsProfile, PlainCredentials
 from aws_connect.domain.errors import (
@@ -30,7 +32,12 @@ from aws_connect.domain.errors import (
     PortAlreadyInUseError,
     TargetNotConnectedError,
 )
-from aws_connect.domain.tunnel_session import TargetMode, TunnelSession, validate_local_port
+from aws_connect.domain.tunnel_session import (
+    DEFAULT_TUNNEL_SESSION_DURATION_HOURS,
+    TargetMode,
+    TunnelSession,
+    validate_local_port,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +50,7 @@ class SaveTunnelSessionRequest:
     target_mode: TargetMode
     target_instance_id: str | None = None
     tunnel_id: int | None = None
+    session_duration_hours: int | None = None
 
 
 class TunnelOwner(StrEnum):
@@ -60,6 +68,7 @@ class TunnelHandle:
     local_host: str = "127.0.0.1"
     local_port: int | None = None
     exit_code: int | None = None
+    end_reason: SessionEndReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +93,7 @@ class _ManagedTunnel:
     target_instance_id: str
     process_id: int
     session_id: str
+    expires_at: datetime
 
 
 class TunnelSessionService:
@@ -148,6 +158,7 @@ class TunnelSessionService:
                 local_port=source.local_port,
                 target_mode=source.target_mode,
                 target_instance_id=source.target_instance_id,
+                session_duration_hours=source.session_duration_hours,
             )
         )
 
@@ -182,6 +193,13 @@ class TunnelSessionService:
             created_at=current.created_at if current else None,
             updated_at=current.updated_at if current else None,
             last_used_at=current.last_used_at if current else None,
+            session_duration_hours=(
+                request.session_duration_hours
+                if request.session_duration_hours is not None
+                else current.session_duration_hours
+                if current
+                else DEFAULT_TUNNEL_SESSION_DURATION_HOURS
+            ),
         )
 
 
@@ -212,7 +230,9 @@ class RdsTunnelService:
         self._managed_runner = managed_runner
         self._activity_logs = activity_logs
         self._managed: dict[str, _ManagedTunnel] = {}
-        self._managed_lock = Lock()
+        # Poll, explicit stop and shutdown share ownership until cleanup completes.
+        # Reentrant because expiry/shutdown reuse the public stop path (including history).
+        self._managed_lock = RLock()
 
     def local_port_available(self, port: int) -> bool:
         """Advisory local probe; start still checks again to protect against races."""
@@ -237,6 +257,7 @@ class RdsTunnelService:
             document_name=PORT_FORWARD_DOCUMENT,
             parameters=parameters,
             context=context,
+            timeout_seconds=tunnel.session_duration_hours * 3600,
         )
         self._store.touch_tunnel(tunnel.require_id(), self._clock.now())
         record_success(
@@ -249,10 +270,26 @@ class RdsTunnelService:
             operation_id=context.operation_id,
             metadata={"local_port": tunnel.local_port, "remote_port": tunnel.remote_port},
         )
+        if result.end_reason is not None:
+            record_success(
+                self._activity_logs,
+                "rds",
+                "stop",
+                target=tunnel.name,
+                profile_id=profile.require_id(),
+                region=profile.region,
+                operation_id=context.operation_id,
+                metadata={"reason": result.end_reason.value},
+            )
         return TunnelConnectionResult(
             self._saved.show(tunnel.require_id(), profile.require_id()),
             target,
-            TunnelHandle(result.session_id, TunnelOwner.FOREGROUND, OperationState.SUCCEEDED),
+            TunnelHandle(
+                result.session_id,
+                TunnelOwner.FOREGROUND,
+                OperationState.SUCCEEDED,
+                end_reason=result.end_reason,
+            ),
             result.plugin_exit_code,
         )
 
@@ -279,9 +316,14 @@ class RdsTunnelService:
             parameters=parameters,
             context=context,
         )
+        connected_at = self._clock.now()
         with self._managed_lock:
             self._managed[managed.operation_id] = _ManagedTunnel(
-                tunnel, target, managed.process_id, managed.session_id
+                tunnel,
+                target,
+                managed.process_id,
+                managed.session_id,
+                connected_at + timedelta(hours=tunnel.session_duration_hours),
             )
         self._store.touch_tunnel(tunnel.require_id(), self._clock.now())
         record_success(
@@ -310,61 +352,76 @@ class RdsTunnelService:
                 for operation_id, entry in self._managed.items()
                 if profile_id is None or entry.tunnel.profile_id == profile_id
             ]
-        active: list[TunnelConnectionResult] = []
-        for operation_id, entry in owned:
-            try:
-                managed = self._managed_runner.status(operation_id)
-            except ApplicationError as error:
-                managed = ManagedSsmSession(
-                    operation_id,
-                    entry.process_id,
-                    entry.session_id,
-                    OperationState.FAILED,
-                    error=error,
+            active: list[TunnelConnectionResult] = []
+            for operation_id, entry in owned:
+                try:
+                    if self._clock.now() >= entry.expires_at:
+                        handle = self.stop(operation_id, reason=SessionEndReason.MAX_DURATION)
+                        active.append(
+                            TunnelConnectionResult(
+                                entry.tunnel, entry.target_instance_id, handle, handle.exit_code
+                            )
+                        )
+                        continue
+                    managed = self._managed_runner.status(operation_id)
+                except ApplicationError as error:
+                    managed = ManagedSsmSession(
+                        operation_id,
+                        entry.process_id,
+                        entry.session_id,
+                        OperationState.FAILED,
+                        error=error,
+                    )
+                active.append(
+                    TunnelConnectionResult(
+                        entry.tunnel,
+                        entry.target_instance_id,
+                        self._handle(entry.tunnel, managed, TunnelOwner.GUI),
+                        managed.exit_code,
+                        managed.error,
+                    )
                 )
-            active.append(
-                TunnelConnectionResult(
-                    entry.tunnel,
-                    entry.target_instance_id,
-                    self._handle(entry.tunnel, managed, TunnelOwner.GUI),
-                    managed.exit_code,
-                    managed.error,
-                )
-            )
-            if managed.state is not OperationState.RUNNING:
-                with self._managed_lock:
+                if managed.state is not OperationState.RUNNING:
                     self._managed.pop(operation_id, None)
-        return active
+            return active
 
     @logged_operation("rds", "stop", completion=False)
-    def stop(self, operation_id: str, *, context: OperationContext | None = None) -> TunnelHandle:
+    def stop(
+        self,
+        operation_id: str,
+        *,
+        context: OperationContext | None = None,
+        reason: SessionEndReason | None = None,
+    ) -> TunnelHandle:
         if self._managed_runner is None:
             raise _configuration("rds.tunnel.managed_runner.unavailable")
         with self._managed_lock:
             entry = self._managed.get(operation_id)
-        if entry is None:
-            raise _configuration("rds.tunnel.operation.not_found")
-        tunnel = entry.tunnel
-        context = context or OperationContext(operation_id=operation_id)
-        context.raise_if_cancelled()
-        context.report("stopping", "rds.tunnel.stop", target=tunnel.name)
-        try:
-            managed = self._managed_runner.stop(operation_id)
-        finally:
-            with self._managed_lock:
+            if entry is None:
+                raise _configuration("rds.tunnel.operation.not_found")
+            tunnel = entry.tunnel
+            context = context or OperationContext(operation_id=operation_id)
+            context.raise_if_cancelled()
+            context.report("stopping", "rds.tunnel.stop", target=tunnel.name)
+            try:
+                managed = self._managed_runner.stop(operation_id)
+            finally:
                 self._managed.pop(operation_id, None)
-        if managed.error is not None:
-            raise managed.error
-        context.report("stopped", "rds.tunnel.stopped", completed=1, total=1, target=tunnel.name)
-        record_success(
-            self._activity_logs,
-            "rds",
-            "stop",
-            target=tunnel.name,
-            profile_id=tunnel.profile_id,
-            operation_id=operation_id,
-        )
-        return self._handle(tunnel, managed, TunnelOwner.GUI)
+            if managed.error is not None:
+                raise managed.error
+            context.report(
+                "stopped", "rds.tunnel.stopped", completed=1, total=1, target=tunnel.name
+            )
+            record_success(
+                self._activity_logs,
+                "rds",
+                "stop",
+                target=tunnel.name,
+                profile_id=tunnel.profile_id,
+                operation_id=operation_id,
+                metadata={"reason": reason.value} if reason is not None else None,
+            )
+            return self._handle(tunnel, managed, TunnelOwner.GUI, reason=reason)
 
     def stop_all(self, profile_id: int | None = None) -> list[TunnelHandle]:
         with self._managed_lock:
@@ -373,17 +430,17 @@ class RdsTunnelService:
                 for operation_id, entry in self._managed.items()
                 if profile_id is None or entry.tunnel.profile_id == profile_id
             ]
-        stopped: list[TunnelHandle] = []
-        first_error: ApplicationError | None = None
-        for operation_id in operation_ids:
-            try:
-                stopped.append(self.stop(operation_id))
-            except ApplicationError as error:
-                if first_error is None:
-                    first_error = error
-        if first_error is not None:
-            raise first_error
-        return stopped
+            stopped: list[TunnelHandle] = []
+            first_error: ApplicationError | None = None
+            for operation_id in operation_ids:
+                try:
+                    stopped.append(self.stop(operation_id))
+                except ApplicationError as error:
+                    if first_error is None:
+                        first_error = error
+            if first_error is not None:
+                raise first_error
+            return stopped
 
     def _prepare(
         self, request: StartTunnelRequest
@@ -414,7 +471,11 @@ class RdsTunnelService:
 
     @staticmethod
     def _handle(
-        tunnel: TunnelSession, managed: ManagedSsmSession, owner: TunnelOwner
+        tunnel: TunnelSession,
+        managed: ManagedSsmSession,
+        owner: TunnelOwner,
+        *,
+        reason: SessionEndReason | None = None,
     ) -> TunnelHandle:
         return TunnelHandle(
             session_id=managed.session_id,
@@ -424,6 +485,7 @@ class RdsTunnelService:
             process_id=managed.process_id,
             local_port=tunnel.local_port,
             exit_code=managed.exit_code,
+            end_reason=reason,
         )
 
     def _require_online_target(

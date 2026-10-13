@@ -9,6 +9,7 @@ from unittest.mock import Mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEventLoop, Qt, QThread, QThreadPool, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -222,6 +223,7 @@ def _window(
     connection_lifecycle=None,
     active_delete_confirmation=None,
     profile_clone_name_provider=None,
+    s3_drives=None,
 ) -> tuple[MainWindow, FakeProfiles, FakeOperations]:
     _app()
     profiles = FakeProfiles()
@@ -240,6 +242,7 @@ def _window(
         active_delete_confirmation=active_delete_confirmation,
         profile_clone_name_provider=profile_clone_name_provider,
         connection_lifecycle=lifecycle,  # type: ignore[arg-type]
+        s3_drives=s3_drives,
         auto_start=auto_start,
     )
     return window, profiles, operations
@@ -287,9 +290,10 @@ def test_profile_change_resumes_mfa_and_refreshes_header_and_feature_data() -> N
     window.connect_profile(2)
     window.open_profiles()
 
-    assert window.profile_name.text() == "운영계"
-    assert window.iam_user.text() == "user-2"
-    assert "인증됨" in window.auth_state.text()
+    assert "운영계" in window.profile_button.text()
+    assert "인증됨" in window.profile_button.text()
+    assert "user-2" not in window.profile_button.text()
+    assert "1234 5678 9012" not in window.profile_button.text()
     assert window.feature_data_revision == 2
     assert operations.resume_calls == [("operation-1", "123456")]
     assert window.profile_dialog.session_duration.currentData() == 36
@@ -299,7 +303,7 @@ def test_header_refresh_button_forces_token_reissue() -> None:
     window, _profiles, operations = _window(auto_start=False)
     window.reload_profiles()
 
-    window.refresh_button.click()
+    window.refresh_action.trigger()
 
     assert operations.start_calls == [(1, True)]
     assert operations.resume_calls == [("operation-1", "123456")]
@@ -451,7 +455,7 @@ def test_profile_without_mfa_connects_without_requesting_a_code() -> None:
 
     assert operations.start_calls == [(2, False)]
     assert operations.resume_calls == []
-    assert "인증됨" in window.auth_state.text()
+    assert "인증됨" in window.profile_button.text()
 
 
 def test_profile_dialog_persists_disabled_mfa_selection() -> None:
@@ -609,20 +613,76 @@ def test_dashboard_matches_mockup_card_content_and_routes() -> None:
         button.click()
         assert window.pages.currentIndex() == page
 
-    for index, title in enumerate(
-        ("대시보드", "EC2 접속", "RDS 터널", "Secrets", "S3 파일", "실행 로그")
+    for index, title in (
+        (0, "홈"),
+        (1, "EC2"),
+        (2, "RDS"),
+        (3, "Secrets"),
+        (4, "파일"),
+        (5, "작업 기록"),
     ):
         button = window.findChild(QPushButton, f"nav_{index}")
         assert button is not None
         assert button.text() == title
-        assert not button.icon().isNull()
+        if index != 4:
+            assert not button.icon().isNull()
 
-    assert window.profile_button.toolTip() == "프로필 관리"
-    assert window.profile_button.accessibleName() == "프로필 관리"
+    s3_button = window.findChild(QPushButton, "nav_s3")
+    assert s3_button is not None and s3_button.text() == "S3"
+
+    expected_titles = ("홈", "EC2", "RDS", "Secrets", "S3 파일", "작업 기록")
+    for index, title in enumerate(expected_titles):
+        page_title = window.pages.widget(index).findChild(QLabel, "page_title")
+        assert page_title is not None and page_title.text() == title
+
+    assert window.profile_button.toolTip() == "AWS 프로필 선택"
+    assert "AWS 프로필" in window.profile_button.accessibleName()
     assert not window.profile_button.icon().isNull()
-    assert window.refresh_button.toolTip() == "토큰 재발급"
-    assert window.refresh_button.accessibleName() == "토큰 재발급"
-    assert not window.refresh_button.icon().isNull()
+    assert window.refresh_action.text() == "인증 갱신"
+
+
+def test_sidebar_profile_menu_switches_profiles_and_exposes_secondary_actions() -> None:
+    window, profiles, _operations = _window(auto_start=False)
+    profiles.items[1] = _profile(2, "운영계", default=False)
+    window.reload_profiles()
+
+    window._rebuild_profile_menu()
+    active = window.profile_menu.findChild(QAction, "profile_select_1")
+    select = window.profile_menu.findChild(QAction, "profile_select_2")
+    details = window.profile_menu.findChild(QAction, "profile_details_action")
+    refresh = window.profile_menu.findChild(QAction, "profile_refresh_action")
+
+    assert active is not None and select is not None and details is not None and refresh is not None
+    assert not active.icon().isNull()
+    assert not active.isCheckable() and not select.isCheckable()
+    details.trigger()
+    assert window.profile_dialog.isVisible()
+    window.profile_dialog.close()
+    select.trigger()
+    assert "운영계" in window.profile_button.text()
+    assert window.feature_data_revision == 2
+
+
+def test_s3_navigation_is_an_accordion_and_keeps_active_child_visible() -> None:
+    service = Mock()
+    service.list.return_value = []
+    window, _profiles, _operations = _window(auto_start=False, s3_drives=service)
+    parent = window.findChild(QPushButton, "nav_s3")
+    children = window.findChild(QWidget, "s3_navigation_children")
+    files = window.findChild(QPushButton, "nav_4")
+    mounts = window.findChild(QPushButton, "nav_6")
+
+    assert parent is not None and children is not None
+    assert files is not None and mounts is not None
+    window.pages.setCurrentIndex(0)
+    parent.click()
+    assert children.isHidden()
+    mounts.click()
+    assert window.pages.currentIndex() == 6
+    assert not children.isHidden()
+    assert mounts.isChecked()
+    parent.click()
+    assert not children.isHidden()
 
 
 def test_gui_error_presentation_kind_controls_dialog_toast_and_field() -> None:
@@ -692,11 +752,9 @@ def test_1024_by_720_shell_keeps_critical_regions_inside_viewport() -> None:
 
     central = window.centralWidget().rect()
     critical: tuple[QWidget | None, ...] = (
-        window.findChild(QFrame, "authentication_header"),
         window.findChild(QFrame, "navigation"),
         window.dashboard_page,
         window.profile_button,
-        window.refresh_button,
     )
     for widget in critical:
         assert widget is not None
@@ -705,29 +763,9 @@ def test_1024_by_720_shell_keeps_critical_regions_inside_viewport() -> None:
         assert central.contains(top_left)
         assert central.contains(bottom_right)
 
-    assert not window.profile_button.geometry().intersects(window.refresh_button.geometry())
-    header_items = (
-        window.profile_name,
-        window.auth_state,
-        window.account_id,
-        window.iam_user,
-        window.token_expiry,
-        window.profile_button,
-        window.refresh_button,
-    )
-    for index, first in enumerate(header_items):
-        assert first.width() > 0 and first.height() > 0
-        for second in header_items[index + 1 :]:
-            assert not first.geometry().intersects(second.geometry())
-    assert window.auth_state.geometry().left() > window.token_expiry.geometry().left()
-    value_tops = {
-        window.profile_name.geometry().top(),
-        window.account_id.geometry().top(),
-        window.iam_user.geometry().top(),
-        window.token_expiry.geometry().top(),
-        window.auth_state.geometry().top(),
-    }
-    assert len(value_tops) == 1
+    assert window.findChild(QFrame, "authentication_header") is None
+    assert window.profile_button.width() > 0 and window.profile_button.height() > 0
+    assert window.dashboard_page.mapTo(window.centralWidget(), window.dashboard_page.pos()).y() == 0
 
 
 def test_desktop_shell_uses_mockup_geometry_tokens_exactly() -> None:
@@ -738,18 +776,16 @@ def test_desktop_shell_uses_mockup_geometry_tokens_exactly() -> None:
     app.processEvents()
 
     shell = window.findChild(QFrame, "app_shell")
-    header = window.findChild(QFrame, "authentication_header")
     navigation = window.findChild(QFrame, "navigation")
     dashboard = window.findChild(QWidget, "dashboard")
 
     assert shell is not None and shell.size().width() == 1424
     assert shell.size().height() == 894
     assert shell.pos().x() == 0 and shell.pos().y() == 0
-    assert header is not None and header.height() == 92
+    assert window.findChild(QFrame, "authentication_header") is None
     assert navigation is not None and navigation.width() == 220
-    assert window.profile_button.size().width() == 42
-    assert window.profile_button.size().height() == 42
-    assert window.refresh_button.size() == window.profile_button.size()
+    assert navigation.height() == 894
+    assert window.profile_button.height() == 54
     assert dashboard is not None and dashboard.layout() is not None
     margins = dashboard.layout().contentsMargins()
     assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (

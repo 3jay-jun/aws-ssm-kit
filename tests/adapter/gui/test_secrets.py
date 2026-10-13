@@ -188,7 +188,7 @@ def test_secrets_page_matches_mockup_header_toolbar_and_360px_split() -> None:
     _app()
     page = SecretsPage(FakeSecrets(), ImmediateRunner())  # type: ignore[arg-type]
 
-    assert page.findChild(QLabel, "page_title").text() == "Secrets Manager"
+    assert page.findChild(QLabel, "page_title").text() == "Secrets"
     assert page.findChild(QFrame, "secret_toolbar") is not None
     catalog = page.findChild(QFrame, "secret_catalog_card")
     assert catalog is not None

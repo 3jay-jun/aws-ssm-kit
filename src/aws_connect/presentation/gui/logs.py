@@ -78,7 +78,7 @@ class LogsSettingsPage(QWidget):
         apply_page_layout(layout)
         page_head = QHBoxLayout()
         heading_copy = page_heading(
-            "실행 로그",
+            "작업 기록",
             "프로그램 동작과 AWS 요청 이력을 확인할 수 있습니다. "
             "민감한 인증정보와 Secret 값은 마스킹되어 기록됩니다.",
         )

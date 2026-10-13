@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from unittest.mock import Mock
 
 import pytest
 
@@ -261,6 +262,48 @@ def test_refresh_then_reuse_and_refresh_when_near_expiry(tmp_path) -> None:
 
     clock.value += timedelta(hours=11, minutes=31)
     assert not authentication.status(created.id).reusable
+
+
+def test_refresh_publishes_verified_session_to_shared_credentials(tmp_path) -> None:
+    store, clock, gateway, profiles, _authentication, created = build_services(tmp_path)
+    shared_credentials = Mock()
+    authentication = AuthenticationService(
+        profiles,
+        store,
+        FakeCredentialProtector(),
+        gateway,
+        clock,
+        shared_credentials=shared_credentials,
+    )
+
+    authentication.refresh(created.id, "123456")
+
+    shared_credentials.write.assert_called_once_with(
+        created.id,
+        PlainCredentials("SESSIONKEYTEST001", "temporary-test-secret", "temporary-test-token"),
+    )
+
+
+def test_shared_credentials_failure_discards_new_cached_session(tmp_path) -> None:
+    store, clock, gateway, profiles, _authentication, created = build_services(tmp_path)
+    shared_credentials = Mock()
+    shared_credentials.write.side_effect = ConfigurationError(
+        "credentials.shared_file.write_failed", "PermissionError"
+    )
+    authentication = AuthenticationService(
+        profiles,
+        store,
+        FakeCredentialProtector(),
+        gateway,
+        clock,
+        shared_credentials=shared_credentials,
+    )
+
+    with pytest.raises(ConfigurationError) as caught:
+        authentication.refresh(created.id, "123456")
+
+    assert caught.value.message_code == "credentials.shared_file.write_failed"
+    assert store.get_session(created.id) is None
 
 
 def test_profile_without_mfa_issues_session_without_challenge_or_mfa_parameters(tmp_path) -> None:

@@ -157,7 +157,7 @@ class DashboardPage(QScrollArea):
         apply_page_layout(layout)
         head = QHBoxLayout()
         copy = page_heading(
-            "대시보드", "현재 AWS 프로필로 사용할 수 있는 기능과 최근 작업 현황을 확인합니다."
+            "홈", "현재 AWS 프로필로 사용할 수 있는 기능과 최근 작업 현황을 확인합니다."
         )
         head.addLayout(copy, 1)
         actions = QVBoxLayout()
@@ -211,7 +211,7 @@ class DashboardPage(QScrollArea):
         recent_copy.addWidget(QLabel("최근 실행한 작업 이력을 표시합니다."))
         recent_head.addLayout(recent_copy)
         recent_head.addStretch()
-        logs_button = QPushButton("실행 로그 전체 보기 →")
+        logs_button = QPushButton("작업 기록 전체 보기 →")
         logs_button.setObjectName("dashboard_logs_button")
         logs_button.clicked.connect(lambda: self.activated.emit("logs"))
         recent_head.addWidget(logs_button)

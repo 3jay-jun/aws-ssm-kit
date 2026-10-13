@@ -18,7 +18,13 @@ from aws_connect.application.operations import (
     authentication_capacity_error,
     new_operation_id,
 )
-from aws_connect.application.ports import Clock, CredentialProtector, IdentityGateway, ProfileStore
+from aws_connect.application.ports import (
+    Clock,
+    CredentialProtector,
+    IdentityGateway,
+    ProfileStore,
+    SharedCredentialsWriter,
+)
 from aws_connect.application.profile_service import ProfileService, ProfileSummary
 from aws_connect.domain.aws_profile import PlainCredentials, SessionCredentials
 from aws_connect.domain.errors import (
@@ -50,12 +56,14 @@ class AuthenticationService:
         gateway: IdentityGateway,
         clock: Clock,
         activity_logs: ActivityLogService | None = None,
+        shared_credentials: SharedCredentialsWriter | None = None,
     ) -> None:
         self._profiles = profiles
         self._store = store
         self._protector = protector
         self._gateway = gateway
         self._activity_logs = activity_logs
+        self._shared_credentials = shared_credentials
         self._clock = clock
         self._session_guard = SessionGuard(profiles, store, protector, gateway, clock)
         self._refresh_locks: dict[int, Lock] = {}
@@ -170,6 +178,13 @@ class AuthenticationService:
                 verified_at_utc=now,
             )
             self._store.put_session(session)
+            try:
+                if self._shared_credentials is not None:
+                    self._shared_credentials.write(profile_id, issued.credentials)
+            except ConfigurationError:
+                # A refresh is not complete until both credential stores agree.
+                self._store.delete_session(profile_id)
+                raise
             record_success(self._activity_logs, "auth", "refresh", profile_id=profile_id)
             return self.status(profile_id)
 

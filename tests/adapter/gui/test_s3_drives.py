@@ -5,7 +5,10 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QPushButton
 from tests.adapter.gui.test_shell import ImmediateTaskRunner
 
+from aws_connect.application.s3_drive_service import S3DriveService
+from aws_connect.domain.errors import ConfigurationError
 from aws_connect.domain.s3_drive import DriveState, DriveStatus, S3Drive
+from aws_connect.infrastructure.rclone_drive_mount import RcloneDriveMount
 from aws_connect.presentation.gui.s3_drives import S3DrivesPage
 
 
@@ -50,7 +53,10 @@ def test_connected_editor_is_locked_but_disconnect_available(qt_application):
     service.list.return_value = [replace(service.list.return_value[0], state=DriveState.CONNECTED)]
     widget.refresh()
     assert not widget.bucket.isEnabled()
-    assert not widget.connect_button.isEnabled()
+    assert widget.connection_button.isEnabled()
+    assert widget.connect_button is widget.disconnect_button
+    assert widget.connection_button.toolTip() == "연결 종료"
+    assert widget.connection_button.property("variant") == "danger"
     assert not widget.connect_button.isHidden()
     assert not widget.disconnect_button.isHidden()
     widget.disconnect_selected()
@@ -106,12 +112,154 @@ def test_new_connect_saves_then_connects_and_actions_have_tooltips(qt_applicatio
     assert service.connect.call_args.args[0] == 2
     for button, tooltip in (
         (widget.edit_button, "저장"),
-        (widget.connect_button, "연결"),
-        (widget.disconnect_button, "연결 해제"),
+        (widget.connection_button, "연결 시작"),
     ):
         assert button.text() == ""
         assert button.toolTip() == tooltip
         assert not button.icon().isNull()
+
+
+def test_connection_button_cancels_pending_mount_once_and_recovers(qt_application) -> None:
+    widget, service = page()
+    authenticated = Mock()
+    widget._authenticated = authenticated
+    button = widget.connection_button
+    widget.show()
+    qt_application.processEvents()
+    position = button.pos()
+    button.click()
+    assert button.toolTip() == "연결 취소"
+    assert button.property("variant") == "danger"
+    assert button.isEnabled()
+    assert widget.cancel_button.isHidden()
+    qt_application.processEvents()
+    assert button.pos() == position
+    button.click()
+    button.click()
+    authenticated.submit_long.return_value.cancel.assert_called_once()
+    assert not button.isEnabled()
+    assert widget.status.text() == "연결 취소 중…"
+    service.disconnect.assert_not_called()
+    authenticated.submit_long.call_args.kwargs["on_cancel"]()
+    assert button.isEnabled()
+    assert button.toolTip() == "연결 시작"
+    assert button.property("variant") == "primary"
+    assert widget._task is None
+
+
+def test_same_button_disconnects_once_and_preserves_error_cleanup(qt_application) -> None:
+    widget, service = page()
+    drive = service.list.return_value[0].drive
+    for state in (DriveState.CONNECTED, DriveState.ERROR):
+        service.list.return_value = [DriveStatus(drive, state)]
+        widget.refresh()
+        runner = widget._runner
+        widget._runner = Mock()
+        widget.connection_button.click()
+        operation, completed, failed = widget._runner.submit.call_args.args
+        widget.connection_button.click()
+        widget._runner.submit.assert_called_once()
+        assert not widget.connection_button.isEnabled()
+        operation()
+        widget._runner = runner
+        service.list.return_value = [DriveStatus(drive, DriveState.DISCONNECTED)]
+        completed(None)
+        assert widget.connection_button.toolTip() == "연결 시작"
+        assert widget.prefix.text() == drive.prefix
+    assert service.disconnect.call_count == 2
+    service.connect.assert_not_called()
+
+
+def test_mount_without_authentication_passes_cancellation_to_service(qt_application) -> None:
+    widget, service = page()
+    runner = widget._runner
+    widget._runner = Mock()
+    widget.connection_button.click()
+    operation, completed, failed = widget._runner.submit.call_args.args
+    widget.connection_button.click()
+    operation()
+    context = service.connect.call_args.args[1]
+    assert context.cancellation.is_cancellation_requested
+    widget._runner = runner
+    completed(None)
+    assert widget._task is None
+    assert widget.connection_button.toolTip() == "연결 시작"
+
+
+def test_stop_stale_error_without_process_clears_error_and_allows_start(
+    qt_application, tmp_path
+) -> None:
+    widget, service = page()
+    drive = service.list.return_value[0].drive
+    adapter = RcloneDriveMount(tmp_path / "rclone.exe", tmp_path / "cache", Mock())
+    root = adapter._root(drive)
+    root.mkdir(parents=True)
+    marker = root / "pending.json"
+    marker.write_text("{}")
+    service.list.return_value = [DriveStatus(drive, DriveState.ERROR, "drive.cache.pending")]
+    widget.refresh()
+    errors = []
+    widget.error_raised.connect(errors.append)
+
+    def stop(_drive_id: int) -> None:
+        adapter.disconnect(drive)
+        service.list.return_value = [adapter.status(drive)]
+
+    service.disconnect.side_effect = stop
+    widget.connection_button.click()
+    assert not marker.exists()
+    assert service.list.return_value[0].state is DriveState.DISCONNECTED
+    assert service.list.return_value[0].message_code == ""
+    assert widget.connection_button.toolTip() == "연결 시작"
+    assert widget.connection_button.property("variant") == "primary"
+    assert errors == []
+    widget.connection_button.click()
+    service.connect.assert_called_once()
+
+
+def test_shutdown_callback_completes_with_unconnected_recovery_cache(
+    qt_application, tmp_path
+) -> None:
+    widget, service = page()
+    drive = service.list.return_value[0].drive
+    adapter = RcloneDriveMount(tmp_path / "rclone.exe", tmp_path / "cache", Mock())
+    root = adapter._root(drive)
+    root.mkdir(parents=True)
+    (root / "pending.json").write_text("{}")
+    meta = root / "vfsMeta"
+    meta.mkdir()
+    (meta / "file").write_text('{"Dirty": true}')
+    store = Mock()
+    store.list_drives.return_value = [drive]
+    real_service = S3DriveService(Mock(), Mock(), store, adapter)
+    service.shutdown.side_effect = real_service.shutdown
+    service.list.return_value = [DriveStatus(drive, DriveState.ERROR, "drive.cache.pending")]
+    widget.refresh()
+    done, failed = Mock(), Mock()
+
+    widget.shutdown(done, failed)
+
+    done.assert_called_once_with()
+    failed.assert_not_called()
+    assert not widget._timer.isActive()
+    assert (root / "pending.json").exists()
+    assert (meta / "file").read_text() == '{"Dirty": true}'
+
+
+def test_connection_failure_restores_button_and_reports_error(qt_application) -> None:
+    widget, service = page()
+    authenticated = Mock()
+    widget._authenticated = authenticated
+    errors = []
+    widget.error_raised.connect(errors.append)
+    widget.connection_button.click()
+    error = ConfigurationError("drive.runtime.missing", "Mount runtime unavailable")
+    authenticated.submit_long.call_args.args[3](error)
+    assert errors == [error]
+    assert widget._task is None
+    assert not widget._busy
+    assert widget.connection_button.isEnabled()
+    assert widget.connection_button.toolTip() == "연결 시작"
 
 
 def test_catalog_uses_shared_cache_auto_loads_missing_and_refreshes(qt_application):

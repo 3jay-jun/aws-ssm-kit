@@ -53,8 +53,14 @@ from aws_connect.application.rds_tunnel_service import (
     TunnelConnectionResult,
     TunnelSessionService,
 )
+from aws_connect.application.ssm_session import SessionEndReason
 from aws_connect.domain.errors import ApplicationError, AwsPermissionError
-from aws_connect.domain.tunnel_session import TargetMode, TunnelSession
+from aws_connect.domain.tunnel_session import (
+    DEFAULT_TUNNEL_SESSION_DURATION_HOURS,
+    TUNNEL_SESSION_DURATION_HOURS,
+    TargetMode,
+    TunnelSession,
+)
 from aws_connect.presentation.gui.authenticated import AuthenticatedGuiRunner
 from aws_connect.presentation.gui.clipboard import copy_temporarily
 from aws_connect.presentation.gui.form_fields import form_field as _field
@@ -150,7 +156,7 @@ class Ec2Page(QWidget):
         apply_page_layout(layout)
         heading = QHBoxLayout()
         title_block = page_heading(
-            "EC2 접속", "EC2 인스턴스를 조회하고 SSM을 통해 Windows Terminal에서 셸을 실행합니다."
+            "EC2", "EC2 인스턴스를 조회하고 SSM을 통해 Windows Terminal에서 셸을 실행합니다."
         )
         heading.addLayout(title_block)
         heading.addStretch()
@@ -788,6 +794,8 @@ class RdsPage(QWidget):
         self._profile_id: int | None = None
         self._saved: dict[int, TunnelSession] = {}
         self._active: dict[str, TunnelConnectionResult] = {}
+        self._expired_tunnels: set[int] = set()
+        self._poll_pending = False
         self._selected_id: int | None = None
         self._draft_visible = False
         self._relays_ready = False
@@ -812,7 +820,7 @@ class RdsPage(QWidget):
         apply_page_layout(root)
         heading = QHBoxLayout()
         title_block = page_heading(
-            "RDS 터널", "터널 연결 정보를 저장하고 필요할 때 다시 사용할 수 있습니다."
+            "RDS", "터널 연결 정보를 저장하고 필요할 때 다시 사용할 수 있습니다."
         )
         heading.addLayout(title_block)
         heading.addStretch()
@@ -905,6 +913,12 @@ class RdsPage(QWidget):
         self.local_port.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.local_port.setRange(1, 65535)
         self.local_port.setValue(13306)
+        self.session_duration = QComboBox()
+        self.session_duration.setObjectName("rds_session_duration")
+        self.session_duration.setAccessibleName("세션 유지 시간")
+        for hours in TUNNEL_SESSION_DURATION_HOURS:
+            suffix = " (기본값)" if hours == DEFAULT_TUNNEL_SESSION_DURATION_HOURS else ""
+            self.session_duration.addItem(f"{hours}시간{suffix}", hours)
         self.relay = QComboBox()
         self.relay.setObjectName("rds_relay")
         self.relay.setSizeAdjustPolicy(
@@ -967,6 +981,7 @@ class RdsPage(QWidget):
             3,
             1,
         )
+        form.addWidget(_field("세션 유지 시간", self.session_duration), 4, 0, 1, 2)
         form.setColumnStretch(0, 1)
         form.setColumnStretch(1, 1)
         details.addLayout(form)
@@ -1134,28 +1149,35 @@ class RdsPage(QWidget):
         )
 
     def _endpoints_loaded(self, value: Any) -> None:
-        current = self.host.text().strip()
-        self.host_catalog.clear()
-        for endpoint in value:
-            if isinstance(endpoint, RdsEndpoint):
-                self.host_catalog.addItem(
-                    f"{endpoint.identifier} · {endpoint.engine} · {endpoint.host}:{endpoint.port}",
-                    endpoint,
-                )
-        self.host_catalog.setVisible(self.host_catalog.count() > 0)
-        self.host.setVisible(self.host_catalog.count() == 0)
+        # Rebuilding choices must not overwrite saved or unsaved editor values.
+        with QSignalBlocker(self.host_catalog):
+            self.host_catalog.clear()
+            for endpoint in value:
+                if isinstance(endpoint, RdsEndpoint):
+                    self.host_catalog.addItem(
+                        f"{endpoint.identifier} · {endpoint.engine} · "
+                        f"{endpoint.host}:{endpoint.port}",
+                        endpoint,
+                    )
+        if not self.host.text().strip() and self._selected_id is None:
+            self._endpoint_selected(0)
+        self._sync_endpoint_catalog()
+
+    def _sync_endpoint_catalog(self) -> None:
+        """Project editor values into choices without changing the connection target."""
         index = next(
             (
                 item
                 for item in range(self.host_catalog.count())
-                if self.host_catalog.itemData(item).host == current
+                if self.host_catalog.itemData(item).host == self.host.text().strip()
+                and self.host_catalog.itemData(item).port == self.remote_port.value()
             ),
             -1,
         )
-        if index >= 0:
+        with QSignalBlocker(self.host_catalog):
             self.host_catalog.setCurrentIndex(index)
-        elif self.host_catalog.count() > 0:
-            self._endpoint_selected(0)
+        self.host_catalog.setVisible(self.host_catalog.count() > 0)
+        self.host.setVisible(index < 0)
 
     def _endpoints_failed(self, error: ApplicationError) -> None:
         self.host_catalog.hide()
@@ -1170,6 +1192,7 @@ class RdsPage(QWidget):
         if isinstance(endpoint, RdsEndpoint):
             self.host.setText(endpoint.host)
             self.remote_port.setValue(endpoint.port)
+            self._sync_endpoint_catalog()
 
     def reload(self) -> None:
         if self._profile_id is None:
@@ -1279,6 +1302,10 @@ class RdsPage(QWidget):
         self.host.clear()
         self.remote_port.setValue(3306)
         self.local_port.setValue(13306)
+        self.session_duration.setCurrentIndex(
+            self.session_duration.findData(DEFAULT_TUNNEL_SESSION_DURATION_HOURS)
+        )
+        self._sync_endpoint_catalog()
         self._render_sessions()
         self._editor_baseline = self._editor_values()
         self._check_local_port()
@@ -1290,6 +1317,7 @@ class RdsPage(QWidget):
         self.new_session(confirm_discard=False)
         self.host.setText(host)
         self.remote_port.setValue(remote_port)
+        self._sync_endpoint_catalog()
         self.name.setFocus()
 
     def _select_session(
@@ -1311,6 +1339,10 @@ class RdsPage(QWidget):
         self.host.setText(session.host)
         self.remote_port.setValue(session.remote_port)
         self.local_port.setValue(session.local_port)
+        self.session_duration.setCurrentIndex(
+            self.session_duration.findData(session.session_duration_hours)
+        )
+        self._sync_endpoint_catalog()
         if session.target_instance_id:
             index = self.relay.findData(session.target_instance_id)
             if index >= 0:
@@ -1472,6 +1504,7 @@ class RdsPage(QWidget):
             TargetMode.FIXED,
             str(relay),
             self._selected_id,
+            session_duration_hours=int(self.session_duration.currentData()),
         )
 
     def save(self) -> None:
@@ -1584,6 +1617,7 @@ class RdsPage(QWidget):
         self._starting = False
         self._connection_busy = False
         if result.state is OperationState.SUCCEEDED and result.value is not None:
+            self._expired_tunnels.discard(result.value.tunnel.require_id())
             address = f"127.0.0.1:{result.value.tunnel.local_port}"
             self.tunnel_state.setText(
                 f"연결됨 · {address} → {result.value.tunnel.host}:{result.value.tunnel.remote_port}"
@@ -1604,17 +1638,30 @@ class RdsPage(QWidget):
         self._failed(error)
 
     def refresh_active(self) -> None:
-        profile_id = self._profile_id
+        if self._poll_pending or self._shutdown_requested:
+            return
+        self._poll_pending = True
         self._runner.submit(
-            lambda: self._tunnels.active_tunnels(profile_id),
+            lambda: self._tunnels.active_tunnels(),
             self._active_loaded,
-            self._failed,
+            self._active_failed,
         )
 
+    def _active_failed(self, error: ApplicationError) -> None:
+        self._poll_pending = False
+        self._failed(error)
+
     def _active_loaded(self, value: Any) -> None:
+        self._poll_pending = False
         was_running = self._selected_operation_id() is not None
         observed = list(value)
+        any_running = any(item.handle.state is OperationState.RUNNING for item in observed)
+        for item in observed:
+            if item.handle.end_reason is SessionEndReason.MAX_DURATION and item.error is None:
+                self._expired_tunnels.add(item.tunnel.require_id())
+                self.notice_raised.emit(f"{item.tunnel.name}: 세션 유지 시간 만료로 종료됨")
         terminal = [item for item in observed if item.handle.state is not OperationState.RUNNING]
+        observed = [item for item in observed if item.tunnel.profile_id == self._profile_id]
         active = [item for item in observed if item.handle.state is OperationState.RUNNING]
         self._active = {
             item.handle.operation_id: item
@@ -1652,14 +1699,16 @@ class RdsPage(QWidget):
             elif not active:
                 self.tunnel_state.setText("중지됨")
             if not active:
-                self._poll_timer.stop()
                 self.copy_address_button.setEnabled(False)
         elif not active:
-            self._poll_timer.stop()
             self.tunnel_state.setText("중지됨")
             self.copy_address_button.setEnabled(False)
         if was_running and self._selected_operation_id() is None:
             self._check_local_port()
+        if any_running and not self._shutdown_requested:
+            self._poll_timer.start()
+        else:
+            self._poll_timer.stop()
         self._sync_editor_actions()
 
     def _active_selection_changed(
@@ -1829,7 +1878,14 @@ class RdsPage(QWidget):
         self.editor_status_dot.setProperty("active", operation_id is not None)
         running = operation_id is not None
         editable = not running and not self._connection_busy
-        for control in (self.name, self.host, self.host_catalog, self.remote_port, self.local_port):
+        for control in (
+            self.name,
+            self.host,
+            self.host_catalog,
+            self.remote_port,
+            self.local_port,
+            self.session_duration,
+        ):
             control.setEnabled(editable)
         self.relay.setEnabled(editable and relay_available)
         self.save_button.setEnabled(self._profile_id is not None and relay_available and editable)
@@ -1851,6 +1907,8 @@ class RdsPage(QWidget):
             self.tunnel_state.setText(
                 f"· {summary.connection_copy_text('mapping')}"
                 if running and summary is not None
+                else "세션 유지 시간 만료로 종료됨"
+                if self._selected_id in self._expired_tunnels
                 else "중지됨 · 연결되지 않았습니다."
             )
         self._render_port_status(running)
@@ -1887,6 +1945,7 @@ class RdsPage(QWidget):
             self.remote_port.value(),
             self.local_port.value(),
             self.relay.currentData(),
+            self.session_duration.currentData(),
         )
 
     def _is_editor_dirty(self) -> bool:

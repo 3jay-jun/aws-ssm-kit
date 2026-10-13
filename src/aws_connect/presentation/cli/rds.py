@@ -36,6 +36,7 @@ def tunnel_connection_payload(result: TunnelConnectionResult) -> dict[str, Any]:
         "owner": result.handle.owner.value,
         "state": result.handle.state.value,
         "plugin_exit_code": result.plugin_exit_code,
+        "end_reason": result.handle.end_reason.value if result.handle.end_reason else None,
     }
 
 

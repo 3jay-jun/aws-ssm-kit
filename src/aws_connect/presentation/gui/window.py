@@ -6,8 +6,18 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QPixmap
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QIcon,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -73,7 +83,6 @@ from aws_connect.presentation.gui.errors import (
     map_error,
 )
 from aws_connect.presentation.gui.icons import (
-    HEADER_ICON_SIZE,
     NAVIGATION_ICON_SIZE,
     gui_asset_path,
     gui_icon,
@@ -102,6 +111,128 @@ MfaCodeProvider = Callable[[QWidget, str], str | None]
 DeleteConfirmation = Callable[[QWidget, int], bool]
 ActiveDeleteConfirmation = Callable[[QWidget, ProfileConnections], bool]
 ProfileCloneNameProvider = Callable[[QWidget, str], tuple[str, bool]]
+
+PAGE_HOME = 0
+PAGE_EC2 = 1
+PAGE_RDS = 2
+PAGE_SECRETS = 3
+PAGE_S3_FILES = 4
+PAGE_ACTIVITY = 5
+PAGE_S3_MOUNTS = 6
+
+
+class ProfileSelector(QFrame):
+    """Compact accessible profile summary that opens the shared profile menu."""
+
+    clicked = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("sidebar_profile")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setToolTip("AWS 프로필 선택")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 9, 9, 9)
+        layout.setSpacing(9)
+
+        self.icon_label = QLabel()
+        self.icon_label.setObjectName("sidebar_profile_icon")
+        self.icon_label.setFixedSize(34, 34)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setPixmap(
+            gui_icon("common-profile.svg", color="#2563eb", size=18).pixmap(18, 18)
+        )
+        layout.addWidget(self.icon_label)
+
+        copy = QVBoxLayout()
+        copy.setContentsMargins(0, 0, 0, 0)
+        copy.setSpacing(2)
+        self.name_label = QLabel("프로필 없음")
+        self.name_label.setObjectName("sidebar_profile_name")
+        self.status_label = QLabel("○ 인증정보 없음 · —")
+        self.status_label.setObjectName("sidebar_profile_status")
+        copy.addWidget(self.name_label)
+        copy.addWidget(self.status_label)
+        layout.addLayout(copy, 1)
+
+        self.chevron = QLabel()
+        self.chevron.setObjectName("sidebar_profile_chevron")
+        self.chevron.setPixmap(gui_icon("chevron-down.svg").pixmap(12, 8))
+        layout.addWidget(self.chevron)
+
+    def set_summary(
+        self,
+        profile_name: str,
+        state_text: str,
+        expiry_text: str,
+        *,
+        authenticated: bool,
+    ) -> None:
+        self.name_label.setText(profile_name)
+        indicator = "●" if authenticated else "○"
+        self.status_label.setText(f"{indicator} {state_text} · {expiry_text}")
+        self.status_label.setProperty("authenticated", authenticated)
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+        self.setAccessibleName(f"AWS 프로필 {profile_name}, {state_text}, {expiry_text}")
+
+    def text(self) -> str:
+        """Return the visible summary for tests and assistive adapters."""
+
+        return f"{self.name_label.text()}\n{self.status_label.text()}"
+
+    def icon(self) -> QIcon:
+        """Return the visible profile icon for the shared shell contract."""
+
+        pixmap = self.icon_label.pixmap()
+        return QIcon(pixmap) if pixmap is not None else QIcon()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() is Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+            Qt.Key.Key_Space,
+        ):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class SidebarAccordionButton(QPushButton):
+    """Navigation button with a packaged chevron instead of text glyphs."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        down = gui_icon("chevron-down.svg").pixmap(12, 8)
+        self._expanded_chevron = down
+        self._collapsed_chevron = down.transformed(
+            QTransform().rotate(-90), Qt.TransformationMode.SmoothTransformation
+        )
+        self._expanded = True
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        super().paintEvent(event)
+        pixmap = self._expanded_chevron if self._expanded else self._collapsed_chevron
+        painter = QPainter(self)
+        painter.drawPixmap(
+            self.width() - pixmap.width() - 13,
+            (self.height() - pixmap.height()) // 2,
+            pixmap,
+        )
 
 
 class MfaDialog(QDialog):
@@ -611,7 +742,7 @@ class MainWindow(QMainWindow):
             )
             self._tray.show()
         self.pages.currentChanged.connect(
-            lambda index: self._load_dashboard_recent() if index == 0 else None
+            lambda index: self._load_dashboard_recent() if index == PAGE_HOME else None
         )
         self._apply_header(empty_authentication_header())
         if auto_start:
@@ -628,7 +759,6 @@ class MainWindow(QMainWindow):
         app_layout = QVBoxLayout(app_shell)
         app_layout.setContentsMargins(0, 0, 0, 0)
         app_layout.setSpacing(0)
-        app_layout.addWidget(self._build_header())
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
@@ -653,7 +783,7 @@ class MainWindow(QMainWindow):
             self.ec2_page.notice_raised.connect(self._notify)
             self.pages.addWidget(self.ec2_page)
         else:
-            self.pages.addWidget(self._placeholder("EC2 접속"))
+            self.pages.addWidget(self._placeholder("EC2"))
         if (
             self._ec2 is not None
             and self._tunnel_sessions is not None
@@ -673,7 +803,7 @@ class MainWindow(QMainWindow):
             self.rds_page.notice_raised.connect(self._notify)
             self.pages.addWidget(self.rds_page)
         else:
-            self.pages.addWidget(self._placeholder("RDS 터널"))
+            self.pages.addWidget(self._placeholder("RDS"))
         if self._secrets is not None:
             self.secrets_page = SecretsPage(
                 self._secrets,
@@ -687,7 +817,7 @@ class MainWindow(QMainWindow):
             self.secrets_page.rds_values_selected.connect(self._prefill_rds_endpoint)
             self.pages.addWidget(self.secrets_page)
         else:
-            self.pages.addWidget(self._placeholder("Secrets Manager"))
+            self.pages.addWidget(self._placeholder("Secrets"))
         if self._s3_locations is not None and self._s3 is not None:
             self.s3_page = S3Page(
                 self._s3_locations,
@@ -714,7 +844,7 @@ class MainWindow(QMainWindow):
             self.pages.addWidget(self.logs_page)
             QTimer.singleShot(0, self.logs_page.refresh)
         else:
-            self.pages.addWidget(self._placeholder("실행 로그"))
+            self.pages.addWidget(self._placeholder("작업 기록"))
         if self._s3_drives is not None:
             self.s3_drives_page = S3DrivesPage(
                 self._s3_drives,
@@ -750,20 +880,12 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return placeholder
 
-    def _build_header(self) -> QWidget:
-        header = QFrame()
-        header.setObjectName("authentication_header")
-        header.setFixedHeight(92)
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(0, 0, 24, 0)
-        layout.setSpacing(0)
-
+    @staticmethod
+    def _build_brand() -> QWidget:
         brand_panel = QWidget()
         brand_panel.setObjectName("brand_panel")
-        brand_panel.setFixedWidth(NAVIGATION_WIDTH)
         brand_layout = QHBoxLayout(brand_panel)
-        brand_layout.setContentsMargins(15, 0, 15, 0)
-        brand_layout.setSpacing(12)
+        brand_layout.setContentsMargins(1, 0, 1, 0)
         brand_logo = QLabel()
         brand_logo.setObjectName("brand_logo")
         logo = QPixmap(gui_asset_path("logo.png"))
@@ -778,91 +900,40 @@ class MainWindow(QMainWindow):
         brand_logo.setAccessibleName(APPLICATION_NAME)
         brand_layout.addWidget(brand_logo)
         brand_layout.addStretch()
-        layout.addWidget(brand_panel)
-
-        summary = QWidget()
-        summary.setObjectName("profile_summary")
-        summary_layout = QHBoxLayout(summary)
-        summary_layout.setContentsMargins(18, 12, 18, 12)
-        summary_layout.setSpacing(16)
-        self.profile_name = QLabel()
-        self.profile_name.setObjectName("profile_name")
-        self.auth_state = QLabel()
-        self.auth_state.setObjectName("auth_state")
-        self.account_id = QLabel()
-        self.account_id.setObjectName("account_id")
-        self.iam_user = QLabel()
-        self.iam_user.setObjectName("iam_user")
-        self.token_expiry = QLabel()
-        self.token_expiry.setObjectName("token_expiry")
-        metadata = QGridLayout()
-        metadata.setHorizontalSpacing(22)
-        metadata.setVerticalSpacing(3)
-        for column, (label, value) in enumerate(
-            (
-                ("현재 프로필", self.profile_name),
-                ("Account ID", self.account_id),
-                ("IAM 사용자", self.iam_user),
-                ("토큰 만료", self.token_expiry),
-                ("인증 상태", self.auth_state),
-            )
-        ):
-            caption = QLabel(label)
-            caption.setObjectName("header_caption")
-            metadata.addWidget(caption, 0, column)
-            metadata.addWidget(value, 1, column)
-        summary_layout.addLayout(metadata)
-        summary_layout.addStretch()
-        layout.addWidget(summary, 1)
-        layout.addStretch()
-        self.profile_button = QPushButton()
-        self.profile_button.setObjectName("profile_button")
-        set_button_icon(
-            self.profile_button,
-            "common-profile.svg",
-            size=HEADER_ICON_SIZE,
-            tooltip="프로필 관리",
-        )
-        self.profile_button.clicked.connect(self.open_profiles)
-        self.refresh_button = QPushButton()
-        self.refresh_button.setObjectName("refresh_button")
-        set_button_icon(
-            self.refresh_button,
-            "common-refresh.svg",
-            size=HEADER_ICON_SIZE,
-            tooltip="토큰 재발급",
-        )
-        self.refresh_button.clicked.connect(self.refresh_token)
-        layout.addSpacing(8)
-        layout.addWidget(self.profile_button)
-        layout.addSpacing(8)
-        layout.addWidget(self.refresh_button)
-        return header
+        return brand_panel
 
     def _build_navigation(self) -> QWidget:
         navigation = QFrame()
         navigation.setObjectName("navigation")
         navigation.setFixedWidth(NAVIGATION_WIDTH)
         layout = QVBoxLayout(navigation)
-        layout.setContentsMargins(14, 22, 14, 22)
+        layout.setContentsMargins(14, 18, 14, 18)
         layout.setSpacing(6)
+        layout.addWidget(self._build_brand())
+
+        self.profile_button = ProfileSelector()
+        self.profile_button.clicked.connect(self._show_profile_menu)
+        layout.addWidget(self.profile_button)
+
+        self.profile_menu = QMenu(self.profile_button)
+        self.profile_menu.setObjectName("profile_selector_menu")
+        self.refresh_action = QAction("인증 갱신", self.profile_menu)
+        self.refresh_action.setObjectName("profile_refresh_action")
+        self.refresh_action.triggered.connect(self.refresh_token)
+
         label = QLabel("WORKSPACE")
         label.setObjectName("navigation_label")
         label.setContentsMargins(12, 0, 0, 3)
         layout.addWidget(label)
         group = QButtonGroup(navigation)
         group.setExclusive(True)
-        entries: tuple[tuple[str, str], ...] = (
-            ("tab-dashboard.svg", "대시보드"),
-            ("tab-ec2.svg", "EC2 접속"),
-            ("tab-rds.svg", "RDS 터널"),
-            ("tab-secrets.svg", "Secrets"),
-            ("tab-s3.svg", "S3 파일"),
-            ("tab-log.svg", "실행 로그"),
+        entries: tuple[tuple[int, str, str], ...] = (
+            (PAGE_HOME, "tab-dashboard.svg", "홈"),
+            (PAGE_EC2, "tab-ec2.svg", "EC2"),
+            (PAGE_RDS, "tab-rds.svg", "RDS"),
+            (PAGE_SECRETS, "tab-secrets.svg", "Secrets"),
         )
-        if self._s3_drives is not None:
-            entries += (("tab-s3.svg", "S3 마운트"),)
-        for index, (icon_filename, title) in enumerate(entries):
+        for index, icon_filename, title in entries:
             button = QPushButton(title)
             button.setObjectName(f"nav_{index}")
             button.setAccessibleName(title)
@@ -874,21 +945,115 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, page=index: self.pages.setCurrentIndex(page)
             )
             layout.addWidget(button)
-        self.pages.currentChanged.connect(
-            lambda index, buttons=group: (
-                buttons.button(index).setChecked(True)
-                if buttons.button(index) is not None
-                else None
+
+        self.s3_navigation_button = SidebarAccordionButton("S3")
+        self.s3_navigation_button.setObjectName("nav_s3")
+        self.s3_navigation_button.setAccessibleName("S3 메뉴")
+        set_button_icon(self.s3_navigation_button, "tab-s3.svg", size=NAVIGATION_ICON_SIZE)
+        self.s3_navigation_button.setCheckable(True)
+        self.s3_navigation_button.setChecked(True)
+        self.s3_navigation_button.clicked.connect(self._toggle_s3_navigation)
+        layout.addWidget(self.s3_navigation_button)
+
+        self.s3_navigation_children = QWidget()
+        self.s3_navigation_children.setObjectName("s3_navigation_children")
+        s3_layout = QVBoxLayout(self.s3_navigation_children)
+        s3_layout.setContentsMargins(18, 0, 0, 0)
+        s3_layout.setSpacing(4)
+        s3_entries = [(PAGE_S3_FILES, "파일")]
+        if self._s3_drives is not None:
+            s3_entries.append((PAGE_S3_MOUNTS, "마운트"))
+        self._s3_page_indexes = {index for index, _title in s3_entries}
+        for index, title in s3_entries:
+            button = QPushButton(title)
+            button.setObjectName(f"nav_{index}")
+            button.setAccessibleName(f"S3 {title}")
+            button.setCheckable(True)
+            group.addButton(button, index)
+            button.clicked.connect(
+                lambda _checked=False, page=index: self.pages.setCurrentIndex(page)
             )
-        )
+            s3_layout.addWidget(button)
+        layout.addWidget(self.s3_navigation_children)
+
         layout.addStretch()
+        logs_button = QPushButton("작업 기록")
+        logs_button.setObjectName(f"nav_{PAGE_ACTIVITY}")
+        logs_button.setAccessibleName("작업 기록")
+        set_button_icon(logs_button, "tab-log.svg", size=NAVIGATION_ICON_SIZE)
+        logs_button.setCheckable(True)
+        group.addButton(logs_button, PAGE_ACTIVITY)
+        logs_button.clicked.connect(
+            lambda _checked=False: self.pages.setCurrentIndex(PAGE_ACTIVITY)
+        )
+        layout.addWidget(logs_button)
+
+        self._navigation_group = group
+        self.pages.currentChanged.connect(self._sync_navigation)
+        self._sync_navigation(PAGE_HOME)
         return navigation
+
+    def _toggle_s3_navigation(self, expanded: bool) -> None:
+        if self.pages.currentIndex() in self._s3_page_indexes:
+            expanded = True
+            self.s3_navigation_button.setChecked(True)
+        self.s3_navigation_children.setVisible(expanded)
+        self.s3_navigation_button.set_expanded(expanded)
+
+    def _sync_navigation(self, index: int) -> None:
+        button = self._navigation_group.button(index)
+        if button is not None:
+            button.setChecked(True)
+        is_s3_page = index in self._s3_page_indexes
+        self.s3_navigation_button.setProperty("active", is_s3_page)
+        self.s3_navigation_button.style().unpolish(self.s3_navigation_button)
+        self.s3_navigation_button.style().polish(self.s3_navigation_button)
+        if is_s3_page:
+            self.s3_navigation_button.setChecked(True)
+            self._toggle_s3_navigation(True)
+
+    def _show_profile_menu(self) -> None:
+        self._rebuild_profile_menu()
+        position = self.profile_button.mapToGlobal(QPoint(0, self.profile_button.height()))
+        self.profile_menu.popup(position)
+
+    def _rebuild_profile_menu(self) -> None:
+        self.profile_menu.clear()
+        if not self._profile_summaries:
+            empty = self.profile_menu.addAction("등록된 프로필 없음")
+            empty.setEnabled(False)
+        for profile in self._profile_summaries:
+            action = self.profile_menu.addAction(profile.name)
+            action.setObjectName(f"profile_select_{profile.id}")
+            if profile.id == self._active_profile_id:
+                action.setIcon(gui_icon("common-check.svg", color="#2563eb"))
+            action.triggered.connect(
+                lambda _checked=False, profile_id=profile.id: self.connect_profile(profile_id)
+            )
+        self.profile_menu.addSeparator()
+        details = self.profile_menu.addAction(
+            gui_icon("common-info.svg", color="#526074"), "인증 정보 확인"
+        )
+        details.setObjectName("profile_details_action")
+        details.triggered.connect(self.open_profiles)
+        self.refresh_action = self.profile_menu.addAction(
+            gui_icon("common-refresh.svg", color="#526074"), "인증 갱신"
+        )
+        self.refresh_action.setObjectName("profile_refresh_action")
+        self.refresh_action.setEnabled(self._active_profile_id is not None)
+        self.refresh_action.triggered.connect(self.refresh_token)
 
     def _build_dashboard(self) -> QWidget:
         self.dashboard_page = DashboardPage(
             self._dashboard_service, self._activity_logs, self._runner
         )
-        routes = {"ec2": 1, "rds": 2, "secrets": 3, "s3": 4, "logs": 5}
+        routes = {
+            "ec2": PAGE_EC2,
+            "rds": PAGE_RDS,
+            "secrets": PAGE_SECRETS,
+            "s3": PAGE_S3_FILES,
+            "logs": PAGE_ACTIVITY,
+        }
         self.dashboard_page.activated.connect(
             lambda route: self.pages.setCurrentIndex(routes[route])
         )
@@ -917,13 +1082,15 @@ class MainWindow(QMainWindow):
             self.s3_drives_page.set_profile(selected.id if selected else None)
         if selected is None:
             self._active_profile_id = None
+            self._rebuild_profile_menu()
             self._apply_header(empty_authentication_header())
-            self.refresh_button.setEnabled(False)
+            self.refresh_action.setEnabled(False)
             self._refresh_feature_data(None)
             return
         self.dashboard_page.set_profile(selected.id)
         self._active_profile_id = selected.id
-        self.refresh_button.setEnabled(True)
+        self._rebuild_profile_menu()
+        self.refresh_action.setEnabled(True)
         self._apply_header(checking_authentication_header(selected))
         # Local status is rendered first; network validation is a distinct background task.
         self._runner.submit(
@@ -1041,6 +1208,7 @@ class MainWindow(QMainWindow):
             replace(item, is_default=item.id == profile.id) for item in self._profile_summaries
         ]
         self.profile_dialog.set_profiles(self._profile_summaries, profile.id)
+        self._rebuild_profile_menu()
         self._apply_header(checking_authentication_header(profile))
         self._runner.submit(
             lambda: self._authentication.validate(profile.id),
@@ -1072,7 +1240,7 @@ class MainWindow(QMainWindow):
         *,
         discard_cached_session: bool = False,
     ) -> None:
-        self.refresh_button.setEnabled(False)
+        self.refresh_action.setEnabled(False)
         self._runner.submit(
             lambda: self._operations.start_refresh(
                 profile_id,
@@ -1089,11 +1257,11 @@ class MainWindow(QMainWindow):
     ) -> None:
         result = value
         if result.state is OperationState.SUCCEEDED and result.value is not None:
-            self.refresh_button.setEnabled(True)
+            self.refresh_action.setEnabled(True)
             on_completed(result.value)
             return
         if result.state is not OperationState.MFA_REQUIRED or result.challenge is None:
-            self.refresh_button.setEnabled(True)
+            self.refresh_action.setEnabled(True)
             if result.error is not None:
                 self._show_error(result.error)
             return
@@ -1110,7 +1278,7 @@ class MainWindow(QMainWindow):
         on_completed: Callable[[AuthenticationStatus], None],
     ) -> None:
         result: OperationResult[AuthenticationStatus] = value
-        self.refresh_button.setEnabled(True)
+        self.refresh_action.setEnabled(True)
         if result.state is OperationState.SUCCEEDED and result.value is not None:
             on_completed(result.value)
         elif result.state is OperationState.CANCELLED:
@@ -1150,12 +1318,12 @@ class MainWindow(QMainWindow):
         self._notify("RDS endpoint를 편집기에 복사했습니다. 세션명과 중계 EC2를 확인해 저장하세요.")
 
     def _apply_header(self, view_model: AuthenticationHeaderViewModel) -> None:
-        self.profile_name.setText(view_model.profile_name)
-        indicator = "● " if view_model.authenticated else "○ "
-        self.auth_state.setText(indicator + view_model.state_text)
-        self.account_id.setText(view_model.account_id)
-        self.iam_user.setText(view_model.user_id)
-        self.token_expiry.setText(view_model.expiry_text)
+        self.profile_button.set_summary(
+            view_model.profile_name,
+            view_model.state_text,
+            view_model.expiry_text,
+            authenticated=view_model.authenticated,
+        )
 
     def _show_error(self, error: ApplicationError) -> None:
         self.last_error = map_error(error)
@@ -1169,7 +1337,7 @@ class MainWindow(QMainWindow):
                 retryable=error.retryable,
                 masked_detail=error.technical_cause,
             )
-        self.refresh_button.setEnabled(self._active_profile_id is not None)
+        self.refresh_action.setEnabled(self._active_profile_id is not None)
         if self.last_error.presentation is GuiErrorPresentation.FIELD:
             self._show_field_error(self.last_error)
         elif self.last_error.presentation is GuiErrorPresentation.TOAST:

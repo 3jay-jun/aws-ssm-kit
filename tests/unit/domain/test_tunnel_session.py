@@ -51,3 +51,18 @@ def test_rejects_invalid_saved_session(changes: dict[str, object], code: str) ->
 def test_unsaved_session_has_no_persistent_identity() -> None:
     with pytest.raises(ConfigurationError, match="rds.session.id.required"):
         session(id=None).require_id()
+
+
+def test_tunnel_duration_defaults_to_twelve_hours() -> None:
+    assert session().session_duration_hours == 12
+
+
+@pytest.mark.parametrize("hours", [1, 8, 12, 24])
+def test_tunnel_duration_accepts_supported_hours(hours: int) -> None:
+    assert session(session_duration_hours=hours).session_duration_hours == hours
+
+
+@pytest.mark.parametrize("hours", [36, 0, -1, 2, True, 1.0, "12", None])
+def test_tunnel_duration_rejects_unsupported_values(hours: object) -> None:
+    with pytest.raises(ConfigurationError, match="rds.session.duration.invalid"):
+        session(session_duration_hours=hours)

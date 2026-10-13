@@ -563,6 +563,7 @@ def _execute(args: argparse.Namespace, app: ApplicationServices) -> dict[str, An
                     local_port=args.local_port,
                     target_mode=TargetMode(args.target_mode),
                     target_instance_id=args.target_instance_id,
+                    session_duration_hours=args.session_duration_hours,
                     tunnel_id=(
                         app.tunnel_sessions.show(args.selector, args.profile).require_id()
                         if command == "update"
@@ -830,6 +831,10 @@ def _tunnel_fields(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--local-port", required=True, type=int)
     parser.add_argument("--target-mode", choices=("fixed", "select"), required=True)
     parser.add_argument("--target-instance-id")
+
+    from aws_connect.domain.tunnel_session import TUNNEL_SESSION_DURATION_HOURS
+
+    parser.add_argument("--session-duration-hours", type=int, choices=TUNNEL_SESSION_DURATION_HOURS)
 
 
 def _output(parser: argparse.ArgumentParser) -> None:

@@ -85,7 +85,7 @@ def test_logs_page_is_authentication_free_and_renders_masked_entries(tmp_path: P
     assert page._metadata_labels["AWS 서비스"].text() == "s3"
     assert page._metadata_labels["AWS Action"].text() == "ListObjectsV2"
     assert page._metadata_labels["AWS Request ID"].text() == "-"
-    assert page.findChild(QLabel, "page_title").text() == "실행 로그"
+    assert page.findChild(QLabel, "page_title").text() == "작업 기록"
     assert "프로그램 동작과 AWS 요청 이력" in page.findChild(QLabel, "page_subtitle").text()
     assert page.findChild(QFrame, "managed_log_card") is not None
     assert page.open_button.text() == "로그 폴더 열기 ↗"
