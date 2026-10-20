@@ -13,8 +13,8 @@
 - [x] pre-landing/coverage/plan 독립 감사 후 발견된 코드·검사 결함 보완.
 - [x] 배포 브랜치 전체 check.ps1 및 production ZIP/Setup smoke 통과.
 - [x] 한국어 표시 변경과 1.0.3 버전/변경기록을 논리적 커밋으로 나눔.
-- [ ] 원격 push/PR/CI 확인 및 main에 병합해 배포 workflow 실행.
-- [ ] 원격 production 후보 ZIP/Setup/checksum 생성 성공을 확인해 다운로드 경로 전달.
+- [x] 원격 push/PR/CI 확인 및 main에 병합해 배포 workflow 실행.
+- [x] 원격 production 후보 ZIP/Setup/checksum 생성 성공을 확인해 다운로드 경로 전달.
 
 ## 결정·대안 및 영향
 - 버전 SSOT는 pyproject.toml이며 repository의 3자리 버전을 유지해 1.0.2 → 1.0.3.
@@ -62,8 +62,8 @@
   토큰을 파일·출력에 기록하지 않았다. 별도 GitHub 인증을 요구하지 않는다.
 
 ## 다음 단계
-PR #1의 최신 CI를 확인하고 main에 병합한 뒤 release workflow의 후보 업로드 성공을 확인한다.
-정식 공개의 수동 Windows VM 검증은 기존 외부 게이트로 유지한다.
+커밋·main 반영 및 검증된 배포 후보 업로드 완료. 사용자에게 아래 다운로드 위치를 전달한다.
+정식 공개의 수동 Windows VM 검증은 기존 외부 게이트(PKG-002/003)로 유지한다.
 
 ## 원격 반영 및 문서 동기화
 - 로컬 논리 커밋을 연결 GitHub 앱의 Git data API로 반영하고 각각의 tree SHA가 일치함을 확인했다.
@@ -80,3 +80,26 @@ PR #1의 최신 CI를 확인하고 main에 병합한 뒤 release workflow의 후
   README의 기존 0.1.0 현재버전 문구와 ZIP 예제를 버전 SSOT/패키지 VERSION.txt 참조로 갱신했다.
 - `./scripts/verify-docs.ps1` → documentation passed / generated documentation current.
 - 원래 작업 폴더의 병행 EC2 파일/문서, .ci-repro, 비밀정보 JSON 및 QA diff는 원격 커밋에서 제외했다.
+
+## 배포 완료 증거 — 2026-10-20
+- 문서 동기화 후 최종 feature HEAD: `5e2692de13c1ca6f1ab4640e38428d7314aaa2b0`.
+  [PR CI 39379069112](https://github.com/3jay-jun/aws-ssm-kit/actions/runs/39379069112)
+  → check 및 package-windows **success**.
+- [PR #1](https://github.com/3jay-jun/aws-ssm-kit/pull/1) 병합 성공,
+  main merge commit `bae9ca2474689962c996c2c3fb06df711d535903`.
+- [Production release run 39379490208](https://github.com/3jay-jun/aws-ssm-kit/actions/runs/39379490208)
+  → **completed / success**. 전체 Check, production ZIP build/smoke, Setup build/integrity,
+  candidate metadata/checksums 생성 및 업로드 단계 모두 통과.
+- [다운로드: aws-connect-candidate-39379490208](https://github.com/3jay-jun/aws-ssm-kit/actions/runs/39379490208/artifacts/12244907628)
+  → artifact ID `12244907628`, 193524158 bytes, **expired=false**.
+  압축 안에 1.0.3 ZIP/Setup, 각각의 SHA-256 sidecar 및 release-candidate.json이 있다.
+  artifact archive digest: `sha256:faa69eea3704097887c28094e3219031af09d63cbec96a0f56b3a824460aa125`.
+  보관 만료일은 2026-11-19이며 정식 Release 자산은 아니다.
+- 검증한 로컬 ZIP/Setup/sidecar는 원래 작업 폴더의 dist/에도 복사했다.
+  원래 main을 배포 커밋으로 동기화했고 병행 EC2 코드/테스트/공유 문서는 SHA-256으로
+  바이트 보존을 검증했다. 사용자 staging이 비어 있음을 확인한 뒤 index만 동기화했으며
+  사용자 데이터 및 비밀정보 파일은 수정하지 않았다.
+- 이번 마지막 변경은 완료 기록 문서 이동/갱신뿐이며 배포된 application source와 버전은 같다.
+  이 문서 커밋 이후 자동 실행되는 CI는 기록 정리의 후속 검사이며 위 성공 후보를 대체하지 않는다.
+- 실제 AWS 연결, 설치/UAC/재부팅 및 깨끗한 Windows 10/11 VM 검증은 미실행이다.
+  기존 publish-verified.yml과 보호된 release 환경을 우회하거나 증거를 생성하지 않았다.
