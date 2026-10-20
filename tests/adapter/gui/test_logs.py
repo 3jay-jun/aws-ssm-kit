@@ -65,7 +65,7 @@ def test_logs_page_is_authentication_free_and_renders_masked_entries(tmp_path: P
     page.refresh()
 
     assert page.log_directory.text() == str(tmp_path / "로그")
-    assert page.log_level.currentText() == "WARNING"
+    assert page.log_level.currentText() == "경고"
     assert page.entries.rowCount() == 1
     assert page.entries.columnCount() == 6
     assert [page.entries.horizontalHeaderItem(index).text() for index in range(6)] == [
@@ -79,7 +79,9 @@ def test_logs_page_is_authentication_free_and_renders_masked_entries(tmp_path: P
     assert page.entries.cellWidget(0, 1).findChild(QLabel).pixmap() is not None
     assert page.entries.item(0, 3).text() == "logs"
     assert page.entries.rowHeight(0) >= 40
-    assert page.detail_message.text() == "Access denied after safe retry"
+    assert page.detail_message.text() == (
+        "작업 중 확인이 필요한 사항이 발생했습니다. 상세 정보를 확인하세요."
+    )
     assert page._metadata_labels["Correlation ID"].text() == "correlation-1"
     assert page._metadata_labels["Operation ID"].text() == "operation-1"
     assert page._metadata_labels["AWS 서비스"].text() == "s3"
@@ -126,7 +128,8 @@ def test_detail_selection_and_copy_use_only_masked_entry_projection(tmp_path: Pa
     page.copy_detail_button.click()
 
     copied = QApplication.clipboard().text()
-    assert "메시지: second.succeeded" in copied
+    assert "메시지: 작업을 완료했습니다." in copied
+    assert "메시지 코드: second.succeeded" in copied
     assert "재시도 가능: 아니요" in copied
     assert "first.failed" not in copied
     assert "마스킹된" in notices[-1]
@@ -141,7 +144,7 @@ def test_log_filters_are_combined_in_activity_log_query(tmp_path: Path) -> None:
     page = LogsSettingsPage(settings, activity, Mock(), ImmediateTaskRunner())  # type: ignore[arg-type]
 
     page.period_filter.setCurrentText("최근 7일")
-    page.level_filter.setCurrentText("ERROR")
+    page.level_filter.setCurrentText("오류")
     page.feature_filter.setCurrentText("EC2")
     page.search.setText("StartSession")
     page.errors_only.setChecked(True)
@@ -170,7 +173,7 @@ def test_update_reset_and_explicit_export_use_background_runner_contract(tmp_pat
     notices: list[str] = []
     page.notice_raised.connect(notices.append)
     page.log_directory.setText(str(tmp_path / "changed"))
-    page.log_level.setCurrentText("ERROR")
+    page.log_level.setCurrentText("오류")
 
     page.update_settings()
     page.reset_settings()
@@ -218,13 +221,13 @@ def test_failed_settings_write_restores_visible_current_values(tmp_path: Path) -
     errors: list[ApplicationError] = []
     page.error_raised.connect(errors.append)
     page.log_directory.setText(str(tmp_path / "uncommitted"))
-    page.log_level.setCurrentText("ERROR")
+    page.log_level.setCurrentText("오류")
 
     page.update_settings()
 
     assert errors[0].message_code == "settings.persistence.failed"
     assert page.log_directory.text() == str(current.log_directory)
-    assert page.log_level.currentText() == "INFO"
+    assert page.log_level.currentText() == "정보"
 
 
 def test_open_log_folder_reports_os_rejection(monkeypatch, tmp_path: Path) -> None:
@@ -350,7 +353,9 @@ def test_compact_detail_prioritizes_rows_and_preserves_copy_when_collapsed(tmp_p
     assert page.detail_errors.isHidden()
     page._show_detail(replace(failure, result="WARNING"))
     assert not page.detail_errors.isHidden()
-    page._show_detail(replace(failure, target="long-target-" * 100, masked_detail="message " * 500))
+    page._show_detail(
+        replace(success, target="long-target-" * 100, masked_detail="긴 한국어 작업 설명 " * 500)
+    )
     app.processEvents()
     assert page.entries.viewport().height() // page.entries.rowHeight(0) >= 7
     assert page.detail_body.verticalScrollBar().maximum() > 0

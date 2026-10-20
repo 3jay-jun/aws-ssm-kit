@@ -42,13 +42,16 @@ from aws_connect.application.settings_service import (
 )
 from aws_connect.application.winfsp_runtime import WinFspRuntimeService
 from aws_connect.domain.app_settings import AppSettings
+from aws_connect.domain.execution_log import ExecutionLevel
 from aws_connect.presentation.gui.icons import gui_icon, icon_text, set_button_icon, status_badge
+from aws_connect.presentation.gui.log_messages import log_message_code
 from aws_connect.presentation.gui.page_layout import apply_page_layout, page_heading
 from aws_connect.presentation.gui.table_selection import use_first_column_selection_bar
 from aws_connect.presentation.gui.tasks import GuiTaskRunner
 from aws_connect.presentation.gui.view_models import (
     ActivityLogRowViewModel,
     build_activity_log_row_view_model,
+    log_level_view_model,
 )
 from aws_connect.presentation.gui.winfsp_setup import WinFspSetupWidget
 
@@ -102,9 +105,9 @@ class LogsSettingsPage(QWidget):
         filters = QHBoxLayout()
         filters.setSpacing(14)
         self.period_filter = self._filter_combo("기간", ("오늘", "최근 7일", "전체"))
-        self.level_filter = self._filter_combo(
-            "레벨", ("전체", "DEBUG", "INFO", "WARNING", "ERROR")
-        )
+        self.level_filter = self._filter_combo("레벨", ("전체",))
+        for level in ExecutionLevel:
+            self.level_filter.addItem(log_level_view_model(level).text, level.value)
         self.feature_filter = self._filter_combo(
             "기능", ("전체", "EC2", "RDS", "S3", "Secrets", "인증", "대시보드", "프로그램")
         )
@@ -295,7 +298,8 @@ class LogsSettingsPage(QWidget):
         self.log_directory.setObjectName("log_directory")
         self.log_level = QComboBox()
         self.log_level.setObjectName("log_level")
-        self.log_level.addItems(("DEBUG", "INFO", "WARNING", "ERROR"))
+        for level in ExecutionLevel:
+            self.log_level.addItem(log_level_view_model(level).text, level.value)
         directory_row = QHBoxLayout()
         directory_row.addWidget(self.log_directory, 1)
         self.browse_button = QPushButton("찾아보기")
@@ -359,7 +363,7 @@ class LogsSettingsPage(QWidget):
 
     def _apply_settings(self, settings: AppSettings) -> None:
         self.log_directory.setText(str(settings.log_directory))
-        self.log_level.setCurrentText(settings.log_level.value)
+        self.log_level.setCurrentIndex(self.log_level.findData(settings.log_level.value))
 
     def _apply_entries(self, entries: list[ManagedLogEntry]) -> None:
         self._entries = entries
@@ -454,7 +458,7 @@ class LogsSettingsPage(QWidget):
 
     def update_settings(self) -> None:
         request = UpdateSettingsRequest(
-            self.log_directory.text().strip(), self.log_level.currentText()
+            self.log_directory.text().strip(), str(self.log_level.currentData())
         )
         self._runner.submit(
             lambda: self._settings.update(request),
@@ -530,7 +534,7 @@ class LogsSettingsPage(QWidget):
     def _query(self) -> ActivityLogQuery:
         period = self.period_filter.currentText()
         period_days = 1 if period == "오늘" else 7 if period == "최근 7일" else None
-        level = self.level_filter.currentText()
+        level = self.level_filter.currentData()
         feature = self.feature_filter.currentText()
         feature_key = {
             "EC2": "ec2",
@@ -543,7 +547,7 @@ class LogsSettingsPage(QWidget):
         }.get(feature)
         return ActivityLogQuery(
             period_days=period_days,
-            levels=() if level == "전체" else (level,),
+            levels=() if level is None else (level,),
             features=() if feature_key is None else (feature_key,),
             search=self.search.text(),
             errors_only=self.errors_only.isChecked(),
@@ -555,6 +559,10 @@ class LogsSettingsPage(QWidget):
 
 def _detail_text(entry: ManagedLogEntry) -> str:
     view_model = build_activity_log_row_view_model(entry)
+    message_code = log_message_code(entry)
+    raw_detail = entry.masked_detail or (
+        entry.message_code if message_code != entry.message_code else "-"
+    )
     retryable = "예" if entry.retryable is True else "아니요" if entry.retryable is False else "-"
     values = (
         ("시간", view_model.occurred_at),
@@ -564,10 +572,11 @@ def _detail_text(entry: ManagedLogEntry) -> str:
         ("대상", view_model.target),
         ("결과", view_model.result.text),
         ("메시지", view_model.message),
+        ("메시지 코드", message_code),
         *_detail_metadata_values(view_model).items(),
         *view_model.error_details(include_success=True).items(),
         ("재시도 가능", retryable),
-        ("상세 원인", entry.masked_detail or "-"),
+        ("상세 원인", raw_detail),
         ("부가 정보", entry.metadata_json),
     )
     return "\n".join(f"{label}: {value}" for label, value in values)

@@ -375,6 +375,7 @@ def _record_cli_event(
         "secrets_command",
         "s3_command",
         "location_command",
+        "drive_command",
     )
     target = ".".join(
         str(getattr(args, name)) for name in subcommands if getattr(args, name, None) is not None
@@ -382,7 +383,7 @@ def _record_cli_event(
     try:
         app.activity_logs.record(
             feature=f"cli.{args.command}",
-            target=target or "command",
+            target=target or args.command,
             result=result,
             message_code=message_code,
             correlation_id=correlation_id,
