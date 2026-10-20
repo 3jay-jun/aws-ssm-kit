@@ -47,6 +47,7 @@ def test_dashboard_cards_actions_results_and_refresh_are_service_backed():
     assert page.recent.rowCount() == 5
     activity.list_recent.assert_called_once_with(5)
     assert page.recent.item(0, 4).text() == "example.txt"
+    assert page.recent.item(0, 3).text() == "업로드"
     assert page.recent.cellWidget(0, 1).findChild(QLabel, "icon_text_label").text() == "성공"
     for route, card in page.cards.items():
         card.findChild(QPushButton, f"dashboard_{route}_button").click()

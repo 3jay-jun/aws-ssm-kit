@@ -10,6 +10,7 @@ from aws_connect.application.authentication_service import AuthenticationStatus
 from aws_connect.application.operations import ProgressEvent
 from aws_connect.application.profile_service import ProfileSummary
 from aws_connect.domain.execution_log import ExecutionResult
+from aws_connect.presentation.gui.log_messages import CATEGORY_LABELS, log_message, log_operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,18 +137,18 @@ def build_activity_log_row_view_model(entry: ManagedLogEntry) -> ActivityLogRowV
     return ActivityLogRowViewModel(
         occurred_at=entry.occurred_at.astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         feature=log_feature_view_model(entry.feature),
-        operation=entry.operation or _message_operation(entry.message_code),
+        operation=log_operation(entry),
         target=entry.target or "-",
         result=log_result_view_model(entry.result),
-        message=entry.masked_detail or entry.message_code,
+        message=log_message(entry),
         level=log_level_view_model(entry.level or _level_from_result(entry.result)),
         operation_id=entry.operation_id or "-",
         correlation_id=entry.correlation_id or "-",
         aws_service=entry.aws_service or "-",
         aws_action=entry.aws_action or "-",
         aws_request_id=entry.aws_request_id or "-",
-        phase=entry.phase.value,
-        error_category=entry.error_category.value if entry.error_category else "-",
+        phase={"STARTED": "시작", "PROGRESS": "진행 중", "COMPLETED": "완료"}[entry.phase],
+        error_category=CATEGORY_LABELS[entry.error_category] if entry.error_category else "-",
         error_code=entry.error_code or "-",
         required_permission=entry.required_permission or "-",
     )
@@ -191,12 +192,12 @@ def log_result_view_model(result: str) -> LogBadgeViewModel:
 def log_level_view_model(level: str) -> LogBadgeViewModel:
     value = level.upper()
     if value == "DEBUG":
-        return LogBadgeViewModel("debug", "DEBUG")
+        return LogBadgeViewModel("debug", "상세")
     if value == "ERROR":
-        return LogBadgeViewModel("error", "ERROR")
+        return LogBadgeViewModel("error", "오류")
     if value == "WARNING":
-        return LogBadgeViewModel("warning", "WARNING")
-    return LogBadgeViewModel("info", "INFO")
+        return LogBadgeViewModel("warning", "경고")
+    return LogBadgeViewModel("info", "정보")
 
 
 def _level_from_result(result: str) -> str:
@@ -206,11 +207,6 @@ def _level_from_result(result: str) -> str:
     if badge.key == "warning":
         return "WARNING"
     return "INFO"
-
-
-def _message_operation(message_code: str) -> str:
-    parts = [part for part in message_code.replace("_", ".").split(".") if part]
-    return parts[-1] if parts else "-"
 
 
 def empty_authentication_header() -> AuthenticationHeaderViewModel:

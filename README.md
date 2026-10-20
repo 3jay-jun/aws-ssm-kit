@@ -2,7 +2,7 @@
 
 Windows에서 AWS 인증, EC2 Session Manager 접속, RDS 포트 포워딩, Secrets Manager 조회와 S3 작업을 하나의 GUI와 CLI로 제공하는 Portable 애플리케이션입니다.
 
-> 현재 버전은 `0.1.0`이며 Windows 10/11 x64만 지원합니다. 제품 요구사항은 아직 초안 상태이므로 운영 환경에 적용하기 전에 승인된 비운영 AWS 프로필로 검증하세요.
+> 현재 버전은 [pyproject.toml](pyproject.toml)의 `project.version`을 확인하세요. Windows 10/11 x64만 지원하며 운영 환경에 적용하기 전에 승인된 비운영 AWS 프로필로 검증하세요.
 
 ## 주요 기능
 
@@ -130,7 +130,8 @@ Domain은 외부 계층을 참조하지 않고, Application은 Infrastructure나
 
 ```powershell
 ./scripts/build-package.ps1 -VendorDirectory ./vendor/session-manager-plugin
-./scripts/test-package.ps1 -ZipPath ./dist/aws-connect-0.1.0-windows-x64.zip
+$version = (Get-Content ./build/package/aws-connect/VERSION.txt -Raw).Trim()
+./scripts/test-package.ps1 -ZipPath "./dist/aws-connect-$version-windows-x64.zip"
 ```
 
 공급망 검증 조건, TEST-ONLY 패키지와 GitHub Actions 게시 흐름은 [패키징 안내](packaging/README.md)를 참고하세요.

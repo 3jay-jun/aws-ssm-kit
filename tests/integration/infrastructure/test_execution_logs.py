@@ -155,6 +155,25 @@ def test_masks_metadata_and_exception_text_before_sqlite_and_file(history):
     assert sensitive not in (root / "logs" / "aws-connect.log").read_text(encoding="utf-8")
 
 
+def test_gui_error_round_trip_preserves_specific_korean_copy(history):
+    from aws_connect.application.activity_log_service import execution_entry
+    from aws_connect.presentation.gui.errors import error_message
+    from aws_connect.presentation.gui.logs import _detail_text
+    from aws_connect.presentation.gui.view_models import build_activity_log_row_view_model
+
+    service, _, _ = history
+    code = "profile.name.duplicate"
+    technical = "A profile with this name already exists"
+    service.record(feature="profile", result="FAILURE", message_code=code, masked_detail=technical)
+    entry = execution_entry(service.list_recent()[0])
+    row = build_activity_log_row_view_model(entry)
+    assert row.operation == "프로필 관리"
+    assert row.message == " ".join(error_message(code) or ())
+    assert f"메시지 코드: {code}" in _detail_text(entry)
+    assert f"상세 원인: {technical}" in _detail_text(entry)
+    assert entry.message_code == technical  # Historical diagnostic data remains available.
+
+
 def test_retention_bounds_days_rows_and_recent_excludes_incomplete(history, monkeypatch):
     service, store, _ = history
     monkeypatch.setattr("aws_connect.infrastructure.sqlite_profile_store.EXECUTION_LOG_MAX_ROWS", 5)
