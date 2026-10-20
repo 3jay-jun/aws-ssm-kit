@@ -11,8 +11,8 @@
 - [x] 언어/의존성 확인: Python 3.12, PySide6 6.11.2, 기존 잠금 버전 유지.
 - [x] 원격 main을 fetch하여 기준과 일치 확인. 별도 worktree로 한국어 변경만 분리.
 - [x] pre-landing/coverage/plan 독립 감사 후 발견된 코드·검사 결함 보완.
-- [ ] 배포 브랜치 전체 check.ps1 및 production ZIP/Setup smoke 통과.
-- [ ] 한국어 표시 변경과 1.0.3 버전/변경기록을 논리적 커밋으로 나눔.
+- [x] 배포 브랜치 전체 check.ps1 및 production ZIP/Setup smoke 통과.
+- [x] 한국어 표시 변경과 1.0.3 버전/변경기록을 논리적 커밋으로 나눔.
 - [ ] 원격 push/PR/CI 확인 및 main에 병합해 배포 workflow 실행.
 - [ ] 원격 production 후보 ZIP/Setup/checksum 생성 성공을 확인해 다운로드 경로 전달.
 
@@ -62,4 +62,21 @@
   토큰을 파일·출력에 기록하지 않았다. 별도 GitHub 인증을 요구하지 않는다.
 
 ## 다음 단계
-최종 소스의 전체 검사 및 ZIP/Setup 빌드를 검증하고 커밋·원격 배포를 진행한다.
+PR #1의 최신 CI를 확인하고 main에 병합한 뒤 release workflow의 후보 업로드 성공을 확인한다.
+정식 공개의 수동 Windows VM 검증은 기존 외부 게이트로 유지한다.
+
+## 원격 반영 및 문서 동기화
+- 로컬 논리 커밋을 연결 GitHub 앱의 Git data API로 반영하고 각각의 tree SHA가 일치함을 확인했다.
+  원격 소스 커밋 `756f67d5f6e7acf958b9f5c4d4fc7865ea07bc20`, 버전/배포 기록 커밋
+  `172eff1c11ba863ff6ac74d2da69e2597a7b568b`.
+- [PR #1](https://github.com/3jay-jun/aws-ssm-kit/pull/1) 생성. base main, feature branch
+  codex/korean-history-release. 첫 check run 39378867669 실행 중이며 최신 문서 동기화 후 재확인한다.
+- Setup: `./scripts/build-installer.ps1 -PackageDirectory ./build/package/aws-connect`
+  (기존 검증 Inno compiler 경로 지정) → exit 0, production Setup 1.0.3 생성.
+  SHA-256 `a8eefd4516f631e92b2f1d513b96f9015f91240be46470ec8d16cb9dd0c5ee9c`.
+- `./scripts/test-installer.ps1 -SetupPath ./dist/aws-connect-1.0.3-windows-x64-Setup.exe`
+  → exit 0, 무결성 검증. 실제 설치/UAC/재부팅/VM 검증은 실행하지 않았다.
+- document-release 스킬은 설치되지 않아 실행하지 못했다. 독립 수동 문서 감사로 대체하고
+  README의 기존 0.1.0 현재버전 문구와 ZIP 예제를 버전 SSOT/패키지 VERSION.txt 참조로 갱신했다.
+- `./scripts/verify-docs.ps1` → documentation passed / generated documentation current.
+- 원래 작업 폴더의 병행 EC2 파일/문서, .ci-repro, 비밀정보 JSON 및 QA diff는 원격 커밋에서 제외했다.
